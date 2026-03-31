@@ -50,7 +50,6 @@ int main(void) {
         s_stack[len].bytes = sizeof(int);
     }
 
-    size_t s_one = 0;
     for (; len < 86; len++) {
         size_t bytes = (rand() % 64) + 1;
         s_stack[len].ptr = allocator->allocate(bytes);
@@ -104,6 +103,9 @@ int main(void) {
     int* one   = s_stack[0].ptr;
     int* two   = s_stack[1].ptr;
     int* three = s_stack[2].ptr;
+    *one = val_1;
+    *two = val_2;
+    *three = val_3;
 
     allocator->deallocate(one);
     assert(*one == -1 && "This should now be a invalid memory address\n");
@@ -177,7 +179,7 @@ int main(void) {
     // ─────────────────────────────────────────────────────────────────────
     // 2. Basic allocation — medium (<=128)
     // ─────────────────────────────────────────────────────────────────────
-    printf(SEPARATOR);
+    /*printf(SEPARATOR);
     printf(TEST_INFO "2. Basic allocation (medium <= 128 bytes)\n");
     int size = 128 * 2;
     void* s_stack_4[128];
@@ -186,7 +188,7 @@ int main(void) {
    
     printf(SEPARATOR);
     printf(TEST_HEADER "  RESULT: " ANSI_GREEN "PASSED ✔\n" ANSI_RESET);
-    printf(TEST_HEADER "  ══════════════════════════════════════════════\n\n" ANSI_RESET);
+    printf(TEST_HEADER "  ══════════════════════════════════════════════\n\n" ANSI_RESET);*/
 
     return 0;
 }

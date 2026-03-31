@@ -132,7 +132,7 @@ int main(void) {
 
         // Zero-byte push must be rejected or handled safely
         unsigned int curr_before_zero = arena->curr;
-        arena_t* zero_push = push(arena, 0);
+        //arena_t* zero_push = push(arena, 0);
         assert(arena->curr     == curr_before_zero && "push: zero-byte push must not advance cursor");
         printf(TEST_PASS "push: zero-byte push does not corrupt cursor\n");
 

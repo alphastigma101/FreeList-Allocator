@@ -16,31 +16,46 @@
 */
 #include "threads.h"
 #include <stddef.h>
-#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdalign.h>
 #include <errno.h>
+#include <sys/mman.h>
+
+/**
+	@description: Align an address to the nearest power of two as long as align sizeof(prt) >= alignof(align) holds true.
+		If align is sizeof(prt) < alignof(align), there is not enough space.
+	@param: ptr: A pointer converted into unintptr_t to hold the memory address of void pointer 
+	@param: align can be either a power of two or not. 
+	@return: Return the proper alignment of the memory address  
+*/
+uintptr_t alignment(uintptr_t ptr, size_t align) {
+    if (align == 0) return ptr;
+    if ((align & (align - 1)) != 0) {
+        uintptr_t modulo = ptr % align;
+        if (modulo != 0) ptr += align - modulo;
+        return ptr;
+    }
+    uintptr_t modulo = ptr & (align - 1);
+    if (modulo != 0) ptr += align - modulo;
+    return ptr;
+}
+
 
 void debug_threads(const threads_t* tp) {
     uint8_t flag = 0;
     if (tp) {
         // Check the attributes set for mutex
-        if (tp->attr.mutex) {
-            int* pshared = malloc(sizeof(int));
-            if (!pshared) {
-                printf("ERROR 21: IN DEBUG_TRHEADS: FAILED TO ALLOCATE MEMORY ON HEAP FOR PSHARED\n");
-                return;
-            }
-            memset(pshared, 0, sizeof(int));
-            *pshared = _SC_THREAD_PROCESS_SHARED;
-            if (pthread_mutexattr_getpshared(tp->attr.mutex, pshared) != 0) {
-                free(pshared);
+        const void* mutex = &tp->mutex_attr;
+        if (mutex) {
+            int pshared = 0;
+            pshared = _SC_THREAD_PROCESS_SHARED;
+            if (pthread_mutexattr_getpshared(&tp->mutex_attr, &pshared) != 0) {
                 flag = flag << 2; // Shift it over twice: 000000010
 
                 // Check to see if the default settings were set   
-                if (pthread_mutexattr_gettype(tp->attr.mutex, NULL) != 0) {
+                if (pthread_mutexattr_gettype(&tp->mutex_attr, NULL) != 0) {
                     // we do not know what kind of settings are set, so they are not supported
                 } 
                 else flag = (flag | 1) >> 2; // Should look like this 0000011
@@ -48,7 +63,8 @@ void debug_threads(const threads_t* tp) {
                 else printf("\nFunction debug_threads, source line 48: \n\tMutex has unsupported settings set\n");
             }
         }
-        if (tp->attr.thread) {
+        const void* thread_attr = &tp->thread_attr;
+        if (thread_attr) {
             flag = 0;
             // We need to check the threads attributes to see if they are default or not 
             // We then can check to see the size of the stack and get the stack address if needed 
@@ -59,8 +75,85 @@ void debug_threads(const threads_t* tp) {
 
 // Portablility for either creating a single thread or using threads_t i.e the threadpool
 threads_t* create_thread(threads_t* tp, const uint8_t mode, const void* func) {
-    if (tp) return create_thread_attr(tp, mode, func);
-    return (void*)0;
+    if (tp && tp->args) {
+        
+        if (pthread_create(&tp->thread_id, &tp->thread_attr, func, tp->args) != 0) {
+            pthread_mutex_destroy(&tp->mutex);
+            pthread_mutexattr_destroy(&tp->mutex_attr);
+            pthread_attr_destroy(&tp->thread_attr);
+            free(tp);
+            return NULL;
+        }
+        if (mode == 0x02) {
+            if (pthread_mutex_lock(&tp->mutex) != 0) {
+                printf("ERROR 359: Failed to lock mutex\n");
+                pthread_mutex_destroy(&tp->mutex);
+                pthread_mutexattr_destroy(&tp->mutex_attr);
+                pthread_attr_destroy(&tp->thread_attr);
+                free(tp);  
+                return NULL; 
+            }
+        }
+    }
+    return tp;
+}
+
+[[gnu::hot]]
+args_t* init_args_t() {
+    args_t* args = NULL;
+    args = aligned_alloc(alignof(args_t), sizeof(args_t));
+    if (!args) return NULL;
+    memset(args, 0, sizeof(args_t));
+    return args;
+}
+
+/**
+ * @brief Initializes a thread
+ * 
+ * @param arr Memory address 
+ * @param mode Can be shared or not shared memory space 
+ * @param _str Can be a string or it can be NULL
+ * 
+ * @return tokens_t Object 
+
+ * 
+ * @details 
+ * - addr is a memory address depending on the mode, can have shared resources or not 
+ * - mode is set to default i.e 0x01 which is SHARED       
+ *         - 0x02 is for ANONYMOUS
+ * @note Passed unit test cases as of 3/3/26 
+*/
+[[gnu::hot]]
+threads_t* init_threads_t() {
+    threads_t* t = aligned_alloc(alignof(threads_t), sizeof(threads_t));
+    t->args = t->args == NULL ? init_args_t() : t->args;
+    if (!t) return NULL;
+    else if (!t->args) return NULL;
+    memset(t, 0, sizeof(threads_t));
+
+    FORCE_ALIGNMENT(&t->mutex_attr);
+    if (pthread_mutexattr_init(&t->mutex_attr) != 0) {
+        printf("ERROR 38: FAILED TO INIT MUTEX ATTRIBUTE\n");
+        free(t);
+        return NULL;
+    }
+
+    FORCE_ALIGNMENT(&t->mutex);
+    if (pthread_mutex_init(&t->mutex, &t->mutex_attr) != 0) {
+        printf("ERROR 44: Failed to set the attribute for shared resources cleaning!\n");
+        pthread_mutex_destroy(&t->mutex);
+        pthread_mutexattr_destroy(&t->mutex_attr);
+        free(t);
+        return NULL;
+    }
+
+    FORCE_ALIGNMENT(&t->thread_attr);
+    if (pthread_attr_init(&t->thread_attr) != 0) {
+        printf("ERROR 103: FAILED TO INIT THREAD ATTRIBUTES\n");
+        return NULL;
+    }
+    t->flag = 0x0;
+    return t;
 }
 
 /**
@@ -115,13 +208,13 @@ void* private_address(void *addr, size_t len, int prot, int flags, int fildes, u
  * @param addr Pointer returned by shared_address/private_address
  * @note You must track the length separately or store it in the mapped region
 */
-void clean_address(void* addr) {
+void munmap_address(void* addr) {
     if (addr == NULL || addr == MAP_FAILED) {
         fprintf(stderr, "clean_address: invalid address\n");
         return;
     }
 
-    unsigned char* bytes = (unsigned char*)addr;
+    uint8_t* bytes = (uint8_t*)addr;
     size_t len = 0;
     while (bytes) {
         if (bytes) {
@@ -138,67 +231,20 @@ void clean_address(void* addr) {
 
 // Can also be used as this: threads_t* thread[0] = (threads_t*)set_thread_attr(thread[0], 0x01, the_subroutine);
 // Meaning that init_threads_t is not needed, but it calls all of these functions on its own.
-threads_t* create_thread_attr(threads_t* tp, const uint8_t mode, const void* func) {
+threads_t* create_thread_attr(threads_t* tp, const uint8_t mode) {
     if (mode == 0x01) {
-
-        tp->attr.mutex = aligned_alloc(alignof(pthread_mutexattr_t), sizeof(pthread_mutexattr_t));
-        if (tp->attr.mutex) memset(tp->attr.mutex, 0, sizeof(pthread_mutexattr_t));
-        else printf("ERROR 310: FAILED TO ALLOCATE MEMORY FOR MUTEX ATTRIBUTE\n");
-        if (pthread_mutexattr_init(tp->attr.mutex) != 0) {
-            printf("ERROR 38: FAILED TO INIT MUTEX ATTRIBUTE\n");
-            free(tp->attr.mutex);
-            free(tp);
-            return (void*)0;
-        }
-
-        if (pthread_mutexattr_setpshared(tp->attr.mutex, PTHREAD_PROCESS_SHARED) != 0) {
-            printf("ERROR 37: FAILED TO INITIALIZE MUTEX AND ATTRIBUTES\n");
-            free(tp);
-            return (void*)0;
-        }
-
-        tp->mutex = aligned_alloc(alignof(pthread_mutex_t), sizeof(pthread_mutex_t));
-        if (tp->mutex) memset(tp->mutex, 0, sizeof(pthread_mutex_t));
-        else printf("ERROR 325: FAILED TO ALLOCATE MEMORY FOR MUTEX\n");
-
-        if (pthread_mutex_init(tp->mutex, tp->attr.mutex) != 0) {
-            printf("ERROR 44: Failed to set the attribute for shared resources cleaning!\n");
-            pthread_mutex_destroy(tp->mutex);
-            pthread_mutexattr_destroy(tp->attr.mutex);
-            free(tp);
-            return (void*)0;
-        }
-
-        tp->attr.thread = aligned_alloc(alignof(pthread_attr_t), sizeof(pthread_attr_t));
-        if (tp->attr.thread) memset(tp->attr.thread, 0, sizeof(pthread_attr_t));
-        else printf("ERROR 325: FAILED TO ALLOCATE MEMORY FOR THREAD ATTRIBUTE\n");
-
-        if (pthread_attr_init(tp->attr.thread) != 0) {
-            printf("ERROR 103: FAILED TO INIT THREAD ATTRIBUTES\n");
-            return (void*)0;
-        }
-
-        tp->id = aligned_alloc(alignof(pthread_t), sizeof(pthread_t));
-        if (tp->id) memset(tp->id, 0, sizeof(pthread_t));
-        if (pthread_create(tp->id, tp->attr.thread, func, tp->args) != 0) {
-            pthread_mutex_destroy(tp->mutex);
-            pthread_mutexattr_destroy(tp->attr.mutex);
-            pthread_attr_destroy(tp->attr.thread);
-            free(tp);
-            return (void*)0;
+        int pshared = _SC_THREAD_PROCESS_SHARED;
+        if (pthread_mutexattr_getpshared(&tp->mutex_attr, &pshared) != 0) {
+            if (pthread_mutexattr_setpshared(&tp->mutex_attr, PTHREAD_PROCESS_SHARED) != 0) {
+                printf("ERROR 37: FAILED TO INITIALIZE MUTEX AND ATTRIBUTES\n");
+                free(tp);
+                return NULL;
+            }
         }
     }
     else if (mode == 0x02) {
         // Default settings. Meaning that we do not enable shared memory 
         // Have not been tested as of 3/3/26
-        if (pthread_mutex_lock(tp->mutex) != 0) {
-            printf("ERROR 359: Failed to lock mutex\n");
-            pthread_mutex_destroy(tp->mutex);
-            pthread_mutexattr_destroy(tp->attr.mutex);
-            pthread_attr_destroy(tp->attr.thread);
-            free(tp);  
-            return (void*)0; 
-        }
     }
     return tp;
 }
@@ -210,21 +256,22 @@ void join_thread(pthread_t t, const void** rtn) {
 
 void clean_threads(threads_t* t) {
     if (t) {
-        if (t->mutex && t->attr.mutex) {
-            pthread_mutex_destroy(t->mutex);
-            pthread_mutexattr_destroy(t->attr.mutex);
+        void* mutex = &t->mutex;
+        void* mutex_attr = &t->mutex_attr;
+        if (mutex && mutex_attr) {
+            pthread_mutex_destroy(mutex);
+            pthread_mutexattr_destroy(mutex_attr);
         }
-        if (t->attr.thread) {
-            pthread_attr_destroy(t->attr.thread);
-        }
-        if (t->id) {
-            uint8_t res = pthread_join(*t->id, NULL);
-            if (!res) {
-                printf("ERROR 103: THREAD WAS CALLED PREMATURELY\n");
+        void* thread_attr = &t->thread_attr;
+        if (thread_attr)
+            pthread_attr_destroy(thread_attr);
+        const void* id = &t->thread_id;
+        if (id) join_thread(t->thread_id, NULL);
 
-            }
-        }
-        if (t->addr) clean_address(t->addr);
-        free(t);
+        const int res = msync(t, sizeof(threads_t), MS_SYNC);
+        if (res == ENOMEM) free(t);
+        else munmap_address(t);
+        
+        memset(t, 0, sizeof(threads_t));
     }
 }

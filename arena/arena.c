@@ -3,24 +3,6 @@
 #include <stdio.h>
 #include <string.h>
 
-/**
-	@description: Align an address to the nearest power of two as long as align sizeof(prt) >= alignof(align) holds true.
-		If align is sizeof(prt) < alignof(align), there is not enough space.
-	@param: ptr: A pointer converted into unintptr_t to hold the memory address of void pointer 
-	@param: align can be either a power of two or not. 
-	@return: Return the proper alignment of the memory address  
-*/
-uintptr_t alignment(uintptr_t ptr, size_t align) {
-    if (align == 0) return ptr;
-    if ((align & (align - 1)) != 0) {
-        uintptr_t modulo = ptr % align;
-        if (modulo != 0) ptr += align - modulo;
-        return ptr;
-    }
-    uintptr_t modulo = ptr & (align - 1);
-    if (modulo != 0) ptr += align - modulo;
-    return ptr;
-}
 
 void clear_arena_t(arena_t *arena) {
     arena->curr = 0;
@@ -53,7 +35,6 @@ arena_t* push(arena_t* arena, size_t bytes) {
 arena_t* pop(arena_t* arena, size_t offset) {
     if (!arena) return NULL;
     else if (arena->curr == 1) return arena;
-    size_t distance = arena->curr - offset;
     arena->curr -= offset;
     arena->prev -= offset;
 	if (arena->flag == 0x01) arena->flag = 0x0;
@@ -61,7 +42,7 @@ arena_t* pop(arena_t* arena, size_t offset) {
     return arena;
 }
 
-void* resize(arena_t *arena, void *old_memory, size_t old_size, size_t new_size, size_t align) {
+/*void* resize(arena_t *arena, void *old_memory, size_t old_size, size_t new_size, size_t align) {
 	uintptr_t old_mem = (uintptr_t)old_memory;
 
 	if (!(align & (align - 1))) return (void*)0;
@@ -90,4 +71,4 @@ void* resize(arena_t *arena, void *old_memory, size_t old_size, size_t new_size,
 	}
 
 	return (void*)0;
-}
+}*/

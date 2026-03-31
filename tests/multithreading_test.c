@@ -1,3 +1,4 @@
+#include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -24,18 +25,6 @@
 #define TEST_HEADER  ANSI_BOLD ANSI_MAGENTA
 #define SEPARATOR    ANSI_CYAN "  ────────────────────────────────────────────\n" ANSI_RESET
 
-
-threads_t* init_threads_t() {
-    threads_t* t = aligned_alloc(alignof(threads_t), sizeof(threads_t));
-    if (!t) {
-        printf("Failed to allocate memory for thread struct! returning null!");
-        return NULL;
-    }
-    memset(t, 0, sizeof(threads_t));
-    t->flag = 0x0;
-    return t;
-    
-}
 
 // Numerical Value Test
 static void* addition(int* i) {
@@ -134,8 +123,7 @@ int main(void) {
         printf(TEST_PASS "Monotonicity check passed across all 1000 iterations\n");
         printf(SEPARATOR);
 
-        pthread_mutex_unlock(threads[0]->mutex);
-        join_thread(*(threads[0]->id), (void*)0);
+        join_thread(threads[0]->thread_id, NULL);
         printf(TEST_INFO "Thread joined successfully\n");
 
         assert(main_value == 1000 && "Main thread value should be 1000");
@@ -230,8 +218,6 @@ int main(void) {
                 else if (*shared_one == '\0' && *shared_two == '\0') esc = 1;
             }
         }
-        pthread_mutex_unlock(threads[1]->mutex);
-        pthread_mutex_unlock(threads[2]->mutex);
         printf(TEST_PASS "Thread[1] — all chars valid printable ASCII, pointer stayed in bounds\n");
         printf(TEST_PASS "Thread[2] — all chars valid printable ASCII, pointer stayed in bounds\n");
         printf(SEPARATOR);
@@ -239,7 +225,7 @@ int main(void) {
         printf(TEST_HEADER "  ══════════════════════════════════════════════\n\n" ANSI_RESET);
 
         for (int i = 1; i < 3; i++) {
-            join_thread(*(threads[i]->id), (void*)0);
+            join_thread(threads[i]->thread_id, NULL);
         }
     } 
 
