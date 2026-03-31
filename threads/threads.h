@@ -10,9 +10,15 @@
 #include <stddef.h>
 #include <sys/mman.h>
  
-#define PACKED_ALIGNED(n) __attribute__((packed, aligned(n)))
-//#define PACKED_ALIGNED(n) __attribute__((packed, aligned(n), warn_if_not_aligned(n)))
+
+#define FORCE_COMPILER_ALIGNED(n) __attribute__((aligned(n)))
+#define FORCE_PACK __attribute__((packed))
 #define FORCE_INLINE __attribute__((always_inline)) static inline
+#define FORCE_RUNTIME_ALIGNMENT(prval) \
+    ({ uintptr_t __raw = (uintptr_t)prval;\
+        uintptr_t __aligned = alignment(__raw, DEFAULT_ALIGNMENT);\
+        (__typeof__(prval))__aligned;\
+    })
 
 #define EMBEDDED_SYSTEMS 16
 #define GAMING 64
@@ -60,37 +66,22 @@
            (b)->flag, (void*)(b)->stack, (void*)(b)->arena)
 
 
-#define FORCE_ALIGNMENT(prval) \
-    ({ uintptr_t __raw = (uintptr_t)prval;\
-        uintptr_t __aligned = alignment(__raw, DEFAULT_ALIGNMENT);\
-        (__typeof__(prval))__aligned;\
-    })
 
-
-
-typedef struct PACKED_ALIGNED(DEFAULT_ALIGNMENT)  args_t {
+typedef struct FORCE_COMPILER_ALIGNED(DEFAULT_ALIGNMENT) args_t {
     void**                     arr; 
     char*                      visit;
     size_t                     size;
 } args_t;
 
-typedef struct PACKED_ALIGNED(DEFAULT_ALIGNMENT) threads_t {
-    struct PACKED_ALIGNED(DEFAULT_ALIGNMENT) {
-        pthread_mutex_t     mutex;      /*  0  - 40 */
-        pthread_mutexattr_t mutex_attr; /* 40  - 44 */
-        uint8_t             _pad[4];    /* 44  - 48 */
-    };                                  /*  0  - 48 */
-    /* --- cacheline 1 boundary (64 bytes) --- */
-    uint8_t                 flag;       /* 48  - 49 */
-    uint8_t                 _pad0[7];   /* 49  - 56 */
-    struct PACKED_ALIGNED(DEFAULT_ALIGNMENT) {
-        pthread_t           thread_id;  /* 56  - 64 */
-        /* --- cacheline 1 boundary (64 bytes) --- */
-        pthread_attr_t      thread_attr;/* 64  - 120 */
-    };
-    void*                   addr;       /* 120 - 128 */
-    /* --- cacheline 2 boundary (128 bytes) --- */
-    args_t*                 args;       /* 128 - 136 */
+typedef struct FORCE_COMPILER_ALIGNED(DEFAULT_ALIGNMENT) threads_t {
+    uint8_t                 flag;
+    uint8_t                 _pad[3];
+    pthread_mutexattr_t     mutex_attr; 
+    pthread_t               thread_id;
+    pthread_attr_t*         thread_attr;
+    pthread_mutex_t*        mutex;                                     
+    void*                   addr;     
+    args_t*                 args; 
 } threads_t;
 
 extern uintptr_t alignment(uintptr_t ptr, size_t align);

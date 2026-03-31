@@ -1,13 +1,13 @@
 #include "allocator.h"
+#include <stddef.h>
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
-#include <sys/mman.h>
 #include <sys/types.h>
 
 
 allocator_t* allocator = NULL;
-FORCE_INLINE void internal_allocator_thread_pool(size_t next);
+FORCE_INLINE void thread_pool_ctor_range(size_t next);
 
 /**
     * @description: A Free function that uses a specific bucket index to update its state. 
@@ -84,7 +84,6 @@ FORCE_INLINE void sync_allocator_threads(bucket_t* slot) {
             join_thread(iter->thread_id, NULL);
             iter->flag = 0x0;
             memset(iter->args->visit, 0, sizeof(char*));
-            // get slot so we are syncing just the slot->arena
             const int res = msync(slot->arena, sizeof(arena_t), MS_SYNC);
             sync_allocator_buckets(slot);
             if (!res) 
@@ -274,53 +273,24 @@ void* thread_arguments(args_t* args) {
     }
     else if (strcmp(args->visit, "internal_allocator_thread_pool") != 0) {
         size_t next = (size_t)args->arr[0];
-        internal_allocator_thread_pool(next);
+        thread_pool_ctor_range(next);
     }
     return NULL;
 }
 
 
 [[gnu::hot]]
-FORCE_INLINE void internal_allocator_thread_pool(size_t next) {
+FORCE_INLINE void thread_pool_ctor_range(size_t next) {
     if (next != ALLOC_THREAD_POOL_SIZE) { 
         threads_t* t = &allocator->pool[next];
-        if (!t->args) {
-            t->args = private_address(t->args, sizeof(args_t), PROT_WRITE | PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-            if (t->args == MAP_FAILED) {
-                printf("FAILED TO MAP ARGS\n");
-                return;
-            }
-        }
-        if (t->flag != 0x01) {
-            FORCE_ALIGNMENT(&t->mutex_attr);
-            if (pthread_mutexattr_init(&t->mutex_attr) != 0) {
-                printf("ERROR 38: FAILED TO INIT MUTEX ATTRIBUTE\n");
-                munmap_address(t);
-                return internal_allocator_thread_pool(next + 1);
-            }
-
-            FORCE_ALIGNMENT(&t->mutex);
-            if (pthread_mutex_init(&t->mutex, &t->mutex_attr) != 0) {
-                printf("ERROR 44: Failed to set the attribute for shared resources cleaning!\n");
-                munmap_address(t);
-                return internal_allocator_thread_pool(next + 1);
-            }
-
-            FORCE_ALIGNMENT(&t->thread_attr);
-            if (pthread_attr_init(&t->thread_attr) != 0) {
-                printf("ERROR 103: FAILED TO INIT THREAD ATTRIBUTES\n");
-                munmap_address(t);
-                return internal_allocator_thread_pool(next + 1);
-            }
-            t->flag = 0x0;
-            return internal_allocator_thread_pool(next + 1);
-        }
-        else {
-            join_thread(t->thread_id, NULL);
-            t->flag = 0x0;
-            return internal_allocator_thread_pool(next + 1);
-        }
+        threads_t* tmp = init_threads_t();
+        memmove(t, tmp, sizeof(threads_t));
+        free(tmp->args);
+        free(tmp);
+        memset(tmp, 0, sizeof(threads_t));
+        return thread_pool_ctor_range(next + 1);
     }
+    
     return;
 }
 
@@ -369,7 +339,7 @@ FORCE_INLINE void alloc_init(void) {
         res = madvise(allocator->pool, ALLOC_THREAD_POOL_SIZE * sizeof(threads_t), MADV_SEQUENTIAL | MADV_MERGEABLE);
         if (res == -1) DBG("%d", res);
         else {
-            internal_allocator_thread_pool(ALLOC_THREAD_POOL_SIZE - 1);
+            thread_pool_ctor_range(ALLOC_THREAD_POOL_SIZE - 1);
             threads_t* thread = &allocator->pool[ALLOC_THREAD_POOL_SIZE - 1];
             thread->args->visit = "internal_allocator_thread_pool";
             size_t next = 0;
@@ -556,23 +526,52 @@ FORCE_INLINE void deallocate(void* ptr) {
 }
 
 [[gnu::cold]]
-void clear_allocator() {
-    for (size_t i = 0; ALLOC_THREAD_POOL_SIZE; i++)
-        clean_threads(&allocator->pool[i]);
-    while (allocator->arena) {
-        arena_t* head = allocator->arena;
-        if (head) {
-            munmap_address(head->chunk);
-            clear_arena_t(allocator->arena);
+FORCE_INLINE void clear_buckets() {
+    size_t small = 0;
+    size_t medium = 0;
+    while (small < 64) {
+        arena_t* arena = allocator->bucket.small[small].arena;
+        while (arena->next) {
+            munmap_address(arena);
+            munmap_address(arena->chunk);
+            arena = arena->next;
         }
-        head = allocator->arena->next;
+        small = small + 1;
     }
+    while (medium < 128) {
+        arena_t* arena = allocator->bucket.medium[medium].arena;
+        while (arena->next) {
+            munmap_address(arena);
+            munmap_address(arena->chunk);
+            arena = arena->next;
+        }
+        medium = medium + 1;
+    }
+    #if DEFAULT_ALIGNMENT > EMBEDDED_SYSTEMS
+        size_t large = 0;
+        while (large < 256) {
+            arena_t* arena = allocator->bucket.large[large].arena;
+            while (arena->next) {
+                munmap_address(arena);
+                munmap_address(arena->chunk);
+                arena = arena->next;
+            }
+            large = large + 1;
+        }
+    #endif
+}
+
+[[gnu::cold]]
+void clear_allocator() {
+    for (size_t i = 0; ALLOC_THREAD_POOL_SIZE; i++) clean_threads(&allocator->pool[i]);
+    clear_buckets();
+    munmap_address(allocator->arena);
+    munmap_address(allocator->arena->chunk);
     munmap_address(allocator);
 }
 
 void init_allocator_t() {
-    if (!allocator) 
-        alloc_init();
+    if (!allocator)  alloc_init();
 
     if (!allocator->allocate && !allocator->deallocate) {
         allocator->allocate   = allocate;
@@ -591,8 +590,6 @@ arena_t* init_arena_t() {
         return NULL;
     }
     memset(arena, 0, sizeof(arena_t));
-    // TODO: Use the MAP_HUGETLB 
-    // And set it with MADV_SEQUENTIAL | MADV_COLLAPSE | MADV_HUGETLB
     arena->chunk = shared_address(arena->chunk, ARENA_SIZE, PROT_WRITE | PROT_READ, MAP_SHARED | MAP_ANONYMOUS , -1, 0);
     res = madvise(arena->chunk, ARENA_SIZE, MADV_SEQUENTIAL);
     if (!arena->chunk || res == -1) {
