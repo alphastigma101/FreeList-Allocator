@@ -4,9 +4,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
-#include <sys/mman.h>
 #include <sys/types.h>
-
 
 allocator_t* allocator = NULL;
 FORCE_INLINE void thread_pool_ctor_range(size_t next);
@@ -19,9 +17,9 @@ FORCE_INLINE void thread_pool_ctor_range(size_t next);
     * @return: Returns 0 if out of bounds, otherwise returns 1
     * @note: As of 3/24/26, bit map values are not being set to either one or zero. This is still a bug that will eventually be fixed.
 */
-FORCE_INLINE int bitmap_set(int idx, int start, int end) {
+FORCE_INLINE int bitmap_set(size_t idx, size_t start, size_t end) {
     if (idx < start || idx > end) return 0;
-    allocator->map.bits[idx / CHAR_BIT] |= (1U << (idx % CHAR_BIT));
+    allocator->map.bits[idx] = 0x0;
     return 1;
 }
 
@@ -34,8 +32,26 @@ FORCE_INLINE int bitmap_set(int idx, int start, int end) {
 */
 FORCE_INLINE int bitmap_clear(int idx, int start, int end) {
     if (idx < start || idx > end) return 0;
-    allocator->map.bits[idx / CHAR_BIT] &= ~(1U << (idx % CHAR_BIT));
+    allocator->map.bits[idx] = 0x01;
     return 1;
+}
+
+FORCE_INLINE size_t bitmap_find_index(bucket_t* slot, size_t start) {
+    uintptr_t slot_addr = (uintptr_t)slot;
+    uintptr_t bucket_start = 0;
+    switch (start) {
+        case 64:
+            bucket_start = (uintptr_t)allocator + offsetof(allocator_t, bucket.small) + start * sizeof(bucket_t);
+        case 128: 
+            bucket_start = (uintptr_t)allocator + offsetof(allocator_t, bucket.medium) + start * sizeof(bucket_t);
+        #if DEFAULT_ALIGNMENT > EMBEDDED_SYSTEMS
+        case 256:
+            bucket_start = (uintptr_t)allocator + offsetof(allocator_t, bucket.large) + start * sizeof(bucket_t);
+        #endif
+    }
+    uintptr_t offset = slot_addr - bucket_start;
+    size_t index = offset / sizeof(bucket_t);
+    return index;
 }
 
 /**
@@ -47,9 +63,18 @@ FORCE_INLINE int bitmap_clear(int idx, int start, int end) {
     * @return: Returns 0 if out of bounds, otherwise returns 1
     * @note: As of 3/24/26, bit map values are not being set to either one or zero. This is still a bug that will eventually be fixed.
 */
-FORCE_INLINE int bitmap_test(bitmap_t bm, int idx, int start, int end) {
-    if (idx < start || idx > end) return 0;
-    return (bm.bits[idx / CHAR_BIT] & (1U << (idx % CHAR_BIT))) != 0;
+FORCE_INLINE int bitmap_test(size_t start, size_t end) {
+    uintptr_t data = *(uintptr_t*)(allocator->map.bits + start);
+    size_t range = end - start;
+    size_t bit_range = range * CHAR_BIT;
+    uintptr_t range_mask = (bit_range >= sizeof(uintptr_t) * CHAR_BIT)
+                               ? ~(uintptr_t)0
+                               : ((uintptr_t)1 << bit_range) - 1;
+    uintptr_t target_bits = data & range_mask;
+
+    if (target_bits == 0) return 0;
+
+    return start + ((__builtin_ffsl((long)target_bits) - 1) / CHAR_BIT);
 }
 
 /**
@@ -59,12 +84,7 @@ FORCE_INLINE int bitmap_test(bitmap_t bm, int idx, int start, int end) {
     * @param end: Is a macro value. It can be: SMALL_BIT_END, MEDIUM_BIT_END, or LARGE_BIT_END
     * @return: Returns negative one to indicate the partition is full.
 */
-FORCE_INLINE int bitmap_find_free(bitmap_t bm, int start, int end) {
-    for (int i = start; i <= end; i++) {
-        if (bitmap_test(bm, i, start, end)) return i;
-    }
-    return -1;
-}
+FORCE_INLINE int bitmap_find_free(size_t start, size_t end) { return bitmap_test(start, end); }
 
 /**
     * @description: A Free function that copies over the modified bucket to the global variable allocator causing it to sync properly.
@@ -87,9 +107,8 @@ FORCE_INLINE void sync_thread_pool(bucket_t* slot) {
             iter->flag = 0x0;
             memset(iter->args->visit, 0, sizeof(char*));
             const int res = msync(slot->arena, sizeof(arena_t), MS_SYNC);
-            sync_allocator_buckets(slot);
-            if (!res) 
-                DBG("%d", res);
+            if (res == -1) DBG("%d", res);
+            else sync_allocator_buckets(slot);
         }
     }
     threads_t* thread = (threads_t*)((uintptr_t)allocator->pool + ALLOC_THREAD_POOL_SIZE - 1);
@@ -150,19 +169,21 @@ FORCE_INLINE void bucket_mark_free(bucket_t* b, int start, int end, int abs_idx)
 FORCE_INLINE uintptr_t alloc_find_free_slot(size_t sz) {
     int idx = -1;
     if (sz <= BUCKET_SMALL_MAX) {
-        idx = bitmap_find_free(allocator->map, SMALL_BIT_START, SMALL_BIT_END);
+        idx = bitmap_find_free(SMALL_BIT_START, SMALL_BIT_END - 1);
         if (idx != -1) return (uintptr_t)allocator + offsetof(allocator_t, bucket.small) + (idx - SMALL_BIT_START) * sizeof(bucket_t);
     }
     else if (sz <= BUCKET_MEDIUM_MAX) {
-        idx = bitmap_find_free(allocator->map, MEDIUM_BIT_START, MEDIUM_BIT_END);
+        idx = bitmap_find_free(MEDIUM_BIT_START, MEDIUM_BIT_END - 1);
         if (idx != -1) return (uintptr_t)allocator + offsetof(allocator_t, bucket.medium) + (idx - MEDIUM_BIT_START) * sizeof(bucket_t);
     }
     #if (DEFAULT_ALIGNMENT > EMBEDDED_SYSTEMS)
-        idx = bitmap_find_free(allocator->map, LARGE_BIT_START, LARGE_BIT_END);
+        idx = bitmap_find_free(LARGE_BIT_START, LARGE_BIT_END - 1);
         if (idx != -1) return (uintptr_t)allocator + offsetof(allocator_t, bucket.large) + (idx - LARGE_BIT_START) * sizeof(bucket_t);
     #endif
     return -1;
 }
+
+// bucket_mark_free_if_full(b, BIT_START, BIT_END, abs_idx);
 
 /**
     * @description: A Free function that finds the specific bucket, which contains an arena that the memory address came from or not.
@@ -172,37 +193,40 @@ FORCE_INLINE uintptr_t alloc_find_free_slot(size_t sz) {
              Or an address that was allocated on the heap. 
 */
 FORCE_INLINE bucket_t* find_slot(void* ptr) {
-    char* _ptr = (char*)ptr;
-    
-    for (int i = SMALL_BIT_START; i < SMALL_BIT_END; i++) {
-        bucket_t* b = (bucket_t*)((uintptr_t)allocator + offsetof(allocator_t, bucket.small) + (i - SMALL_BIT_START) * sizeof(bucket_t));
-        if (b->arena && _ptr >= (char*)b->arena->chunk && _ptr < (char*)b->arena->chunk + b->arena->size) {
-            int abs_idx = i - SMALL_BIT_START;
-            if (bucket_mark_full(b, SMALL_BIT_START, SMALL_BIT_END, abs_idx))
-                bucket_mark_free(b, SMALL_BIT_START, SMALL_BIT_END, abs_idx);
+    int abs_index = -1;
+    bucket_t* b = NULL;
+    uintptr_t mask = ~((uintptr_t)allocator + offsetof(allocator_t, bucket.small) + offsetof(bucket_t, arena) + offsetof(arena_t, chunk) - 1); 
+    b = ((uintptr_t)ptr & mask) >= (uintptr_t)allocator + offsetof(allocator_t, bucket.small) + offsetof(bucket_t, arena) + offsetof(arena_t, chunk) && 
+            ((uintptr_t)ptr & mask) <= (uintptr_t)allocator + offsetof(allocator_t, bucket.small) + ((SMALL_BIT_END - 1) - SMALL_BIT_START) * sizeof(bucket_t) + offsetof(bucket_t, arena) + offsetof(arena_t, chunk) ?
+            (bucket_t*)((uintptr_t)ptr & (mask - (offsetof(bucket_t, arena) + offsetof(arena_t, chunk)))) : NULL;
+    if (b) {
+        abs_index = bitmap_find_index(b, SMALL_BIT_START);
+        if (bucket_mark_full(b, SMALL_BIT_START, SMALL_BIT_END - 1, abs_index))
+                bucket_mark_free(b, SMALL_BIT_START, SMALL_BIT_END - 1, abs_index);
             return b;
-        }
+    }
+    mask = ~((uintptr_t)allocator + offsetof(allocator_t, bucket.medium) + offsetof(bucket_t, arena) + offsetof(arena_t, chunk) - 1);
+    b = ((uintptr_t)ptr & mask) >= (uintptr_t)allocator + offsetof(allocator_t, bucket.medium) + offsetof(bucket_t, arena) + offsetof(arena_t, chunk) && 
+            ((uintptr_t)ptr & mask) <= (uintptr_t)allocator + offsetof(allocator_t, bucket.medium) + ((MEDIUM_BIT_END - 1) - MEDIUM_BIT_START) * sizeof(bucket_t) + offsetof(bucket_t, arena) + offsetof(arena_t, chunk) ?
+            (bucket_t*)((uintptr_t)ptr & (mask - (offsetof(bucket_t, arena) + offsetof(arena_t, chunk)))) : NULL;
+    if (b) {
+        abs_index = bitmap_find_index(b, MEDIUM_BIT_START);
+        if (bucket_mark_full(b, MEDIUM_BIT_START, MEDIUM_BIT_END - 1, abs_index))
+                bucket_mark_free(b, MEDIUM_BIT_START, MEDIUM_BIT_END - 1, abs_index);
+            return b;
     }
 
-    for (int i = MEDIUM_BIT_START; i < MEDIUM_BIT_END; i++) {
-        bucket_t* b = (bucket_t*)((uintptr_t)allocator + offsetof(allocator_t, bucket.medium) + (i - MEDIUM_BIT_START) * sizeof(bucket_t));
-        if (b->arena && _ptr >= (char*)b->arena->chunk && _ptr < (char*)b->arena->chunk + b->arena->size) {
-            int abs_idx = i - MEDIUM_BIT_START;
-            if (bucket_mark_full(b, MEDIUM_BIT_START, MEDIUM_BIT_END, abs_idx))
-                bucket_mark_free(b, MEDIUM_BIT_START, MEDIUM_BIT_END, abs_idx);
-            return b;
-        }
-    }
     #if (DEFAULT_ALIGNMENT > EMBEDDED_SYSTEMS)
-        for (int i = LARGE_BIT_START; i < LARGE_BIT_END; i++) {
-            bucket_t* b = (bucket_t*)((uintptr_t)allocator + offsetof(allocator_t, bucket.large) + (i - LARGE_BIT_START) * sizeof(bucket_t));
-            if (b->arena && _ptr >= (char*)b->arena->chunk && _ptr < (char*)b->arena->chunk + b->arena->size) {
-                int abs_idx = i - LARGE_BIT_START;
-                if (bucket_mark_full(b, LARGE_BIT_START, LARGE_BIT_END, abs_idx))
-                    bucket_mark_free(b, LARGE_BIT_START, LARGE_BIT_END, abs_idx);
-                return b;
-            }
-        }
+    mask = ~((uintptr_t)allocator + offsetof(allocator_t, bucket.large) + offsetof(bucket_t, arena) + offsetof(arena_t, chunk) - 1);
+    b = ((uintptr_t)ptr & mask) >= (uintptr_t)allocator + offsetof(allocator_t, bucket.large) + offsetof(bucket_t, arena) + offsetof(arena_t, chunk) && 
+        ((uintptr_t)ptr & mask) <= (uintptr_t)allocator + offsetof(allocator_t, bucket.large) + ((LARGE_BIT_END - 1) - LARGE_BIT_START) * sizeof(bucket_t) + offsetof(bucket_t, arena) + offsetof(arena_t, chunk) ?
+        (bucket_t*)((uintptr_t)ptr & (mask - (offsetof(bucket_t, arena) + offsetof(arena_t, chunk)))) : NULL;
+    if (b) {
+        abs_index = bitmap_find_index(b, LARGE_BIT_START);
+        if (bucket_mark_full(b, LARGE_BIT_START, LARGE_BIT_END - 1, abs_index))
+                bucket_mark_free(b, LARGE_BIT_START, LARGE_BIT_END - 1, abs_index);
+            return b;
+    }
     #endif
 
     return NULL;
@@ -283,18 +307,20 @@ void* thread_arguments(args_t* args) {
         threads_t* thread = args->arr[1];
         arena_offset(slot);
         const int res = msync(slot->arena, sizeof(arena_t), MS_SYNC);
-        sync_allocator_buckets(slot);
-        join_thread(thread->thread_id, NULL);
-        munmap_address(thread);
+        if (res == -1) DBG("%d", res);
+        else {
+            sync_allocator_buckets(slot);
+            join_thread(thread->thread_id, NULL);
+            munmap_address(thread);
+        }
         memset(thread, 0, sizeof(threads_t));
     }
     return NULL;
 }
 
-
 [[gnu::hot]]
 FORCE_INLINE void thread_pool_ctor_range(size_t next) {
-    if (next != ALLOC_THREAD_POOL_SIZE) { 
+    if (next < ALLOC_THREAD_POOL_SIZE) { 
         threads_t* t = &allocator->pool[next];
         threads_t* tmp = init_threads_t();
         memmove(t, tmp, sizeof(threads_t));
@@ -355,7 +381,7 @@ FORCE_INLINE void alloc_init(void) {
         threads_t* thread = &allocator->pool[ALLOC_THREAD_POOL_SIZE - 1];
         thread->args->visit = "internal_allocator_thread_pool";
         size_t next = 0;
-        thread->args->arr = (void**)&next;
+        thread->args->arr = (void**)next;
         thread = create_thread_attr(thread, 0x01);
         thread = create_thread(thread, 0x01, thread_arguments);
         allocator->map.n_bytes = sizeof(allocator->map.bits);
@@ -458,7 +484,7 @@ FORCE_INLINE void* allocate(size_t bytes) {
                     memset(address, 0, bytes);
                     return address;
                 }
-                idx = bitmap_find_free(allocator->map, SMALL_BIT_START, SMALL_BIT_END); 
+                idx = bitmap_find_free(SMALL_BIT_START, SMALL_BIT_END); 
             }
             else if (bytes <= 128 && bytes > 64) {
                 address = pop_from_bucket(slot, bytes);
@@ -466,7 +492,7 @@ FORCE_INLINE void* allocate(size_t bytes) {
                     memset(address, 0, bytes);
                     return address;
                 }
-                idx = bitmap_find_free(allocator->map, MEDIUM_BIT_START, MEDIUM_BIT_END);
+                idx = bitmap_find_free(MEDIUM_BIT_START, MEDIUM_BIT_END);
             }
             else {
                 #if (DEFAULT_ALIGNMENT > EMBEDDED_SYSTEMS)
@@ -540,6 +566,7 @@ FORCE_INLINE void deallocate(void* ptr) {
         threads_t* thread = NULL;
         FIND_AVAILABLE_THREAD(allocator, thread);
         if (thread) {
+            thread->flag = 0x01;
             thread->args->visit = "arena_offset";
             thread->args->size = 1;
             thread->args->arr = (void*)slot;
