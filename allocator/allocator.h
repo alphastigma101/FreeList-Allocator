@@ -49,7 +49,7 @@ typedef struct FORCE_COMPILER_ALIGNED(DEFAULT_ALIGNMENT) bucket_t {
     uint8_t             flag;
     uint8_t             _pad[7];
     arena_t*            arena;       
-    uint8_t*            unused_addresses;
+    void**              stma; // an array that uses the size of the index and holds the memory address that is not in use.
     uintptr_t           offset;
     entries_t           entries;
 } bucket_t;
