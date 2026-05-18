@@ -467,24 +467,7 @@ FORCE_INLINE void* allocate(size_t bytes) {
                 if (res == -1) DBG("%d", res);
             #endif
         }
-        else {
-            #if (DEFAULT_ALIGNMENT > EMBEDDED_SYSTEMS) 
-                slot->entries.bytes = private_address(slot->entries.bytes, 448 * sizeof(uint8_t), PROT_WRITE | PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
-                slot->entries.inuse = private_address(slot->entries.inuse, 448 * sizeof(uint8_t), PROT_WRITE | PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
-                res = madvise(slot->entries.bytes, 448 * sizeof(uint8_t), MADV_SEQUENTIAL | MADV_MERGEABLE | MADV_DONTNEED);
-                if (res == -1) DBG("%d", res);
-                res = madvise(slot->entries.inuse, 448 * sizeof(uint8_t), MADV_SEQUENTIAL | MADV_MERGEABLE | MADV_DONTNEED);
-                if (res == -1) DBG("%d", res);
-            #else
-                slot->entries.bytes = private_address(slot->entries.bytes, 192 * sizeof(uint8_t), PROT_WRITE | PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
-                slot->entries.inuse = private_address(slot->entries.inuse, 192 * sizeof(uint8_t), PROT_WRITE | PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
-                res = madvise(slot->entries.bytes, 192 * sizeof(uint8_t), MADV_SEQUENTIAL | MADV_MERGEABLE | MADV_DONTNEED);
-                if (res == -1) DBG("%d", res);
-                res = madvise(slot->entries.inuse, 192 * sizeof(uint8_t), MADV_SEQUENTIAL | MADV_MERGEABLE | MADV_DONTNEED);
-                if (res == -1) DBG("%d", res);
-            #endif
-            slot->arena = init_arena_t();
-        }
+        
 
         if (slot->flag != 0x01) {
 
