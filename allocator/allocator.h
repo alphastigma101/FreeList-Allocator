@@ -36,29 +36,6 @@
 #define BUCKET_SMALL_MAX 64U
 #define BUCKET_MEDIUM_MAX 512U
 
-// TODO: This needs to be moved into allocator.c file
-typedef struct bitmap_t {
-    uint8_t*            bits;
-    size_t              n_bytes;
-} bitmap_t;
-
-// TODO: This needs to be moved into allocator.c file
-typedef struct entries_t {
-    uint8_t*            bytes;
-    uint8_t*            inuse; 
-} entries_t;
-
-
-// TODO: This needs to be moved into allocator.c file
-typedef struct FORCE_COMPILER_ALIGNED(DEFAULT_ALIGNMENT) bucket_t {
-    uint8_t             flag;
-    uint8_t             _pad[7];
-    arena_t*            arena;       
-    void*               ua;
-    uintptr_t           offset;
-    entries_t           entries;
-} bucket_t;
-
 /**
    * @description: Free List allocator highly optimized.
    * @note: Buckets will store bytes based on size  
@@ -68,17 +45,20 @@ typedef struct FORCE_COMPILER_ALIGNED(DEFAULT_ALIGNMENT) allocator_t {
     void                (*deallocate)(void*);
     arena_t*            arena;
     threads_t*          pool;  
-    bitmap_t            map;
+    struct FORCE_COMPILER_ALIGNED(DEFAULT_ALIGNMENT) {
+        uint8_t*            bits;
+        size_t              n_bytes;
+    };
     struct FORCE_COMPILER_ALIGNED(DEFAULT_ALIGNMENT) bucket {
-        bucket_t*       small;
-        bucket_t*       medium;
+        struct bucket_t*       small;
+        struct bucket_t*       medium;
         #if DEFAULT_ALIGNMENT > EMBEDDED_SYSTEMS
-            bucket_t*   large;
+            struct bucket_t*   large;
         #endif
     } bucket;
 } allocator_t;
 
-extern allocator_t* allocator;
+extern allocator_t allocator;
 extern void clear_allocator(); // TODO: This should be static and not external
 extern void init_allocator_t();
 
@@ -94,14 +74,14 @@ extern void init_allocator_t();
 */
 #define SET_BITMAP(idx, start, end, res) \
     do { if (idx < start || idx > end) break;\
-        allocator->map.bits[idx] = 0x0;\
+        allocator.bits[idx] = 0x0;\
         res = 1;\
     } while(0)
 
 
 #define CLEAR_BITMAP(idx, start, end, res) \
     do { if (idx < start || idx > end) break;\
-        allocator->map.bits[idx] = 0x01;\
+        allocator.map.bits[idx] = 0x01;\
         res = 1;\
     } while(0)
 
@@ -127,7 +107,7 @@ extern void init_allocator_t();
 
 #define MARK_FULL(slot, start, end, abs_idx) 0
 
-#define POP_FROM_BUCKET(slot, bytes) \
+#define POP_FROM_BUCKET(slot, bytes, res) \
     do { bucket_t *p_slot = &slot; \
         size_t t_bytes = bytes; \
         if (!p_slot->ua || p_slot->ua == p_slot->arena->chunk) break; \
@@ -135,11 +115,11 @@ extern void init_allocator_t();
         void* address = (void*)(uint_addr); \
         p_slot->ua = (void*)uint_addr; \
         size_t offset = (size_t)((uintptr_t)address - (uintptr_t)p_slot->arena->chunk); \
-        p_slot->entries.inuse[offset] = 0x01; \
-        p_slot->entries.bytes[offset] = 0; \
+        p_slot->inuse[offset] = 0x01; \
+        p_slot->bytes[offset] = 0; \
         p_slot->arena = push(slot->arena, bytes);\
         SYNC_BUCKETS(slot); \
-        address = (address != NULL ? address : NULL); \
+        res = address; \
     } while(0)
 
 #define PUSH_TO_BUCKET(slot, offset) 0
@@ -159,13 +139,6 @@ extern void init_allocator_t();
 
 #define THREAD_POOL_CTOR_RANGE(next) 0
 
-// Deprecated. Not using it since it generates bloat instructions 5/17/26
-#define FIND_AVAILABLE_THREAD(alloc_ptr, out_ptr) \
-    for (size_t _i = 0; _i < ALLOC_THREAD_POOL_SIZE; _i++) { \
-        if (alloc_ptr->pool[_i].flag == 0x0) {\
-            alloc_ptr->pool[_i].flag = 0x01;\
-            (out_ptr) = &alloc_ptr->pool[_i];\
-        }\
-    }
+
 
 #endif

@@ -6,7 +6,19 @@
 #include <stdio.h>
 #include <sys/types.h>
 
-allocator_t* allocator = NULL;
+typedef struct FORCE_COMPILER_ALIGNED(DEFAULT_ALIGNMENT) bucket_t {
+    uint8_t             flag;
+    uint8_t             _pad[7];
+    arena_t*            arena;       
+    void*               ua;
+    uintptr_t           offset;
+    struct  {
+        uint8_t*            bytes;
+        uint8_t*            inuse; 
+    };
+} bucket_t;
+
+allocator_t allocator = {0};
 FORCE_INLINE void thread_pool_ctor_range(size_t next);
 FORCE_INLINE threads_t* find_available_thread();
 
@@ -20,7 +32,7 @@ FORCE_INLINE threads_t* find_available_thread();
 */
 FORCE_INLINE int bitmap_set(size_t idx, size_t start, size_t end) {
     if (idx < start || idx > end) return 0;
-    allocator->map.bits[idx] = 0x0;
+    allocator.bits[idx] = 0x0;
     return 1;
 }
 
@@ -33,7 +45,7 @@ FORCE_INLINE int bitmap_set(size_t idx, size_t start, size_t end) {
 */
 FORCE_INLINE int bitmap_clear(int idx, int start, int end) {
     if (idx < start || idx > end) return 0;
-    allocator->map.bits[idx] = 0x01;
+    allocator.bits[idx] = 0x01;
     return 1;
 }
 
@@ -42,12 +54,12 @@ FORCE_INLINE size_t bitmap_find_index(bucket_t* slot, size_t start) {
     uintptr_t bucket_start = 0;
     switch (start) {
         case 64:
-            bucket_start = (uintptr_t)allocator + offsetof(allocator_t, bucket.small) + start * sizeof(bucket_t);
+            bucket_start = (uintptr_t)&allocator + offsetof(allocator_t, bucket.small) + start * sizeof(bucket_t);
         case 128: 
-            bucket_start = (uintptr_t)allocator + offsetof(allocator_t, bucket.medium) + start * sizeof(bucket_t);
+            bucket_start = (uintptr_t)&allocator + offsetof(allocator_t, bucket.medium) + start * sizeof(bucket_t);
         #if DEFAULT_ALIGNMENT > EMBEDDED_SYSTEMS
-        case 256:
-            bucket_start = (uintptr_t)allocator + offsetof(allocator_t, bucket.large) + start * sizeof(bucket_t);
+            case 256:
+                bucket_start = (uintptr_t)&allocator + offsetof(allocator_t, bucket.large) + start * sizeof(bucket_t);
         #endif
     }
     uintptr_t offset = slot_addr - bucket_start;
@@ -65,7 +77,7 @@ FORCE_INLINE size_t bitmap_find_index(bucket_t* slot, size_t start) {
     * @note: As of 3/24/26, bit map values are not being set to either one or zero. This is still a bug that will eventually be fixed.
 */
 FORCE_INLINE int bitmap_test(size_t start, size_t end) {
-    uintptr_t data = *(uintptr_t*)(allocator->map.bits + start);
+    uintptr_t data = *(uintptr_t*)(allocator.bits + start);
     size_t range = end - start;
     size_t bit_range = range * CHAR_BIT;
     uintptr_t range_mask = (bit_range >= sizeof(uintptr_t) * CHAR_BIT)
@@ -93,14 +105,14 @@ FORCE_INLINE int bitmap_find_free(size_t start, size_t end) { return bitmap_test
     * @return: None.
 */
 FORCE_INLINE void sync_allocator_buckets(bucket_t* slot) {
-    uintptr_t slot_offset = (uintptr_t)slot - (uintptr_t)allocator;
-    bucket_t* _slot = (bucket_t*)((uintptr_t)allocator + slot_offset);
+    uintptr_t slot_offset = (uintptr_t)slot - (uintptr_t)&allocator;
+    bucket_t* _slot = (bucket_t*)((uintptr_t)&allocator + slot_offset);
     *_slot = *slot;
 }
 
 FORCE_INLINE void sync_thread_pool(bucket_t* slot) {
     for (size_t i = 0; i < ALLOC_THREAD_POOL_SIZE - 2; i++) {
-        threads_t* iter = allocator->pool + i;
+        threads_t* iter = allocator.pool + i;
         if (iter->flag == 0x01) {
             // if any threads are set to 0x01, they were marked with MADV_SEQUENTIAL and MADV_MERGEABLE
             // Meaning that we are preventing stale caches, and will mitigates msync's overhead. 
@@ -112,7 +124,7 @@ FORCE_INLINE void sync_thread_pool(bucket_t* slot) {
             else sync_allocator_buckets(slot);
         }
     }
-    threads_t* thread = (threads_t*)((uintptr_t)allocator->pool + ALLOC_THREAD_POOL_SIZE - 1);
+    threads_t* thread = (threads_t*)((uintptr_t)allocator.pool + ALLOC_THREAD_POOL_SIZE - 1);
     join_thread(thread->thread_id, NULL);
     thread->flag = 0x0;
 }
@@ -138,7 +150,7 @@ FORCE_INLINE int bucket_mark_full(bucket_t* b, int start, int end, int abs_idx) 
     b->flag = (b->arena && b->arena->flag == 0x01) ? 0x01 : 0x0;
     if (b->flag == 0x01) {
         bitmap_clear(abs_idx, start, end);
-        bucket_t* slot = (bucket_t*)((uintptr_t)allocator + offsetof(allocator_t, bucket) + (abs_idx) * sizeof(bucket_t));
+        bucket_t* slot = (bucket_t*)((uintptr_t)&allocator + offsetof(allocator_t, bucket) + (abs_idx) * sizeof(bucket_t));
         *slot = *b;
         return 1;
     }
@@ -157,7 +169,7 @@ FORCE_INLINE void bucket_mark_free(bucket_t* b, int start, int end, int abs_idx)
     b->flag = 0x0;
     b->arena->flag = 0x0;
     bitmap_set(abs_idx, start, end);
-    bucket_t* slot = (bucket_t*)((uintptr_t)allocator + offsetof(allocator_t, bucket) + (abs_idx) * sizeof(bucket_t));
+    bucket_t* slot = (bucket_t*)((uintptr_t)&allocator + offsetof(allocator_t, bucket) + (abs_idx) * sizeof(bucket_t));
     *slot = *b;
 }
 
@@ -171,15 +183,15 @@ FORCE_INLINE uintptr_t alloc_find_free_slot(size_t sz) {
     int idx = -1;
     if (sz <= BUCKET_SMALL_MAX) {
         idx = bitmap_find_free(SMALL_BIT_START, SMALL_BIT_END - 1);
-        if (idx != -1) return (uintptr_t)allocator + offsetof(allocator_t, bucket.small) + (idx - SMALL_BIT_START) * sizeof(bucket_t);
+        if (idx != -1) return (uintptr_t)&allocator + offsetof(allocator_t, bucket.small) + (idx - SMALL_BIT_START) * sizeof(bucket_t);
     }
     else if (sz <= BUCKET_MEDIUM_MAX) {
         idx = bitmap_find_free(MEDIUM_BIT_START, MEDIUM_BIT_END - 1);
-        if (idx != -1) return (uintptr_t)allocator + offsetof(allocator_t, bucket.medium) + (idx - MEDIUM_BIT_START) * sizeof(bucket_t);
+        if (idx != -1) return (uintptr_t)&allocator + offsetof(allocator_t, bucket.medium) + (idx - MEDIUM_BIT_START) * sizeof(bucket_t);
     }
     #if (DEFAULT_ALIGNMENT > EMBEDDED_SYSTEMS)
         idx = bitmap_find_free(LARGE_BIT_START, LARGE_BIT_END - 1);
-        if (idx != -1) return (uintptr_t)allocator + offsetof(allocator_t, bucket.large) + (idx - LARGE_BIT_START) * sizeof(bucket_t);
+        if (idx != -1) return (uintptr_t)&allocator + offsetof(allocator_t, bucket.large) + (idx - LARGE_BIT_START) * sizeof(bucket_t);
     #endif
     return -1;
 }
@@ -194,9 +206,9 @@ FORCE_INLINE uintptr_t alloc_find_free_slot(size_t sz) {
 FORCE_INLINE bucket_t* find_slot(void* ptr) {
     int abs_index = -1;
     bucket_t* b = NULL;
-    uintptr_t mask = ~((uintptr_t)allocator + offsetof(allocator_t, bucket.small) + offsetof(bucket_t, arena) + offsetof(arena_t, chunk) - 1); 
-    b = ((uintptr_t)ptr & mask) >= (uintptr_t)allocator + offsetof(allocator_t, bucket.small) + offsetof(bucket_t, arena) + offsetof(arena_t, chunk) && 
-            ((uintptr_t)ptr & mask) <= (uintptr_t)allocator + offsetof(allocator_t, bucket.small) + ((SMALL_BIT_END - 1) - SMALL_BIT_START) * sizeof(bucket_t) + offsetof(bucket_t, arena) + offsetof(arena_t, chunk) ?
+    uintptr_t mask = ~((uintptr_t)&allocator + offsetof(allocator_t, bucket.small) + offsetof(bucket_t, arena) + offsetof(arena_t, chunk) - 1); 
+    b = ((uintptr_t)ptr & mask) >= (uintptr_t)&allocator + offsetof(allocator_t, bucket.small) + offsetof(bucket_t, arena) + offsetof(arena_t, chunk) && 
+            ((uintptr_t)ptr & mask) <= (uintptr_t)&allocator + offsetof(allocator_t, bucket.small) + ((SMALL_BIT_END - 1) - SMALL_BIT_START) * sizeof(bucket_t) + offsetof(bucket_t, arena) + offsetof(arena_t, chunk) ?
             (bucket_t*)((uintptr_t)ptr & (mask - (offsetof(bucket_t, arena) + offsetof(arena_t, chunk)))) : NULL;
     if (b) {
         abs_index = bitmap_find_index(b, SMALL_BIT_START);
@@ -204,9 +216,9 @@ FORCE_INLINE bucket_t* find_slot(void* ptr) {
                 bucket_mark_free(b, SMALL_BIT_START, SMALL_BIT_END - 1, abs_index);
             return b;
     }
-    mask = ~((uintptr_t)allocator + offsetof(allocator_t, bucket.medium) + offsetof(bucket_t, arena) + offsetof(arena_t, chunk) - 1);
-    b = ((uintptr_t)ptr & mask) >= (uintptr_t)allocator + offsetof(allocator_t, bucket.medium) + offsetof(bucket_t, arena) + offsetof(arena_t, chunk) && 
-            ((uintptr_t)ptr & mask) <= (uintptr_t)allocator + offsetof(allocator_t, bucket.medium) + ((MEDIUM_BIT_END - 1) - MEDIUM_BIT_START) * sizeof(bucket_t) + offsetof(bucket_t, arena) + offsetof(arena_t, chunk) ?
+    mask = ~((uintptr_t)&allocator + offsetof(allocator_t, bucket.medium) + offsetof(bucket_t, arena) + offsetof(arena_t, chunk) - 1);
+    b = ((uintptr_t)ptr & mask) >= (uintptr_t)&allocator + offsetof(allocator_t, bucket.medium) + offsetof(bucket_t, arena) + offsetof(arena_t, chunk) && 
+            ((uintptr_t)ptr & mask) <= (uintptr_t)&allocator + offsetof(allocator_t, bucket.medium) + ((MEDIUM_BIT_END - 1) - MEDIUM_BIT_START) * sizeof(bucket_t) + offsetof(bucket_t, arena) + offsetof(arena_t, chunk) ?
             (bucket_t*)((uintptr_t)ptr & (mask - (offsetof(bucket_t, arena) + offsetof(arena_t, chunk)))) : NULL;
     if (b) {
         abs_index = bitmap_find_index(b, MEDIUM_BIT_START);
@@ -216,16 +228,16 @@ FORCE_INLINE bucket_t* find_slot(void* ptr) {
     }
 
     #if (DEFAULT_ALIGNMENT > EMBEDDED_SYSTEMS)
-    mask = ~((uintptr_t)allocator + offsetof(allocator_t, bucket.large) + offsetof(bucket_t, arena) + offsetof(arena_t, chunk) - 1);
-    b = ((uintptr_t)ptr & mask) >= (uintptr_t)allocator + offsetof(allocator_t, bucket.large) + offsetof(bucket_t, arena) + offsetof(arena_t, chunk) && 
-        ((uintptr_t)ptr & mask) <= (uintptr_t)allocator + offsetof(allocator_t, bucket.large) + ((LARGE_BIT_END - 1) - LARGE_BIT_START) * sizeof(bucket_t) + offsetof(bucket_t, arena) + offsetof(arena_t, chunk) ?
-        (bucket_t*)((uintptr_t)ptr & (mask - (offsetof(bucket_t, arena) + offsetof(arena_t, chunk)))) : NULL;
-    if (b) {
-        abs_index = bitmap_find_index(b, LARGE_BIT_START);
-        if (bucket_mark_full(b, LARGE_BIT_START, LARGE_BIT_END - 1, abs_index))
-                bucket_mark_free(b, LARGE_BIT_START, LARGE_BIT_END - 1, abs_index);
-            return b;
-    }
+        mask = ~((uintptr_t)&allocator + offsetof(allocator_t, bucket.large) + offsetof(bucket_t, arena) + offsetof(arena_t, chunk) - 1);
+        b = ((uintptr_t)ptr & mask) >= (uintptr_t)&allocator + offsetof(allocator_t, bucket.large) + offsetof(bucket_t, arena) + offsetof(arena_t, chunk) && 
+            ((uintptr_t)ptr & mask) <= (uintptr_t)&allocator + offsetof(allocator_t, bucket.large) + ((LARGE_BIT_END - 1) - LARGE_BIT_START) * sizeof(bucket_t) + offsetof(bucket_t, arena) + offsetof(arena_t, chunk) ?
+            (bucket_t*)((uintptr_t)ptr & (mask - (offsetof(bucket_t, arena) + offsetof(arena_t, chunk)))) : NULL;
+        if (b) {
+            abs_index = bitmap_find_index(b, LARGE_BIT_START);
+            if (bucket_mark_full(b, LARGE_BIT_START, LARGE_BIT_END - 1, abs_index))
+                    bucket_mark_free(b, LARGE_BIT_START, LARGE_BIT_END - 1, abs_index);
+                return b;
+        }
     #endif
 
     return NULL;
@@ -238,9 +250,9 @@ FORCE_INLINE bucket_t* find_slot(void* ptr) {
 */
 FORCE_INLINE void push_to_bucket(bucket_t* slot, size_t offset) {
     if (offset != 0 && offset != 1) {
-        size_t bytes = slot->entries.bytes[offset];
-        slot->entries.inuse[offset] = 0x0;
-        slot->entries.bytes[offset] = bytes;
+        size_t bytes = slot->bytes[offset];
+        slot->inuse[offset] = 0x0;
+        slot->bytes[offset] = bytes;
         slot->ua = (void*)((uintptr_t)slot->ua + offset);
         sync_allocator_buckets(slot);
     }
@@ -259,25 +271,62 @@ FORCE_INLINE void* pop_from_bucket(bucket_t* slot, size_t bytes) {
     void* address = (void*)(uint_addr);
     slot->ua = (void*)uint_addr;
     size_t offset = (size_t)((uintptr_t)address - (uintptr_t)slot->arena->chunk); // This also needs to be squeezed
-    slot->entries.inuse[offset] = 0x01;
-    slot->entries.bytes[offset] = 0;
+    slot->inuse[offset] = 0x01;
+    slot->bytes[offset] = 0;
     slot->arena = push(slot->arena, bytes);
     sync_allocator_buckets(slot);
     return address;
 }
 
+[[gnu::cold]]
+FORCE_INLINE void clear_buckets() {
+    size_t small = 0;
+    size_t medium = 0;
+    while (small < 64) {
+        arena_t* arena = allocator.bucket.small[small].arena;
+        while (arena->next) {
+            munmap_address(arena);
+            munmap_address(arena->chunk);
+            arena = arena->next;
+        }
+        small = small + 1;
+    }
+    while (medium < 128) {
+        arena_t* arena = allocator.bucket.medium[medium].arena;
+        while (arena->next) {
+            munmap_address(arena);
+            munmap_address(arena->chunk);
+            arena = arena->next;
+        }
+        medium = medium + 1;
+    }
+    #if DEFAULT_ALIGNMENT > EMBEDDED_SYSTEMS
+        size_t large = 0;
+        while (large < 256) {
+            arena_t* arena = allocator.bucket.large[large].arena;
+            while (arena->next) {
+                munmap_address(arena);
+                munmap_address(arena->chunk);
+                arena = arena->next;
+            }
+            large = large + 1;
+        }
+    #endif
+}
+
 FORCE_INLINE void* arena_offset(bucket_t* slot) {
     size_t offset = 0;
     for (size_t i = 0; i < ARENA_SIZE; i++) {
-        if (slot->entries.inuse[i] == 0x0 && slot->entries.bytes[offset] != 0) offset = offset + i;
+        if (slot->inuse[i] == 0x0 && slot->bytes[offset] != 0) offset = offset + i;
     }
     if (offset == slot->arena->curr) { 
         clear_arena_t(slot->arena);
         munmap_address(slot->arena);
-        munmap_address(slot->entries.bytes);
-        munmap_address(slot->entries.inuse);
+        munmap_address(slot->bytes);
+        munmap_address(slot->inuse);
     }
     else {
+        // Avoid underflows and or overflows by subtraction arena's offset properly 
         if (slot->arena->curr != 0) {
             slot->arena->curr -= offset;
             slot->arena->prev -= offset;
@@ -288,6 +337,22 @@ FORCE_INLINE void* arena_offset(bucket_t* slot) {
     return NULL;
 }
 
+
+[[gnu::hot]]
+FORCE_INLINE void thread_pool_ctor_range(size_t next) {
+    if (next < ALLOC_THREAD_POOL_SIZE) { 
+        threads_t* t = &allocator.pool[next];
+        threads_t* tmp = init_threads_t();
+        memmove(t, tmp, sizeof(threads_t));
+        free(tmp->args);
+        free(tmp);
+        memset(tmp, 0, sizeof(threads_t));
+        return thread_pool_ctor_range(next + 1);
+    }
+    
+    return;
+}
+
 void* thread_arguments(args_t* args) {
     if (strcmp(args->visit, "arena_offset") != 0) {
         bucket_t* slot = args->arr[0];
@@ -296,7 +361,7 @@ void* thread_arguments(args_t* args) {
     else if (strcmp(args->visit, "sync_threads") != 0) {
         bucket_t* slot = (bucket_t*)(args->arr[0]);
         sync_thread_pool(slot);
-        threads_t* thread = allocator->pool + ALLOC_THREAD_POOL_SIZE - 1;
+        threads_t* thread = allocator.pool + ALLOC_THREAD_POOL_SIZE - 1;
         thread->flag = 0x0;
         join_thread(thread->thread_id, NULL);
     }
@@ -321,25 +386,11 @@ void* thread_arguments(args_t* args) {
 }
 
 [[gnu::hot]]
-FORCE_INLINE void thread_pool_ctor_range(size_t next) {
-    if (next < ALLOC_THREAD_POOL_SIZE) { 
-        threads_t* t = &allocator->pool[next];
-        threads_t* tmp = init_threads_t();
-        memmove(t, tmp, sizeof(threads_t));
-        free(tmp->args);
-        free(tmp);
-        memset(tmp, 0, sizeof(threads_t));
-        return thread_pool_ctor_range(next + 1);
-    }
-    
-    return;
-}
-
 FORCE_INLINE threads_t* find_available_thread() {
     for (size_t _i = 0; _i < ALLOC_THREAD_POOL_SIZE; _i++) { 
-        if (allocator->pool[_i].flag == 0x0) {
-            allocator->pool[_i].flag = 0x01;
-            return &allocator->pool[_i];
+        if (allocator.pool[_i].flag == 0x0) {
+            allocator.pool[_i].flag = 0x01;
+            return &allocator.pool[_i];
         }
     }
     return NULL;
@@ -350,58 +401,51 @@ FORCE_INLINE threads_t* find_available_thread() {
 // TODO: Need to make sure that MADV_MERGEABLE enabled does not consume a lot of processing power; use with care.
 FORCE_INLINE void alloc_init(void) {
     int res = 0;
-    if (!allocator) {
-        allocator = private_address(allocator, sizeof(allocator_t), PROT_WRITE | PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-        if (allocator == MAP_FAILED) {
-            fprintf(stderr, "ERROR: Failed to allocate allocator\n");
-            return;
-        }
-        memset(allocator, 0, sizeof(allocator_t));
+    if (!allocator.bits) {
         #if (DEFAULT_ALIGNMENT > EMBEDDED_SYSTEMS)
-            allocator->map.bits = private_address(allocator->map.bits, 448 * sizeof(uint8_t), PROT_WRITE | PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
-            res = madvise(allocator->map.bits, 448 * sizeof(uint8_t), MADV_SEQUENTIAL | MADV_MERGEABLE);
+            allocator.map.bits = private_address(allocator.map.bits, 448 * sizeof(uint8_t), PROT_WRITE | PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+            res = madvise(allocator.map.bits, 448 * sizeof(uint8_t), MADV_SEQUENTIAL | MADV_MERGEABLE);
             if (res == -1) DBG("%d", res);
-            memset(allocator->map.bits, 1, 448 * sizeof(uint8_t));
+            memset(allocator.map.bits, 1, 448 * sizeof(uint8_t));
 
-            allocator->bucket.large = private_address(allocator->bucket.large, 256 * sizeof(bucket_t), PROT_WRITE | PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
-            res = madvise(allocator->bucket.large, 256 * sizeof(bucket_t), MADV_SEQUENTIAL | MADV_MERGEABLE);
+            allocator.bucket.large = private_address(allocator.bucket.large, 256 * sizeof(bucket_t), PROT_WRITE | PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+            res = madvise(allocator.bucket.large, 256 * sizeof(bucket_t), MADV_SEQUENTIAL | MADV_MERGEABLE);
             if (res == -1) DBG("%d", res);
            
         #else 
-            allocator->map.bits = private_address(allocator->map.bits, 192 * sizeof(bitmap_t), PROT_WRITE | PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
-            memset(allocator->map.bits, 1, 192 * sizeof(uint8_t));
-            res = madvise(allocator->map.bits, 192 * sizeof(uint8_t), MADV_SEQUENTIAL | MADV_MERGEABLE);
+            allocator.bits = private_address(allocator.bits, 192 * sizeof(uint8_t), PROT_WRITE | PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+            memset(allocator.bits, 1, 192 * sizeof(uint8_t));
+            res = madvise(allocator.bits, 192 * sizeof(uint8_t), MADV_SEQUENTIAL | MADV_MERGEABLE);
             if (res == -1) DBG("%d", res);
         #endif
 
-        allocator->bucket.small = private_address(allocator->bucket.small, 64 * sizeof(bucket_t), PROT_WRITE | PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
-        res = madvise(allocator->bucket.small, 64 * sizeof(bucket_t), MADV_SEQUENTIAL | MADV_MERGEABLE);
+        allocator.bucket.small = private_address(allocator.bucket.small, 64 * sizeof(bucket_t), PROT_WRITE | PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+        res = madvise(allocator.bucket.small, 64 * sizeof(bucket_t), MADV_SEQUENTIAL | MADV_MERGEABLE);
         if (res == -1) DBG("%d", res);
 
-        allocator->bucket.medium = private_address(allocator->bucket.medium, 128 * sizeof(bucket_t), PROT_WRITE | PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
-        res = madvise(allocator->bucket.medium, 128 * sizeof(bucket_t), MADV_SEQUENTIAL | MADV_MERGEABLE);
+        allocator.bucket.medium = private_address(allocator.bucket.medium, 128 * sizeof(bucket_t), PROT_WRITE | PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+        res = madvise(allocator.bucket.medium, 128 * sizeof(bucket_t), MADV_SEQUENTIAL | MADV_MERGEABLE);
         if (res == -1) DBG("%d", res);
         
-        allocator->pool = private_address(allocator->pool, ALLOC_THREAD_POOL_SIZE * sizeof(threads_t), PROT_WRITE | PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-        res = madvise(allocator->pool, ALLOC_THREAD_POOL_SIZE * sizeof(threads_t), MADV_SEQUENTIAL | MADV_MERGEABLE);
+        allocator.pool = private_address(allocator.pool, ALLOC_THREAD_POOL_SIZE * sizeof(threads_t), PROT_WRITE | PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        res = madvise(allocator.pool, ALLOC_THREAD_POOL_SIZE * sizeof(threads_t), MADV_SEQUENTIAL | MADV_MERGEABLE);
         if (res == -1) DBG("%d", res);
         
         thread_pool_ctor_range(ALLOC_THREAD_POOL_SIZE - 1);
-        threads_t* thread = &allocator->pool[ALLOC_THREAD_POOL_SIZE - 1];
+        threads_t* thread = &allocator.pool[ALLOC_THREAD_POOL_SIZE - 1];
         thread->args->visit = "internal_allocator_thread_pool";
         size_t next = 0;
 
         thread->args->arr = (void**)next;
         thread = create_thread_attr(thread, 0x01);
         thread = create_thread(thread, 0x01, thread_arguments);
-        allocator->map.n_bytes = sizeof(allocator->map.bits);
+        allocator.n_bytes = sizeof(allocator.bits);
     }
 
-    allocator->arena = init_arena_t();
-    if (!allocator->arena) {
+    allocator.arena = init_arena_t();
+    if (!allocator.arena) {
         fprintf(stderr, "ERROR: Failed to init arena\n");
-        munmap_address(allocator);
-        allocator = NULL;
+        munmap_address(allocator.arena);
         return;
     }
 }
@@ -419,7 +463,7 @@ FORCE_INLINE void* allocate(size_t bytes) {
     int idx = -1; 
     int res = 0;
 
-    threads_t* thread = &allocator->pool[ALLOC_THREAD_POOL_SIZE - 1];
+    threads_t* thread = &allocator.pool[ALLOC_THREAD_POOL_SIZE - 1];
     bucket_t* slot = (bucket_t*)alloc_find_free_slot(bytes);
     
     
@@ -449,21 +493,21 @@ FORCE_INLINE void* allocate(size_t bytes) {
     }
 
     if (slot) {
-        if (!slot->arena && allocator->arena->curr != ARENA_SIZE) {
-            slot->arena = allocator->arena;
+        if (!slot->arena && allocator.arena->curr != ARENA_SIZE) {
+            slot->arena = allocator.arena;
             #if (DEFAULT_ALIGNMENT > EMBEDDED_SYSTEMS) 
-                slot->entries.bytes = private_address(slot->entries.bytes, 448 * sizeof(uint8_t), PROT_WRITE | PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
-                slot->entries.inuse = private_address(slot->entries.inuse, 448 * sizeof(uint8_t), PROT_WRITE | PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
-                res = madvise(slot->entries.bytes, 448 * sizeof(uint8_t), MADV_SEQUENTIAL | MADV_MERGEABLE | MADV_DONTNEED);
+                slot->entries.bytes = private_address(slot->bytes, 448 * sizeof(uint8_t), PROT_WRITE | PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+                slot->entries.inuse = private_address(slot->inuse, 448 * sizeof(uint8_t), PROT_WRITE | PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+                res = madvise(slot->bytes, 448 * sizeof(uint8_t), MADV_SEQUENTIAL | MADV_MERGEABLE | MADV_DONTNEED);
                 if (res == -1) DBG("%d", res);
-                res = madvise(slot->entries.inuse, 448 * sizeof(uint8_t), MADV_SEQUENTIAL | MADV_MERGEABLE | MADV_DONTNEED);
+                res = madvise(slot->inuse, 448 * sizeof(uint8_t), MADV_SEQUENTIAL | MADV_MERGEABLE | MADV_DONTNEED);
                 if (res == -1) DBG("%d", res);
             #else
-                slot->entries.bytes = private_address(slot->entries.bytes, 192 * sizeof(uint8_t), PROT_WRITE | PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
-                slot->entries.inuse = private_address(slot->entries.inuse, 192 * sizeof(uint8_t), PROT_WRITE | PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
-                res = madvise(slot->entries.bytes, 192 * sizeof(uint8_t), MADV_SEQUENTIAL | MADV_MERGEABLE | MADV_DONTNEED);
+                slot->bytes = private_address(slot->bytes, 192 * sizeof(uint8_t), PROT_WRITE | PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+                slot->inuse = private_address(slot->inuse, 192 * sizeof(uint8_t), PROT_WRITE | PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+                res = madvise(slot->bytes, 192 * sizeof(uint8_t), MADV_SEQUENTIAL | MADV_MERGEABLE | MADV_DONTNEED);
                 if (res == -1) DBG("%d", res);
-                res = madvise(slot->entries.inuse, 192 * sizeof(uint8_t), MADV_SEQUENTIAL | MADV_MERGEABLE | MADV_DONTNEED);
+                res = madvise(slot->inuse, 192 * sizeof(uint8_t), MADV_SEQUENTIAL | MADV_MERGEABLE | MADV_DONTNEED);
                 if (res == -1) DBG("%d", res);
             #endif
         }
@@ -495,25 +539,25 @@ FORCE_INLINE void* allocate(size_t bytes) {
                         memset(address, 0, bytes);
                         return address;
                     }
-                    idx = bitmap_find_free(allocator->map, LARGE_BIT_START, LARGE_BIT_END);
+                    idx = bitmap_find_free(allocator.map, LARGE_BIT_START, LARGE_BIT_END);
                 #endif
             }
 
-            if (allocator->arena->flag != 0x01) {
-                allocator->arena = push(allocator->arena, bytes);
-                if (allocator->arena->flag == 0x01) { 
-                    allocator->map.bits[(idx) / CHAR_BIT] &= ~(1U << ((idx) % CHAR_BIT));
+            if (allocator.arena->flag != 0x01) {
+                allocator.arena = push(allocator.arena, bytes);
+                if (allocator.arena->flag == 0x01) { 
+                    allocator.bits[(idx) / CHAR_BIT] &= ~(1U << ((idx) % CHAR_BIT));
                     bucket_sync_flag(slot);
-                    arena_t* full = allocator->arena;
-                    allocator->arena = NULL;
+                    arena_t* full = allocator.arena;
+                    allocator.arena = NULL;
                     alloc_init();
-                    allocator->arena->next = full; 
+                    allocator.arena->next = full; 
                     return allocate(bytes);
                 }
 
-                address = allocator->arena->res;
-                size_t offset = (uintptr_t)address - (uintptr_t)allocator->arena->chunk;
-                slot->entries.bytes[offset] = bytes;
+                address = allocator.arena->res;
+                size_t offset = (uintptr_t)address - (uintptr_t)allocator.arena->chunk;
+                slot->bytes[offset] = bytes;
                 memset(address, 0, bytes);
                 return address;
             }
@@ -541,9 +585,9 @@ FORCE_INLINE void* allocate(size_t bytes) {
                     It could be the double end stack or a queue. (Hard) 
                 2. We ditch the arena idea and use a different memory structure that is more flexible than the arena. (Medium)   
 */
-//[[gnu::hot]]
+[[gnu::hot]]
 FORCE_INLINE void deallocate(void* ptr) {
-    if (!ptr || !allocator) return;
+    if (!ptr || !allocator.bits) return;
 
     bucket_t* slot = NULL;
     slot = find_slot(ptr);
@@ -567,7 +611,7 @@ FORCE_INLINE void deallocate(void* ptr) {
             thread = create_thread(thread, 0x01, thread_arguments(thread->args));
         }
     } else slot->offset = slot->offset + offset;
-    size_t bytes = slot->entries.bytes[offset];
+    size_t bytes = slot->bytes[offset];
 
     if (!slot->ua) slot->ua = ptr;
     else push_to_bucket(slot, offset);
@@ -577,56 +621,19 @@ FORCE_INLINE void deallocate(void* ptr) {
 }
 
 [[gnu::cold]]
-FORCE_INLINE void clear_buckets() {
-    size_t small = 0;
-    size_t medium = 0;
-    while (small < 64) {
-        arena_t* arena = allocator->bucket.small[small].arena;
-        while (arena->next) {
-            munmap_address(arena);
-            munmap_address(arena->chunk);
-            arena = arena->next;
-        }
-        small = small + 1;
-    }
-    while (medium < 128) {
-        arena_t* arena = allocator->bucket.medium[medium].arena;
-        while (arena->next) {
-            munmap_address(arena);
-            munmap_address(arena->chunk);
-            arena = arena->next;
-        }
-        medium = medium + 1;
-    }
-    #if DEFAULT_ALIGNMENT > EMBEDDED_SYSTEMS
-        size_t large = 0;
-        while (large < 256) {
-            arena_t* arena = allocator->bucket.large[large].arena;
-            while (arena->next) {
-                munmap_address(arena);
-                munmap_address(arena->chunk);
-                arena = arena->next;
-            }
-            large = large + 1;
-        }
-    #endif
-}
-
-[[gnu::cold]]
 void clear_allocator() {
-    for (size_t i = 0; ALLOC_THREAD_POOL_SIZE; i++) clean_threads(&allocator->pool[i]);
+    for (size_t i = 0; ALLOC_THREAD_POOL_SIZE; i++) clean_threads(&allocator.pool[i]);
     clear_buckets();
-    munmap_address(allocator->arena);
-    munmap_address(allocator->arena->chunk);
-    munmap_address(allocator);
+    munmap_address(allocator.arena);
+    munmap_address(allocator.arena->chunk);
 }
 
 void init_allocator_t() {
-    if (!allocator)  alloc_init();
+    if (!allocator.bits)  alloc_init();
 
-    if (!allocator->allocate && !allocator->deallocate) {
-        allocator->allocate   = allocate;
-        allocator->deallocate = deallocate;
+    if (!allocator.allocate && !allocator.deallocate) {
+        allocator.allocate   = allocate;
+        allocator.deallocate = deallocate;
     }
 }
 

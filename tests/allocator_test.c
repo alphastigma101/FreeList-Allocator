@@ -28,6 +28,18 @@ typedef struct {
     size_t bytes;
 } alloc_entry_t;
 
+typedef struct FORCE_COMPILER_ALIGNED(DEFAULT_ALIGNMENT) bucket_t {
+    uint8_t             flag;
+    uint8_t             _pad[7];
+    arena_t*            arena;       
+    void*               ua;
+    uintptr_t           offset;
+    struct  {
+        uint8_t*            bytes;
+        uint8_t*            inuse; 
+    };
+} bucket_t;
+
 int main(void) {
 
     printf("\n");
@@ -47,26 +59,26 @@ int main(void) {
     size_t len = 0;
  
     for (; len < 3; len++) {
-        s_stack[len].ptr   = allocator->allocate(sizeof(int));
+        s_stack[len].ptr   = allocator.allocate(sizeof(int));
         s_stack[len].bytes = sizeof(int);
     }
 
     for (; len < 86; len++) {
         size_t bytes = (rand() % 64) + 1;
-        s_stack[len].ptr = allocator->allocate(bytes);
-        if (allocator->bucket.small[0].flag == 0x01) {
+        s_stack[len].ptr = allocator.allocate(bytes);
+        if (allocator.bucket.small[0].flag == 0x01) {
             len = len - 1;
             break;
         }
         s_stack[len].bytes = bytes;
     }
     size_t e_one = len;
-    assert(allocator->bucket.small[0].flag == 0x01 && "small[0] arena should be full");
+    assert(allocator.bucket.small[0].flag == 0x01 && "small[0] arena should be full");
 
     for (; len < 170; len++) {
         size_t bytes       = (rand() % 64) + 1;
-        s_stack[len].ptr = allocator->allocate(bytes);
-        if (allocator->bucket.small[1].flag == 0x01) {
+        s_stack[len].ptr = allocator.allocate(bytes);
+        if (allocator.bucket.small[1].flag == 0x01) {
             len = len - 1;
             break;
         }
@@ -74,12 +86,12 @@ int main(void) {
         //printf("Random byte value for small[1] is: %zu  Offset is: %zu\n", bytes, offset);
     }
     size_t e_two = len;
-    assert(allocator->bucket.small[1].flag == 0x01 && "small[1] arena should be full");
+    assert(allocator.bucket.small[1].flag == 0x01 && "small[1] arena should be full");
 
     for (; len < 340; len++) {
         size_t bytes       = (rand() % 64) + 1;
-        s_stack[len].ptr   = allocator->allocate(bytes);
-        if (allocator->bucket.small[2].flag == 0x01) {
+        s_stack[len].ptr   = allocator.allocate(bytes);
+        if (allocator.bucket.small[2].flag == 0x01) {
             len = len - 1;
             break;
         }
@@ -87,7 +99,7 @@ int main(void) {
         //printf("Random byte value for small[2] is: %zu  Offset is: %zu\n", bytes, offset);
     }
     size_t e_three = len;
-    assert(allocator->bucket.small[2].flag == 0x01 && "small[2] arena should be full");
+    assert(allocator.bucket.small[2].flag == 0x01 && "small[2] arena should be full");
         
     printf(SEPARATOR);
     printf(TEST_HEADER "  RESULT: " ANSI_GREEN "PASSED ✔\n" ANSI_RESET);
@@ -108,11 +120,11 @@ int main(void) {
     *two = val_2;
     *three = val_3;
 
-    allocator->deallocate(one);
+    allocator.deallocate(one);
     assert(*one == -1 && "This should now be a invalid memory address\n");
-    allocator->deallocate(two);
+    allocator.deallocate(two);
     assert(*two == -1 && "This should now be a invalid memory address\n");
-    allocator->deallocate(three);
+    allocator.deallocate(three);
     assert(*three == -1 && "This should now be a invalid memory address\n");
     printf(SEPARATOR);
     printf(TEST_HEADER "  RESULT: " ANSI_GREEN "PASSED ✔\n" ANSI_RESET);
@@ -121,11 +133,11 @@ int main(void) {
     printf(SEPARATOR);
     printf(TEST_INFO "3. Re-using addresses from small buckets \n");
     
-    one = allocator->allocate(sizeof(int));
+    one = allocator.allocate(sizeof(int));
     assert(one   == s_stack[0].ptr && "Reusing memory address for one");
-    two = allocator->allocate(sizeof(int));
+    two = allocator.allocate(sizeof(int));
     assert(two   == s_stack[1].ptr && "Reusing memory address for two");
-    three = allocator->allocate(sizeof(int));
+    three = allocator.allocate(sizeof(int));
     assert(three == s_stack[2].ptr && "Reusing memory address for three");
     printf(SEPARATOR);
     printf(TEST_HEADER "  RESULT: " ANSI_GREEN "PASSED ✔\n" ANSI_RESET);
@@ -136,45 +148,45 @@ int main(void) {
     for (size_t i = 0; i < e_one; i++) {
         printf("[small[0]] s_one: %zu  ptr: %p  bytes: %zu  curr: %zu  prev: %zu\n",
             i, s_stack[i].ptr, s_stack[i].bytes,
-            allocator->bucket.small[0].arena->curr,
-            allocator->bucket.small[0].arena->prev);
-        allocator->deallocate(s_stack[i].ptr);
+            allocator.bucket.small[0].arena->curr,
+            allocator.bucket.small[0].arena->prev);
+        allocator.deallocate(s_stack[i].ptr);
         printf("[small[0]] after dealloc — curr: %zu  prev: %zu\n",
-            allocator->bucket.small[0].arena->curr,
-            allocator->bucket.small[0].arena->prev);
+            allocator.bucket.small[0].arena->curr,
+            allocator.bucket.small[0].arena->prev);
     }
-    assert(allocator->bucket.small[0].arena->curr == 0);
+    assert(allocator.bucket.small[0].arena->curr == 0);
 
     for (size_t i = 0; i < e_two; i++) {
         printf("[small[1]] s_two: %zu  ptr: %p  bytes: %zu  curr: %zu  prev: %zu\n",
             i, s_stack[i].ptr, s_stack[i].bytes,
-            allocator->bucket.small[1].arena->curr,
-            allocator->bucket.small[1].arena->prev);
-        allocator->deallocate(s_stack[i].ptr);
+            allocator.bucket.small[1].arena->curr,
+            allocator.bucket.small[1].arena->prev);
+        allocator.deallocate(s_stack[i].ptr);
         printf("[small[1]] after dealloc — curr: %zu  prev: %zu\n",
-            allocator->bucket.small[1].arena->curr,
-            allocator->bucket.small[1].arena->prev);
+            allocator.bucket.small[1].arena->curr,
+            allocator.bucket.small[1].arena->prev);
     }
-    
+
     sleep(100000);
-    assert(allocator->bucket.small[1].arena->curr == 0);
+    assert(allocator.bucket.small[1].arena->curr == 0);
 
     for (size_t i = 0; i < e_three; i++) {
         printf("[small[2]] s_three: %zu  ptr: %p  bytes: %zu  curr: %zu  prev: %zu\n",
             i, s_stack[i].ptr, s_stack[i].bytes,
-            allocator->bucket.small[2].arena->curr,
-            allocator->bucket.small[2].arena->prev);
-        allocator->deallocate(s_stack[i].ptr);
+            allocator.bucket.small[2].arena->curr,
+            allocator.bucket.small[2].arena->prev);
+        allocator.deallocate(s_stack[i].ptr);
         printf("[small[2]] after dealloc — curr: %zu  prev: %zu\n",
-            allocator->bucket.small[2].arena->curr,
-            allocator->bucket.small[2].arena->prev);
+            allocator.bucket.small[2].arena->curr,
+            allocator.bucket.small[2].arena->prev);
     }
 
-    assert(allocator->bucket.small[2].arena->curr == 0);
+    assert(allocator.bucket.small[2].arena->curr == 0);
 
-    assert(allocator->bucket.small[0].flag == 0x0 && "All memory address have been pushed onto allocator->bucket.small[0]\n");
-    assert(allocator->bucket.small[1].flag == 0x0 && "All memory address have been pushed onto allocator->bucket.small[1]\n");
-    assert(allocator->bucket.small[2].flag == 0x0 && "All memory address have been pushed onto allocator->bucket.small[2]\n");
+    assert(allocator.bucket.small[0].flag == 0x0 && "All memory address have been pushed onto allocator->bucket.small[0]\n");
+    assert(allocator.bucket.small[1].flag == 0x0 && "All memory address have been pushed onto allocator->bucket.small[1]\n");
+    assert(allocator.bucket.small[2].flag == 0x0 && "All memory address have been pushed onto allocator->bucket.small[2]\n");
     printf(SEPARATOR);
     printf(TEST_HEADER "  RESULT: " ANSI_GREEN "PASSED ✔\n" ANSI_RESET);
     printf(TEST_HEADER "  ══════════════════════════════════════════════\n\n" ANSI_RESET);

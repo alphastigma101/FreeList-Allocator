@@ -2,6 +2,7 @@ CC = clang-19
 CFLAGS = -Wall -Wextra -g -O0 -fno-omit-frame-pointer
 SANITIZERS = -fsanitize=address,undefined,leak
 LDFLAGS = $(SANITIZERS) -pthread
+PRODUCTION ?= 0
 
 THREAD_SRCS  = tests/multithreading_test.c threads/pool.c
 THREAD_OBJS  = $(THREAD_SRCS:.c=.o)
@@ -16,17 +17,42 @@ TARGETS = test_multithreading test_arena test_allocator
 
 all: $(TARGETS)
 
+# Update the executable rules to handle PRODUCTION mode
 test_multithreading: $(THREAD_OBJS)
-	$(CC) $(LDFLAGS) -o $@ $^
-	
+	@if [ $(PRODUCTION) -eq 1 ]; then \
+		echo "🚀 Linking production test_multithreading"; \
+		$(CC) -O2 -pthread -o $@ $^; \
+	else \
+		echo "🔧 Linking debug test_multithreading"; \
+		$(CC) $(LDFLAGS) -o $@ $^; \
+	fi
+
 test_arena: $(ARENA_OBJS)
-	$(CC) $(LDFLAGS) -o $@ $^
-	
+	@if [ $(PRODUCTION) -eq 1 ]; then \
+		echo "🚀 Linking production test_arena"; \
+		$(CC) -O2 -pthread -o $@ $^; \
+	else \
+		echo "🔧 Linking debug test_arena"; \
+		$(CC) $(LDFLAGS) -o $@ $^; \
+	fi
+
 test_allocator: $(ALLOCATOR_OBJS)
-	$(CC) $(LDFLAGS) -o $@ $^
+	@if [ $(PRODUCTION) -eq 1 ]; then \
+		echo "🚀 Linking production test_allocator"; \
+		$(CC) -O2 -pthread -o $@ $^; \
+	else \
+		echo "🔧 Linking debug test_allocator"; \
+		$(CC) $(LDFLAGS) -o $@ $^; \
+	fi
 
 %.o: %.c
-	$(CC) $(CFLAGS) $(SANITIZERS) -c $< -o $@
+	@if [ $(PRODUCTION) -eq 1 ]; then \
+		echo "🚀 Production build: $<"; \
+		$(CC) -O2 -pthread -c $< -o $@; \
+	else \
+		echo "🔧 Debug build: $<"; \
+		$(CC) $(CFLAGS) $(SANITIZERS) -c $< -o $@; \
+	fi
 
 clean:
 	rm -f $(TARGETS) $(PARSER_OBJS) $(THREAD_OBJS) $(ARENA_OBJS) $(ALLOCATOR_OBJS)
