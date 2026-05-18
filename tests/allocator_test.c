@@ -7,6 +7,7 @@
 #include <stdalign.h>
 #include <string.h>
 #include <sys/types.h>
+#include <unistd.h>
 
 #define ANSI_RESET   "\033[0m"
 #define ANSI_BOLD    "\033[1m"
@@ -154,7 +155,8 @@ int main(void) {
             allocator->bucket.small[1].arena->curr,
             allocator->bucket.small[1].arena->prev);
     }
-
+    
+    sleep(100000);
     assert(allocator->bucket.small[1].arena->curr == 0);
 
     for (size_t i = 0; i < e_three; i++) {

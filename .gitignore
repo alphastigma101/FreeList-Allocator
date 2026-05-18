@@ -1,3 +1,6 @@
 
 Notes.txt
-
+callgrind.out.*
+asm_output/
+inline.txt
+macros.txt
