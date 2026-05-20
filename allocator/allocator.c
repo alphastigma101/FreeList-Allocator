@@ -6,16 +6,16 @@
 #include <stdio.h>
 #include <sys/types.h>
 
-typedef struct FORCE_COMPILER_ALIGNED(DEFAULT_ALIGNMENT) bucket_t {
+typedef struct bucket_t {
+
     uint8_t             flag;
     uint8_t             _pad[7];
     arena_t*            arena;       
     void*               ua;
     uintptr_t           offset;
-    struct  {
-        uint8_t*            bytes;
-        uint8_t*            inuse; 
-    };
+    uint8_t*            bytes;
+    uint8_t*            inuse; 
+
 } bucket_t;
 
 allocator_t allocator = {0};
@@ -181,11 +181,11 @@ FORCE_INLINE void bucket_mark_free(bucket_t* b, int start, int end, int abs_idx)
 */
 FORCE_INLINE uintptr_t alloc_find_free_slot(size_t sz) {
     int idx = -1;
-    if (sz <= BUCKET_SMALL_MAX) {
+    if (sz <= BUCKET_SMALL_CAP) {
         idx = bitmap_find_free(SMALL_BIT_START, SMALL_BIT_END - 1);
         if (idx != -1) return (uintptr_t)&allocator + offsetof(allocator_t, bucket.small) + (idx - SMALL_BIT_START) * sizeof(bucket_t);
     }
-    else if (sz <= BUCKET_MEDIUM_MAX) {
+    else if (sz <= BUCKET_MEDIUM_CAP) {
         idx = bitmap_find_free(MEDIUM_BIT_START, MEDIUM_BIT_END - 1);
         if (idx != -1) return (uintptr_t)&allocator + offsetof(allocator_t, bucket.medium) + (idx - MEDIUM_BIT_START) * sizeof(bucket_t);
     }
@@ -408,8 +408,8 @@ FORCE_INLINE void alloc_init(void) {
             if (res == -1) DBG("%d", res);
             memset(allocator.map.bits, 1, 448 * sizeof(uint8_t));
 
-            allocator.bucket.large = private_address(allocator.bucket.large, 256 * sizeof(bucket_t), PROT_WRITE | PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
-            res = madvise(allocator.bucket.large, 256 * sizeof(bucket_t), MADV_SEQUENTIAL | MADV_MERGEABLE);
+            allocator.bucket.large = private_address(allocator.bucket.large, BUCKET_LARGE_CAP * sizeof(bucket_t), PROT_WRITE | PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+            res = madvise(allocator.bucket.large, BUCKET_LARGE_CAP * sizeof(bucket_t), MADV_SEQUENTIAL | MADV_MERGEABLE);
             if (res == -1) DBG("%d", res);
            
         #else 
@@ -419,12 +419,12 @@ FORCE_INLINE void alloc_init(void) {
             if (res == -1) DBG("%d", res);
         #endif
 
-        allocator.bucket.small = private_address(allocator.bucket.small, 64 * sizeof(bucket_t), PROT_WRITE | PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
-        res = madvise(allocator.bucket.small, 64 * sizeof(bucket_t), MADV_SEQUENTIAL | MADV_MERGEABLE);
+        allocator.bucket.small = private_address(allocator.bucket.small, BUCKET_SMALL_CAP * sizeof(bucket_t), PROT_WRITE | PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+        res = madvise(allocator.bucket.small, BUCKET_SMALL_CAP * sizeof(bucket_t), MADV_SEQUENTIAL | MADV_MERGEABLE);
         if (res == -1) DBG("%d", res);
 
-        allocator.bucket.medium = private_address(allocator.bucket.medium, 128 * sizeof(bucket_t), PROT_WRITE | PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
-        res = madvise(allocator.bucket.medium, 128 * sizeof(bucket_t), MADV_SEQUENTIAL | MADV_MERGEABLE);
+        allocator.bucket.medium = private_address(allocator.bucket.medium, BUCKET_MEDIUM_CAP * sizeof(bucket_t), PROT_WRITE | PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+        res = madvise(allocator.bucket.medium, BUCKET_MEDIUM_CAP * sizeof(bucket_t), MADV_SEQUENTIAL | MADV_MERGEABLE);
         if (res == -1) DBG("%d", res);
         
         allocator.pool = private_address(allocator.pool, ALLOC_THREAD_POOL_SIZE * sizeof(threads_t), PROT_WRITE | PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);

@@ -5,7 +5,8 @@
 
 #define ARENA_SIZE 4096
 
-typedef struct FORCE_COMPILER_ALIGNED(DEFAULT_ALIGNMENT) arena_t {
+typedef struct arena_t {
+
     uint8_t             flag;
     uint8_t             _pad[7];
     struct              arena_t* next;  
@@ -14,6 +15,7 @@ typedef struct FORCE_COMPILER_ALIGNED(DEFAULT_ALIGNMENT) arena_t {
     size_t              curr;
     size_t              prev;
     void*               res;
+    
 } arena_t;
 
 extern arena_t* init_arena_t();

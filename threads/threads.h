@@ -30,13 +30,16 @@
     #define DEFAULT_ALIGNMENT EMBEDDED_SYSTEMS
 #endif
 
-typedef struct FORCE_COMPILER_ALIGNED(DEFAULT_ALIGNMENT) args_t {
+typedef struct args_t {
+
     void**                     arr; 
     char*                      visit;
     size_t                     size;
+    
 } args_t;
 
-typedef struct FORCE_COMPILER_ALIGNED(DEFAULT_ALIGNMENT) threads_t {
+typedef struct threads_t {
+
     uint8_t                 flag;
     uint8_t                 _pad[3];
     pthread_mutexattr_t     mutex_attr; 
@@ -44,7 +47,8 @@ typedef struct FORCE_COMPILER_ALIGNED(DEFAULT_ALIGNMENT) threads_t {
     pthread_attr_t*         thread_attr;
     pthread_mutex_t*        mutex;                                     
     void*                   addr;     
-    args_t*                 args; 
+    args_t*                 args;
+
 } threads_t;
 
 extern uintptr_t alignment(uintptr_t ptr, size_t align);
