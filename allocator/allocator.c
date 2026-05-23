@@ -180,18 +180,20 @@ FORCE_INLINE void bucket_mark_free(bucket_t* b, int start, int end, int abs_idx)
 */
 FORCE_INLINE uintptr_t alloc_find_free_slot(size_t sz) {
     int idx = -1;
-    if (sz <= BUCKET_SMALL_CAP) {
+    if (sz < BUCKET_SMALL_CAP) {
         idx = bitmap_find_free(SMALL_BIT_START, SMALL_BIT_END - 1);
         if (idx != -1) return (uintptr_t)allocator.bucket.small + (idx - SMALL_BIT_START) * sizeof(bucket_t);
     }
-    else if (sz <= BUCKET_MEDIUM_CAP) {
+    else if (sz < BUCKET_MEDIUM_CAP) {
         idx = bitmap_find_free(MEDIUM_BIT_START, MEDIUM_BIT_END - 1);
         if (idx != -1) return (uintptr_t)allocator.bucket.medium + (idx - MEDIUM_BIT_START) * sizeof(bucket_t);
     }
-    #if (DEFAULT_ALIGNMENT > EMBEDDED_SYSTEMS)
-        idx = bitmap_find_free(LARGE_BIT_START, LARGE_BIT_END - 1);
-        if (idx != -1) return (uintptr_t)allocator.bucket.large + (idx - LARGE_BIT_START) * sizeof(bucket_t);
-    #endif
+    else {
+        #if (DEFAULT_ALIGNMENT > EMBEDDED_SYSTEMS)
+            idx = bitmap_find_free(LARGE_BIT_START, LARGE_BIT_END - 1);
+            if (idx != -1) return (uintptr_t)allocator.bucket.large + (idx - LARGE_BIT_START) * sizeof(bucket_t);
+        #endif
+    }
     return -1;
 }
 
@@ -205,9 +207,9 @@ FORCE_INLINE uintptr_t alloc_find_free_slot(size_t sz) {
 FORCE_INLINE bucket_t* find_slot(void* ptr) {
     int abs_index = -1;
     bucket_t* b = NULL;
-    uintptr_t mask = ~((uintptr_t)&allocator + offsetof(allocator_t, bucket.small) + offsetof(bucket_t, arena) + offsetof(arena_t, chunk) - 1); 
-    b = ((uintptr_t)ptr & mask) >= (uintptr_t)&allocator + offsetof(allocator_t, bucket.small) + offsetof(bucket_t, arena) + offsetof(arena_t, chunk) && 
-            ((uintptr_t)ptr & mask) <= (uintptr_t)&allocator + offsetof(allocator_t, bucket.small) + ((SMALL_BIT_END - 1) - SMALL_BIT_START) * sizeof(bucket_t) + offsetof(bucket_t, arena) + offsetof(arena_t, chunk) ?
+    uintptr_t mask = ~((uintptr_t)allocator.bucket.small + offsetof(bucket_t, arena) + offsetof(arena_t, chunk) - 1); 
+    b = ((uintptr_t)ptr & mask) >= (uintptr_t)allocator.bucket.small + offsetof(bucket_t, arena) + offsetof(arena_t, chunk) && 
+            ((uintptr_t)ptr & mask) <= (uintptr_t)allocator.bucket.small + ((SMALL_BIT_END - 1) - SMALL_BIT_START) * sizeof(bucket_t) + offsetof(bucket_t, arena) + offsetof(arena_t, chunk) ?
             (bucket_t*)((uintptr_t)ptr & (mask - (offsetof(bucket_t, arena) + offsetof(arena_t, chunk)))) : NULL;
     if (b) {
         abs_index = bitmap_find_index(b, SMALL_BIT_START);
@@ -215,9 +217,9 @@ FORCE_INLINE bucket_t* find_slot(void* ptr) {
                 bucket_mark_free(b, SMALL_BIT_START, SMALL_BIT_END - 1, abs_index);
             return b;
     }
-    mask = ~((uintptr_t)&allocator + offsetof(allocator_t, bucket.medium) + offsetof(bucket_t, arena) + offsetof(arena_t, chunk) - 1);
-    b = ((uintptr_t)ptr & mask) >= (uintptr_t)&allocator + offsetof(allocator_t, bucket.medium) + offsetof(bucket_t, arena) + offsetof(arena_t, chunk) && 
-            ((uintptr_t)ptr & mask) <= (uintptr_t)&allocator + offsetof(allocator_t, bucket.medium) + ((MEDIUM_BIT_END - 1) - MEDIUM_BIT_START) * sizeof(bucket_t) + offsetof(bucket_t, arena) + offsetof(arena_t, chunk) ?
+    mask = ~((uintptr_t)allocator.bucket.medium + offsetof(bucket_t, arena) + offsetof(arena_t, chunk) - 1);
+    b = ((uintptr_t)ptr & mask) >= (uintptr_t)allocator.bucket.medium + offsetof(bucket_t, arena) + offsetof(arena_t, chunk) && 
+            ((uintptr_t)ptr & mask) <= (uintptr_t)allocator.bucket.medium + ((MEDIUM_BIT_END - 1) - MEDIUM_BIT_START) * sizeof(bucket_t) + offsetof(bucket_t, arena) + offsetof(arena_t, chunk) ?
             (bucket_t*)((uintptr_t)ptr & (mask - (offsetof(bucket_t, arena) + offsetof(arena_t, chunk)))) : NULL;
     if (b) {
         abs_index = bitmap_find_index(b, MEDIUM_BIT_START);
@@ -227,9 +229,9 @@ FORCE_INLINE bucket_t* find_slot(void* ptr) {
     }
 
     #if (DEFAULT_ALIGNMENT > EMBEDDED_SYSTEMS)
-        mask = ~((uintptr_t)&allocator + offsetof(allocator_t, bucket.large) + offsetof(bucket_t, arena) + offsetof(arena_t, chunk) - 1);
-        b = ((uintptr_t)ptr & mask) >= (uintptr_t)&allocator + offsetof(allocator_t, bucket.large) + offsetof(bucket_t, arena) + offsetof(arena_t, chunk) && 
-            ((uintptr_t)ptr & mask) <= (uintptr_t)&allocator + offsetof(allocator_t, bucket.large) + ((LARGE_BIT_END - 1) - LARGE_BIT_START) * sizeof(bucket_t) + offsetof(bucket_t, arena) + offsetof(arena_t, chunk) ?
+        mask = ~((uintptr_t)allocator.bucket.large + offsetof(bucket_t, arena) + offsetof(arena_t, chunk) - 1);
+        b = ((uintptr_t)ptr & mask) >= (uintptr_t)allocator.bucket.large + offsetof(bucket_t, arena) + offsetof(arena_t, chunk) && 
+            ((uintptr_t)ptr & mask) <= (uintptr_t)allocator.bucket.large + ((LARGE_BIT_END - 1) - LARGE_BIT_START) * sizeof(bucket_t) + offsetof(bucket_t, arena) + offsetof(arena_t, chunk) ?
             (bucket_t*)((uintptr_t)ptr & (mask - (offsetof(bucket_t, arena) + offsetof(arena_t, chunk)))) : NULL;
         if (b) {
             abs_index = bitmap_find_index(b, LARGE_BIT_START);
@@ -335,7 +337,6 @@ FORCE_INLINE void* arena_offset(bucket_t* slot) {
     }
     return NULL;
 }
-
 
 [[gnu::hot]]
 FORCE_INLINE void thread_pool_ctor(size_t next) {
