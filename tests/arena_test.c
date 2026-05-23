@@ -20,26 +20,6 @@
 #define TEST_HEADER  ANSI_BOLD ANSI_MAGENTA
 #define SEPARATOR    ANSI_CYAN "  ────────────────────────────────────────────\n" ANSI_RESET
 
-arena_t* init_arena_t() {
-    arena_t* arena;
-    arena = aligned_alloc(alignof(arena_t), sizeof(arena_t));
-    if (!arena) {
-        printf("ERROR 10 IN ARENA.C, FAILED TO ALLOCATE MEMORY FOR ARENA!\n");
-        return (void*)0;
-    }
-    memset(arena, 0, sizeof(arena_t));
-    arena->chunk = shared_address(arena->chunk, 4096, PROT_WRITE | PROT_READ, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
-    if (!arena->chunk) {
-        printf("ERROR 15 IN ARENA.C, FAILED TO ALLOCATE A CHUNK OF MEMORY!\n");
-        free(arena);
-        return (void*)0;
-    }
-    memset(arena->chunk, 0, 4096);
-    arena->size = 4096;
-    arena->curr = 1;
-    return arena;
-}
-
 
 int main(void) {
     

@@ -18,7 +18,6 @@
 #include "../arena/arena.h"
 #include <limits.h>
 #include <stdalign.h>
-#include <stddef.h>
 
 #define SMALL_BIT_START 0
 #define SMALL_BIT_END 64

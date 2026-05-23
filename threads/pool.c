@@ -15,7 +15,6 @@
  * https://busybox.net
 */
 #include "threads.h"
-#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -23,33 +22,6 @@
 #include <errno.h>
 #include <sys/mman.h>
 
-/**
-	@description: Align an address to the nearest power of two as long as align sizeof(prt) >= alignof(align) holds true.
-		If align is sizeof(prt) < alignof(align), there is not enough space.
-	@param: ptr: A pointer converted into unintptr_t to hold the memory address of void pointer 
-	@param: align can be either a power of two or not. 
-	@return: Return the proper alignment of the memory address  
-*/
-uintptr_t alignment(uintptr_t ptr, size_t align) {
-    if (align == 0) return ptr;
-    if ((align & (align - 1)) != 0) {
-        uintptr_t modulo = ptr % align;
-        if (modulo != 0) ptr += align - modulo;
-        return ptr;
-    }
-    uintptr_t modulo = ptr & (align - 1);
-    if (modulo != 0) ptr += align - modulo;
-    return ptr;
-}
-
-[[gnu::hot]]
-args_t* init_args_t() {
-    args_t* args = NULL;
-    args = aligned_alloc(alignof(args_t), sizeof(args_t));
-    if (!args) return NULL;
-    memset(args, 0, sizeof(args_t));
-    return args;
-}
 
 /**
  * @brief Initializes a thread
@@ -70,12 +42,9 @@ args_t* init_args_t() {
 [[gnu::hot]]
 threads_t* init_threads_t() {
     threads_t* t = aligned_alloc(alignof(threads_t), sizeof(threads_t));
-    t->args = t->args == NULL ? init_args_t() : t->args;
     if (!t) return NULL;
-    else if (!t->args) return NULL;
     memset(t, 0, sizeof(threads_t));
 
-    FORCE_RUNTIME_ALIGNMENT(&t->mutex_attr);
     if (pthread_mutexattr_init(&t->mutex_attr) != 0) {
         printf("ERROR 38: FAILED TO INIT MUTEX ATTRIBUTE\n");
         free(t);
@@ -85,19 +54,18 @@ threads_t* init_threads_t() {
     pthread_mutex_t mutex = {0};
     if (pthread_mutex_init(&mutex, &t->mutex_attr) != 0) {
         printf("ERROR 44: Failed to set the attribute for shared resources cleaning!\n");
-        pthread_mutex_destroy(&mutex);
+        pthread_mutex_destroy(t->mutex);
         pthread_mutexattr_destroy(&t->mutex_attr);
         free(t);
         return NULL;
     } else t->mutex = &mutex;
-    FORCE_RUNTIME_ALIGNMENT(t->mutex);
 
     pthread_attr_t thread_attr = {0};
     if (pthread_attr_init(&thread_attr) != 0) {
         printf("ERROR 103: FAILED TO INIT THREAD ATTRIBUTES\n");
         return NULL;
     } else t->thread_attr = &thread_attr;
-    FORCE_RUNTIME_ALIGNMENT(t->thread_attr);
+
     t->flag = 0x0;
     return t;
 }
@@ -175,31 +143,54 @@ void munmap_address(void* addr) {
     }
 }
 
-// Can also be used as this: threads_t* thread[0] = (threads_t*)set_thread_attr(thread[0], 0x01, the_subroutine);
-// Meaning that init_threads_t is not needed, but it calls all of these functions on its own.
-threads_t* create_thread_attr(threads_t* tp, const uint8_t mode) {
+FORCE_INLINE threads_t* create_attrs(threads_t* tp, const uint8_t mode) {
     if (mode == 0x01) {
-        int pshared = _SC_THREAD_PROCESS_SHARED;
-        if (pthread_mutexattr_getpshared(&tp->mutex_attr, &pshared) != 0) {
-            if (pthread_mutexattr_setpshared(&tp->mutex_attr, PTHREAD_PROCESS_SHARED) != 0) {
-                printf("ERROR 37: FAILED TO INITIALIZE MUTEX AND ATTRIBUTES\n");
-                free(tp);
-                return NULL;
-            }
+        // Configure the mutex attributes 
+        if (pthread_mutexattr_setpshared(&tp->mutex_attr, PTHREAD_PROCESS_SHARED) != 0) {
+            printf("ERROR 37: FAILED TO INITIALIZE MUTEX AND ATTRIBUTES\n");
+            free(tp);
+            return NULL;
         }
+
+        int pshared = 0;
+        if (pthread_mutexattr_getpshared(&tp->mutex_attr, &pshared) != 0) {
+            printf("ERROR 38: FAILED TO GET MUTEX PSHARED ATTRIBUTE\n");
+            free(tp);
+            return NULL;
+        }
+
+        if (pshared != PTHREAD_PROCESS_SHARED) {
+            printf("ERROR 39: MUTEX PSHARED NOT SET CORRECTLY\n");
+            free(tp);
+            return NULL;
+        }
+
+        // Configure the pthread_attributes here ....
+
+        // Fine tune the stack size for thread.
+        // a stack is allocated dynamically on the heap for the thread, this includes the threads attributes
+        
+        //if (pthread_attr_setstack(tp->thread_attr) != 0) {
+
+        //}
+        //if (pthread_attr_setguardsize(tp->thread_attr, 0) != 0) {
+
+        //}
     }
     else if (mode == 0x02) {
         // Default settings. Meaning that we do not enable shared memory 
         // Have not been tested as of 3/3/26
     }
     return tp;
+
 }
 
 // Portablility for either creating a single thread or using threads_t i.e the threadpool
 threads_t* create_thread(threads_t* tp, const uint8_t mode, const void* func) {
-    if (tp && tp->args) {
-        
-        if (pthread_create(&tp->thread_id, tp->thread_attr, func, tp->args) != 0) {
+    if (tp) {
+        tp = create_attrs(tp, mode);
+        void* res = &tp->args;
+        if (pthread_create(&tp->thread_id, tp->thread_attr, func, res) != 0) {
             pthread_mutex_destroy(tp->mutex);
             pthread_mutexattr_destroy(&tp->mutex_attr);
             pthread_attr_destroy(tp->thread_attr);
@@ -217,16 +208,15 @@ threads_t* create_thread(threads_t* tp, const uint8_t mode, const void* func) {
             }
         }
     }
+
     return tp;
 }
 
 void clean_threads(threads_t* t) {
     if (t) {
-        if (t->mutex) {
-            pthread_mutex_destroy(t->mutex);
-            pthread_mutexattr_destroy(&t->mutex_attr);
-        }
-        if (t->thread_attr) pthread_attr_destroy(t->thread_attr);
+        pthread_mutex_destroy(t->mutex);
+        pthread_mutexattr_destroy(&t->mutex_attr);
+        pthread_attr_destroy(t->thread_attr);
         if (t->thread_id) join_thread(t->thread_id, NULL);
 
         const int res = msync(t, sizeof(threads_t), MS_SYNC);

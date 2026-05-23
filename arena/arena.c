@@ -1,14 +1,51 @@
 #include "arena.h"
-#include <stddef.h>
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
 
-
-void clear_arena_t(arena_t *arena) {
-    arena->curr = 0;
-    arena->prev = 0;
+/**
+	@description: Align an address to the nearest power of two as long as align sizeof(prt) >= alignof(align) holds true.
+		If align is sizeof(prt) < alignof(align), there is not enough space.
+	@param: ptr: A pointer converted into unintptr_t to hold the memory address of void pointer 
+	@param: align can be either a power of two or not. 
+	@return: Return the proper alignment of the memory address  
+*/
+uintptr_t alignment(uintptr_t ptr, size_t align) {
+    if (align == 0) return ptr;
+    if ((align & (align - 1)) != 0) {
+        uintptr_t modulo = ptr % align;
+        if (modulo != 0) ptr += align - modulo;
+        return ptr;
+    }
+    uintptr_t modulo = ptr & (align - 1);
+    if (modulo != 0) ptr += align - modulo;
+    return ptr;
 }
 
+arena_t* init_arena_t() {
+    arena_t* arena = NULL;
+    int res = 0;
+    arena = private_address(arena, sizeof(arena_t), PROT_WRITE | PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    res = madvise(arena, sizeof(arena_t), MADV_MERGEABLE);
+    if (!arena || res == -1) {
+        printf("ERROR 10 IN ARENA.C, FAILED TO ALLOCATE MEMORY FOR ARENA!\n");
+        return NULL;
+    }
+    memset(arena, 0, sizeof(arena_t));
+    arena->chunk = shared_address(arena->chunk, ARENA_SIZE, PROT_WRITE | PROT_READ, MAP_SHARED | MAP_ANONYMOUS , -1, 0);
+    res = madvise(arena->chunk, ARENA_SIZE, MADV_SEQUENTIAL);
+    if (!arena->chunk || res == -1) {
+        printf("ERROR 15 IN ARENA.C, FAILED TO ALLOCATE A CHUNK OF MEMORY!\n");
+        free(arena);
+        return NULL;
+    }
+    memset(arena->chunk, 0, ARENA_SIZE);
+    arena->size = ARENA_SIZE;
+    arena->curr = 1;
+    return arena;
+}
+
+[[gnu::hot]]
 arena_t* push(arena_t* arena, size_t bytes) {
     if (bytes == 0) return arena;
 
@@ -72,3 +109,8 @@ arena_t* pop(arena_t* arena, size_t offset) {
 
 	return (void*)0;
 }*/
+
+void clear_arena_t(arena_t *arena) {
+    arena->curr = 0;
+    arena->prev = 0;
+}

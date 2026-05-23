@@ -52,7 +52,7 @@ static void* traversal(const char* _str, uint8_t* mode) {
     return (void*)0;
 }
 
-void* thread_arguments(args_t *args) {
+void* thread_arguments(args_t* args) {
     switch (args->size) {
         case 1:
             addition(args->arr[0]);
@@ -82,22 +82,20 @@ int main(void) {
         printf(TEST_HEADER "  NUMERICAL VALUE TEST  ·  Thread Pool           \n" ANSI_RESET);
         printf(TEST_HEADER "  ══════════════════════════════════════════════\n" ANSI_RESET);
 
-        int* i = malloc(sizeof(int));
+        int* i = NULL;
+        i = shared_address(i, sizeof(int), PROT_WRITE | PROT_READ, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
         if (!i) {
             printf(TEST_FAIL "ERROR 74: Failed to allocate memory for i\n");
             return 1;
         }
         printf(TEST_INFO "Allocated shared int @ %p\n", (void*)i);
         *i = 0;
-
-        threads[0]->addr = shared_address(i, sizeof(int), PROT_WRITE | PROT_READ, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
-        i = threads[0]->addr;
-        threads[0]->args = aligned_alloc(alignof(args_t), sizeof(args_t));
-        threads[0]->args->size = 1;
-        threads[0]->args->arr = aligned_alloc(alignof(void), sizeof(void*));
-        threads[0]->args->arr[0] = i;
+        
+        threads[0]->args.size = 1;
+        threads[0]->args.arr = aligned_alloc(alignof(void), sizeof(void*));
+        threads[0]->args.arr[0] = i;
         threads[0] = create_thread(threads[0], 0x01, thread_arguments);
-        printf(TEST_INFO "Thread spawned — shared address mapped @ %p\n", threads[0]->addr);
+        printf(TEST_INFO "Thread spawned — shared address mapped @ %p\n", i);
 
         printf(SEPARATOR);
         printf(TEST_INFO "Running " ANSI_YELLOW "1000" ANSI_RESET " iteration monotonicity check...\n");
@@ -159,11 +157,10 @@ int main(void) {
 
         threads[1]->addr = shared_address(local_one, sizeof(char), PROT_WRITE | PROT_READ, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
         char* shared_one = threads[1]->addr;
-        threads[1]->args = aligned_alloc(alignof(args_t), sizeof(args_t));
-        threads[1]->args->size = 2;
-        threads[1]->args->arr = aligned_alloc(alignof(void), sizeof(void*) * 2);
-        threads[1]->args->arr[0] = shared_one;
-        threads[1]->args->arr[1] = mode_1;
+        threads[1]->args.size = 2;
+        threads[1]->args.arr = aligned_alloc(alignof(void), sizeof(void*) * 2);
+        threads[1]->args.arr[0] = shared_one;
+        threads[1]->args.arr[1] = mode_1;
         
         shared_one = strcpy(shared_one, local_one);
         if (*shared_one != ' ') {
@@ -179,11 +176,10 @@ int main(void) {
         threads[2]->addr = shared_address(local_two, sizeof(char), PROT_WRITE | PROT_READ, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
         char* shared_two = threads[2]->addr; // ( Get the mapped region of the memory block. This allows us to increment here and in the other thread.)
         shared_two = strcpy(shared_two, local_two);
-        threads[2]->args = aligned_alloc(alignof(args_t), sizeof(args_t));
-        threads[2]->args->size = 2;
-        threads[2]->args->arr = aligned_alloc(alignof(void), sizeof(void*) * 2);
-        threads[2]->args->arr[0] = shared_two;
-        threads[2]->args->arr[1] = mode_2;
+        threads[2]->args.size = 2;
+        threads[2]->args.arr = aligned_alloc(alignof(void), sizeof(void*) * 2);
+        threads[2]->args.arr[0] = shared_two;
+        threads[2]->args.arr[1] = mode_2;
         
         if (*shared_two != ' ') {
             threads[2] = create_thread(threads[2], 0x01, thread_arguments);
