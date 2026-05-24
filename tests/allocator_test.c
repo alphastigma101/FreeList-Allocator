@@ -63,7 +63,7 @@ int main(void) {
         s_stack[len].bytes = sizeof(int);
     }
 
-    for (; len < 86; len++) {
+    for (; len < 87; len++) {
         size_t bytes = (rand() % 64) + 1;
         s_stack[len].ptr = allocator.allocate(bytes);
         if (allocator.bucket.small[0].flag == 0x01) {

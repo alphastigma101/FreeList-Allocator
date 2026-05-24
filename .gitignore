@@ -4,3 +4,4 @@ callgrind.out.*
 asm_output/
 inline.txt
 macros.txt
+CMakeLists.txt
