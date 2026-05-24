@@ -124,7 +124,7 @@ FORCE_INLINE void sync_thread_pool(bucket_t* slot) {
             else sync_allocator_buckets(slot);
         }
     }
-    threads_t* thread = (threads_t*)((uintptr_t)allocator.pool + ALLOC_THREAD_POOL_SIZE - 1);
+    threads_t* thread = (threads_t*)((uintptr_t)allocator.pool + (ALLOC_THREAD_POOL_SIZE - 1) * sizeof(threads_t));
     join_thread(thread->thread_id, NULL);
     thread->flag = 0x0;
 }
@@ -361,7 +361,6 @@ FORCE_INLINE void thread_pool_ctor(size_t next) {
 }
 
 void* thread_arguments(args_t* args) {
-     printf("AAAAAAAAAAAA");
     if (strcmp(args->visit, "arena_offset") == 0) {
         bucket_t* slot = args->arr[0];
         arena_offset(slot);
@@ -448,6 +447,7 @@ FORCE_INLINE void alloc_init(void) {
 
         thread->args.arr[0] = (void*)next;
         thread = create_thread(thread, 0x01, thread_arguments);
+        sched_yield();
         allocator.n_bytes = sizeof(allocator.bits);
         
     }
@@ -470,7 +470,7 @@ FORCE_INLINE void alloc_init(void) {
                Otherwise, return null, and that will indicate that everything is full.
 */
 [[gnu::hot]]
-FORCE_INLINE void* allocate(size_t bytes) {
+void* allocate(size_t bytes) {
     char* address = NULL;
     int idx = -1; 
     int res = 0;
@@ -496,11 +496,13 @@ FORCE_INLINE void* allocate(size_t bytes) {
             tao->args.arr[0] = slot;
             tao->args.arr = (void**)((uintptr_t)tao->args.arr[0] + (uintptr_t)tao);
             tao = create_thread(thread, 0x01, thread_arguments);
+            sched_yield();
         }
 
         thread->flag = 0x01; 
         thread->args.visit = "sync_threads";
         thread = create_thread(thread, 0x01, thread_arguments);
+        sched_yield();
     }
 
     if (slot) {
@@ -618,7 +620,7 @@ FORCE_INLINE void deallocate(void* ptr) {
             thread->args.visit = "arena_offset";
             thread->args.size = 1;
             thread->args.arr = (void*)slot;
-            thread = create_thread(thread, 0x01, thread_arguments(&thread->args));
+            thread = create_thread(thread, 0x01, thread_arguments);
         }
     } else slot->offset = slot->offset + offset;
     size_t bytes = slot->bytes[offset];

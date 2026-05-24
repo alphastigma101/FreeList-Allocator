@@ -14,6 +14,7 @@
 
 #define GUARD_SIZE 0
 #define STACK_SIZE 0
+#define THREAD_STATE PTHREAD_CREATE_JOINABLE
 /* USTP Abberviated as user space thread policy */
 #define USTP SCHED_OTHER // TODO: .config file or the makefile should have options to change the policy 
 #define SCHED_PRIORITY 0

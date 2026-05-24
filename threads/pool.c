@@ -146,6 +146,11 @@ threads_t* init_threads_t() {
         munmap_address(t, sizeof(threads_t));
         return NULL;
     }
+    
+    if (pthread_attr_setdetachstate(t->thread_attr, PTHREAD_CREATE_JOINABLE) != 0) {
+        munmap_address(t, sizeof(threads_t));
+        return NULL;
+    }
 
     t->flag = 0x0;
     return t;
