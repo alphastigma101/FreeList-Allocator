@@ -116,6 +116,7 @@ int main(void) {
                    "Thread value should be monotonically increasing or stable");
 
             last_thread_value = current_thread_value;
+            sched_yield();
         }
 
         printf(TEST_PASS "Monotonicity check passed across all 1000 iterations\n");

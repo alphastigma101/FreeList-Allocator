@@ -1,5 +1,24 @@
-#ifndef DEBUGGING_H
+#ifndef _DEBUGGING_H_
+#define _DEBUGGING_H_
 
+#define FORCE_COMPILER_ALIGNED(n) __attribute__((aligned(n)))
+#define FORCE_PACK __attribute__((packed))
+#define FORCE_INLINE __attribute__((always_inline)) static inline
+// {
+// "": [],
+//}
+typedef struct logger_t {
+    int                depth; // use with offset and pointer math
+    void               (*add)(int line, const char* file, const char* desc);
+    void               (*clean)(char* key); // key is date and time
+    void               (*write)(); // This will iterate through keys and entries ad add the {} at the correct spots
+    struct             entries_t* (*find)(const char** key);
+    char**              keys; // This part is this part: ""
+    struct entries_t* entries; // This part is this part: []
+
+} logger_t;
+
+extern logger_t logger;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Print Debugging Macros

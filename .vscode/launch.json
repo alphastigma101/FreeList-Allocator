@@ -6,7 +6,7 @@
             "name": "(lldb) C/C++ Launch",
             "type": "lldb",
             "request": "launch",
-            "program": "${workspaceFolder}/test_allocator",
+            "program": "${workspaceFolder}/test_multithreading",
             "args": [],
             "cwd": "${fileDirname}",
         },

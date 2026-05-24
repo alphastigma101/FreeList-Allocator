@@ -1,4 +1,5 @@
 #include "allocator.h"
+#include <stdint.h>
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -53,12 +54,12 @@ FORCE_INLINE size_t bitmap_find_index(bucket_t* slot, size_t start) {
     uintptr_t bucket_start = 0;
     switch (start) {
         case 64:
-            bucket_start = (uintptr_t)&allocator + offsetof(allocator_t, bucket.small) + start * sizeof(bucket_t);
+            bucket_start = (uintptr_t)allocator.bucket.small + start * sizeof(bucket_t);
         case 128: 
-            bucket_start = (uintptr_t)&allocator + offsetof(allocator_t, bucket.medium) + start * sizeof(bucket_t);
+            bucket_start = (uintptr_t)allocator.bucket.medium + start * sizeof(bucket_t);
         #if DEFAULT_ALIGNMENT > EMBEDDED_SYSTEMS
             case 256:
-                bucket_start = (uintptr_t)&allocator + offsetof(allocator_t, bucket.large) + start * sizeof(bucket_t);
+                bucket_start = (uintptr_t)allocator.bucket.large + start * sizeof(bucket_t);
         #endif
     }
     uintptr_t offset = slot_addr - bucket_start;
@@ -286,18 +287,21 @@ FORCE_INLINE void clear_buckets() {
     while (small < 64) {
         arena_t* arena = allocator.bucket.small[small].arena;
         while (arena->next) {
-            munmap_address(arena);
-            munmap_address(arena->chunk);
+            munmap_address(arena->chunk, ARENA_SIZE);
+            arena_t* prev = arena;
             arena = arena->next;
+            munmap_address(prev, sizeof(arena_t));
+            
         }
         small = small + 1;
     }
     while (medium < 128) {
         arena_t* arena = allocator.bucket.medium[medium].arena;
         while (arena->next) {
-            munmap_address(arena);
-            munmap_address(arena->chunk);
+            munmap_address(arena->chunk, ARENA_SIZE);
+            arena_t* prev = arena;
             arena = arena->next;
+            munmap_address(prev, sizeof(arena_t));
         }
         medium = medium + 1;
     }
@@ -306,9 +310,10 @@ FORCE_INLINE void clear_buckets() {
         while (large < 256) {
             arena_t* arena = allocator.bucket.large[large].arena;
             while (arena->next) {
-                munmap_address(arena);
-                munmap_address(arena->chunk);
+                munmap_address(arena->chunk, ARENA_SIZE);
+                arena_t* prev = arena;
                 arena = arena->next;
+                munmap_address(prev, sizeof(arena_t));
             }
             large = large + 1;
         }
@@ -322,9 +327,10 @@ FORCE_INLINE void* arena_offset(bucket_t* slot) {
     }
     if (offset == slot->arena->curr) { 
         clear_arena_t(slot->arena);
-        munmap_address(slot->arena);
-        munmap_address(slot->bytes);
-        munmap_address(slot->inuse);
+        // TODO: THIS IS BROKEN
+        munmap_address(slot->arena, ARENA_SIZE);
+        munmap_address(slot->bytes, SMALL_BIT_END * sizeof(uint8_t));
+        munmap_address(slot->inuse, SMALL_BIT_END * sizeof(uint8_t));
     }
     else {
         // Avoid underflows and or overflows by subtraction arena's offset properly 
@@ -340,22 +346,22 @@ FORCE_INLINE void* arena_offset(bucket_t* slot) {
 
 [[gnu::hot]]
 FORCE_INLINE void thread_pool_ctor(size_t next) {
-    if (next < ALLOC_THREAD_POOL_SIZE) { 
+    for (; next < ALLOC_THREAD_POOL_SIZE; next++) { 
         threads_t* t = &allocator.pool[next];
         if (!t->mutex) {
             threads_t* tmp = init_threads_t();
             memmove(t, tmp, sizeof(threads_t));
             memset(tmp, 0, sizeof(threads_t));
-            free(tmp);
+            munmap_address(tmp, sizeof(threads_t));
             t->args.arr = aligned_alloc(alignof(void), sizeof(void*));
         }
-        return thread_pool_ctor(next + 1);
     }
     
     return;
 }
 
 void* thread_arguments(args_t* args) {
+     printf("AAAAAAAAAAAA");
     if (strcmp(args->visit, "arena_offset") == 0) {
         bucket_t* slot = args->arr[0];
         arena_offset(slot);
@@ -380,7 +386,7 @@ void* thread_arguments(args_t* args) {
         else {
             sync_allocator_buckets(slot);
             join_thread(thread->thread_id, NULL);
-            munmap_address(thread);
+            munmap_address(thread, sizeof(threads_t));
         }
         memset(thread, 0, sizeof(threads_t));
     }
@@ -449,11 +455,11 @@ FORCE_INLINE void alloc_init(void) {
     allocator.arena = init_arena_t();
     if (!allocator.arena) {
         fprintf(stderr, "ERROR: Failed to init arena\n");
-        munmap_address(allocator.arena);
+        munmap_address(allocator.arena, sizeof(arena_t));
         return;
     }
 
-    join_thread(thread->thread_id, NULL);
+    //join_thread(thread->thread_id, NULL);
 }
 
 
@@ -490,12 +496,11 @@ FORCE_INLINE void* allocate(size_t bytes) {
             tao->args.arr[0] = slot;
             tao->args.arr = (void**)((uintptr_t)tao->args.arr[0] + (uintptr_t)tao);
             tao = create_thread(thread, 0x01, thread_arguments);
-            join_thread(tao->thread_id, NULL);
         }
+
         thread->flag = 0x01; 
         thread->args.visit = "sync_threads";
         thread = create_thread(thread, 0x01, thread_arguments);
-        
     }
 
     if (slot) {
@@ -521,7 +526,7 @@ FORCE_INLINE void* allocate(size_t bytes) {
 
         if (slot->flag != 0x01) {
 
-            if (bytes <= 64) {
+            if (bytes <= SMALL_BIT_END) {
                 address = pop_from_bucket(slot, bytes);              
                 if (address) {
                     memset(address, 0, bytes);
@@ -529,7 +534,7 @@ FORCE_INLINE void* allocate(size_t bytes) {
                 }
                 idx = bitmap_find_free(SMALL_BIT_START, SMALL_BIT_END); 
             }
-            else if (bytes < 128 && bytes > 64) {
+            else if (bytes < MEDIUM_BIT_END && bytes > SMALL_BIT_END) {
                 address = pop_from_bucket(slot, bytes); // TODO: We modify stma in pop_from_bucket
                 if (address) {
                     memset(address, 0, bytes);
@@ -558,7 +563,6 @@ FORCE_INLINE void* allocate(size_t bytes) {
                     allocator.arena = NULL;
                     alloc_init();
                     allocator.arena->next = full;
-                    join_thread(thread->thread_id, NULL); 
                     return allocate(bytes);
                 }
 
@@ -566,7 +570,6 @@ FORCE_INLINE void* allocate(size_t bytes) {
                 size_t offset = (uintptr_t)address - (uintptr_t)allocator.arena->chunk;
                 slot->bytes[offset] = bytes;
                 memset(address, 0, bytes);
-                join_thread(thread->thread_id, NULL);
                 return address;
             }
         }
@@ -574,7 +577,6 @@ FORCE_INLINE void* allocate(size_t bytes) {
     else {
         printf("EITHER EXHAUSTED RESOURCES OR\t");
         printf("FAILED TO FIND BUCKET SLOT\n");
-        join_thread(thread->thread_id, NULL);
         return NULL;
     }
 
@@ -632,8 +634,9 @@ FORCE_INLINE void deallocate(void* ptr) {
 void clear_allocator() {
     for (size_t i = 0; ALLOC_THREAD_POOL_SIZE; i++) clean_threads(&allocator.pool[i]);
     clear_buckets();
-    munmap_address(allocator.arena);
-    munmap_address(allocator.arena->chunk);
+    munmap_address(allocator.arena->chunk, ARENA_SIZE);
+    munmap_address(allocator.arena, sizeof(arena_t));
+    
 }
 
 void init_allocator_t() {
