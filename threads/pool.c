@@ -16,12 +16,11 @@
 */
 #include "threads.h"
 #include <pthread.h>
-#include <stddef.h>
-#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
+
 
 /**
  * @brief Creates a shared memory mapping accessible across processes
@@ -104,6 +103,7 @@ void munmap_address(void* addr, size_t len) {
 */
 [[gnu::hot]]
 threads_t* init_threads_t() {
+
     struct sched_param schedparam;
     threads_t* t = private_address(NULL, sizeof(threads_t), PROT_WRITE | PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     if (!t) return NULL;
@@ -147,7 +147,7 @@ threads_t* init_threads_t() {
         return NULL;
     }
     
-    if (pthread_attr_setdetachstate(t->thread_attr, PTHREAD_CREATE_JOINABLE) != 0) {
+    if (pthread_attr_setdetachstate(t->thread_attr, THREAD_STATE) != 0) {
         munmap_address(t, sizeof(threads_t));
         return NULL;
     }
@@ -186,10 +186,10 @@ FORCE_INLINE threads_t* create_attrs(threads_t* tp, const uint8_t mode) {
 
         // Configure the pthread_attributes here .... More of a fine tune 
 
-        // Fine tune the stack size for thread.
-        // a stack is allocated dynamically on the heap for the thread, this includes the threads attributes
+        // Fine tune the stack size for only our thread pool.
         
-        //if (pthread_attr_setstack(tp->thread_attr) != 0) {
+        // Error can occur if stack address is not aligned or stack address + stack size are not properly aligned
+        //if (pthread_attr_setstack(tp->thread_attr, PTHREAD_STACK_MIN) != 0) {
 
         //}
         //if (pthread_attr_setguardsize(tp->thread_attr, 0) != 0) {
@@ -197,6 +197,8 @@ FORCE_INLINE threads_t* create_attrs(threads_t* tp, const uint8_t mode) {
         //}
     }
     else if (mode == 0x02) {
+        // Default settings should suffice
+        if (tp->thread_attr) pthread_attr_destroy(tp->thread_attr);
         // Default settings. Meaning that we do not enable shared memory 
         // Have not been tested as of 3/3/26
     }
@@ -204,11 +206,18 @@ FORCE_INLINE threads_t* create_attrs(threads_t* tp, const uint8_t mode) {
 
 }
 
-// Portablility for either creating a single thread or using threads_t i.e the threadpool
+/** 
+    * @description: Free function that creates a thread and makes it runnable by calling pthread_create. 
+    * @param tp: tp is a thread user defined type. It should be initialized by init_threads before this is called.
+    * @param mode: shared resources mode is 0x01, otherwise 0x02 should be used
+    * @param func: The function i.e the subroutine you want to call.
+    * @note: There are cases where the new thread can spawn in and be terminated before pthread_create is done, so checking ESRCH error code using the thread id is crucial.
+            Also, thread id pthread_t is a opaque object meaning it can be a numeric value or a struct. Do not initialize it at all 
+*/
 threads_t* create_thread(threads_t* tp, const uint8_t mode, void* func) {
     if (tp) {
         tp = create_attrs(tp, mode);
-        int rc = pthread_create(&tp->thread_id, tp->thread_attr, func, &tp->args);
+        int rc = pthread_create(&tp->thread_id, tp->thread_attr, func, (void*)&tp->args);
         if (rc) {
             printf("pthread_create failed: %s (errno: %d)\n", strerror(rc), rc);
             pthread_mutex_destroy(tp->mutex);
@@ -217,30 +226,27 @@ threads_t* create_thread(threads_t* tp, const uint8_t mode, void* func) {
             munmap_address(tp, sizeof(threads_t));
             return NULL;
         }
-        if (mode == 0x02) {
-            if (pthread_mutex_lock(tp->mutex) != 0) {
-                printf("ERROR 359: Failed to lock mutex\n");
-                pthread_mutex_destroy(tp->mutex);
-                pthread_mutexattr_destroy(&tp->mutex_attr);
-                pthread_attr_destroy(tp->thread_attr);
-                munmap_address(tp, sizeof(threads_t));
-                return NULL; 
-            }
-        }
     }
 
     return tp;
 }
 
-void join_thread(pthread_t t, const void** rtn) { pthread_join(t, (void**)rtn); }
+void join_thread(threads_t* t, const void** rtn) {
+    int state; 
+    pthread_attr_getdetachstate(t->thread_attr, &state);
+    if (state != PTHREAD_CREATE_DETACHED)
+        pthread_join(t->thread_id, (void**)rtn); 
+    return;
+}
 
 void clean_threads(threads_t* t) {
     if (t) {
         pthread_mutex_destroy(t->mutex);
         pthread_mutexattr_destroy(&t->mutex_attr);
         pthread_attr_destroy(t->thread_attr);
-        if (t->thread_id) join_thread(t->thread_id, NULL);
-
+        if (t->thread_id) join_thread(t, NULL);
+        
+        // TODO: This is all broken. Not using malloc or any kind of variant of it, so free needs to go away.
         const int res = msync(t, sizeof(threads_t), MS_SYNC);
         if (res == ENOMEM) free(t);
         else munmap_address(t, sizeof(threads_t));
@@ -248,9 +254,25 @@ void clean_threads(threads_t* t) {
     }
 }
 
+FORCE_INLINE pthread_t current_thread() { return pthread_self(); }
+
 void debug_threads(const threads_t* tp) {
     uint8_t flag = 0;
     if (tp) {
+        printf("\n============================================\n");
+        printf("Targeted thread address: [ %p ]\n", tp);
+        printf("Lock thread address: [ %p ]\n\t", tp->mutex);
+        printf("Lock Attributes: [ %p ]\n", &tp->mutex_attr);
+
+        // Compare the threads to see if they are the same
+        pthread_t pid = current_thread(); 
+        if (pthread_equal(tp->thread_id, pid) == 0) {
+            printf("\n========================================\n");
+            printf("In debug_threads function: %p which is a pointer to user space threads id is not the same\n", tp);
+        }
+        else {
+
+        }
         // Check the attributes set for mutex
         const void* mutex = &tp->mutex_attr;
         if (mutex) {

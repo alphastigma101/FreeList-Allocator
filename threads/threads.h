@@ -13,11 +13,28 @@
 #include "../debugging/debugging.h"
 
 #define GUARD_SIZE 0
-#define STACK_SIZE 0
-#define THREAD_STATE PTHREAD_CREATE_JOINABLE
-/* USTP Abberviated as user space thread policy */
-#define USTP SCHED_OTHER // TODO: .config file or the makefile should have options to change the policy 
-#define SCHED_PRIORITY 0
+
+#ifndef STACK_SIZE
+    #define STACK_SIZE PTHREAD_STACK_MIN
+#endif
+
+#ifndef THREAD_STATE
+    #define THREAD_STATE PTHREAD_CREATE_JOINABLE
+#endif
+
+/* USTP — User Space Thread Policy */
+/* Override via Makefile: -DUSTP=SCHED_FIFO or -DUSTP=SCHED_RR (requires root) */
+#ifndef USTP
+    #define USTP SCHED_OTHER
+#endif
+
+#ifndef SCHED_PRIORITY
+    #if defined(USTP) && (USTP == SCHED_OTHER)
+        #define SCHED_PRIORITY 0        // SCHED_OTHER only supports priority 0
+    #else
+        #define SCHED_PRIORITY 1        // SCHED_FIFO / SCHED_RR minimum priority
+    #endif
+#endif
 
 
 #define EMBEDDED_SYSTEMS 8
@@ -53,8 +70,8 @@ typedef struct threads_t {
 
 extern threads_t* init_threads_t();
 extern threads_t* create_thread(threads_t* tp, const uint8_t mode, void* func);
-extern void join_thread(pthread_t t, const void** rtn);
-extern void* thread_arguments(args_t* args);
+extern void join_thread(threads_t* tp, const void** rtn);
+extern void* thread_arguments(void* args);
 extern void debug_threads(const threads_t* tp);
 extern void clean_threads(threads_t* t);
 

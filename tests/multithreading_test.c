@@ -1,4 +1,3 @@
-#include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -52,7 +51,8 @@ static void* traversal(const char* _str, uint8_t* mode) {
     return (void*)0;
 }
 
-void* thread_arguments(args_t* args) {
+void* thread_arguments(void* arg) {
+    args_t* args = (args_t*)arg;
     switch (args->size) {
         case 1:
             addition(args->arr[0]);
@@ -64,7 +64,7 @@ void* thread_arguments(args_t* args) {
             break;
     }    
 
-    return (void*)0;
+    pthread_exit(NULL);
 }
 
 
@@ -95,6 +95,22 @@ int main(void) {
         threads[0]->args.arr = aligned_alloc(alignof(void), sizeof(void*));
         threads[0]->args.arr[0] = i;
         threads[0] = create_thread(threads[0], 0x01, thread_arguments);
+        /*pthread_t pid;
+        pthread_attr_t thread_attr;
+
+        if (pthread_attr_init(&thread_attr) != 0) {
+            printf("ERROR 103: FAILED TO INIT THREAD ATTRIBUTES\n");
+            return 1;
+        }
+
+        pthread_attr_setdetachstate(&thread_attr, PTHREAD_CREATE_JOINABLE);
+        int rc = pthread_create(&pid, &thread_attr, thread_arguments, (void*)&threads[0]->args);
+
+        if (rc) {
+            printf("yer suck: error code %d\n", rc);
+        }*/
+
+
         printf(TEST_INFO "Thread spawned — shared address mapped @ %p\n", i);
 
         printf(SEPARATOR);
@@ -116,13 +132,12 @@ int main(void) {
                    "Thread value should be monotonically increasing or stable");
 
             last_thread_value = current_thread_value;
-            sched_yield();
         }
 
         printf(TEST_PASS "Monotonicity check passed across all 1000 iterations\n");
         printf(SEPARATOR);
 
-        join_thread(threads[0]->thread_id, NULL);
+        join_thread(threads[0], NULL);
         printf(TEST_INFO "Thread joined successfully\n");
 
         assert(main_value == 1000 && "Main thread value should be 1000");
@@ -222,7 +237,7 @@ int main(void) {
         printf(TEST_HEADER "  ══════════════════════════════════════════════\n\n" ANSI_RESET);
 
         for (int i = 1; i < 3; i++) {
-            join_thread(threads[i]->thread_id, NULL);
+            join_thread(threads[i], NULL);
         }
     } 
 

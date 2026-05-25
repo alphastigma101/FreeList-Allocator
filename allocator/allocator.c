@@ -1,4 +1,5 @@
 #include "allocator.h"
+#include <pthread.h>
 #include <stdint.h>
 #include <string.h>
 #include <stdlib.h>
@@ -53,12 +54,12 @@ FORCE_INLINE size_t bitmap_find_index(bucket_t* slot, size_t start) {
     uintptr_t slot_addr = (uintptr_t)slot;
     uintptr_t bucket_start = 0;
     switch (start) {
-        case 64:
+        case BUCKET_SMALL_CAP:
             bucket_start = (uintptr_t)allocator.bucket.small + start * sizeof(bucket_t);
-        case 128: 
+        case BUCKET_MEDIUM_CAP: 
             bucket_start = (uintptr_t)allocator.bucket.medium + start * sizeof(bucket_t);
         #if DEFAULT_ALIGNMENT > EMBEDDED_SYSTEMS
-            case 256:
+            case BUCKET_LARGE_CAP:
                 bucket_start = (uintptr_t)allocator.bucket.large + start * sizeof(bucket_t);
         #endif
     }
@@ -116,16 +117,16 @@ FORCE_INLINE void sync_thread_pool(bucket_t* slot) {
         if (iter->flag == 0x01) {
             // if any threads are set to 0x01, they were marked with MADV_SEQUENTIAL and MADV_MERGEABLE
             // Meaning that we are preventing stale caches, and will mitigates msync's overhead. 
-            join_thread(iter->thread_id, NULL);
+            join_thread(iter, NULL);
+            memset(&iter->args, 0, sizeof(args_t));
             iter->flag = 0x0;
-            memset(iter->args.visit, 0, sizeof(char*));
             const int res = msync(slot->arena, sizeof(arena_t), MS_SYNC);
             if (res == -1) DBG("%d", res);
             else sync_allocator_buckets(slot);
         }
     }
     threads_t* thread = (threads_t*)((uintptr_t)allocator.pool + (ALLOC_THREAD_POOL_SIZE - 1) * sizeof(threads_t));
-    join_thread(thread->thread_id, NULL);
+    join_thread(thread, NULL);
     thread->flag = 0x0;
 }
 
@@ -327,7 +328,7 @@ FORCE_INLINE void* arena_offset(bucket_t* slot) {
     }
     if (offset == slot->arena->curr) { 
         clear_arena_t(slot->arena);
-        // TODO: THIS IS BROKEN
+        // TODO: THIS IS BROKEN WE NEED TO FIND OUT WHERE THE BUCKET SIZE IS 
         munmap_address(slot->arena, ARENA_SIZE);
         munmap_address(slot->bytes, SMALL_BIT_END * sizeof(uint8_t));
         munmap_address(slot->inuse, SMALL_BIT_END * sizeof(uint8_t));
@@ -346,6 +347,11 @@ FORCE_INLINE void* arena_offset(bucket_t* slot) {
 
 [[gnu::hot]]
 FORCE_INLINE void thread_pool_ctor(size_t next) {
+    threads_t* thread = &allocator.pool[ALLOC_THREAD_POOL_SIZE - 1];
+    if (thread->flag == 0x01) {
+        printf("Locking the mutex\n");
+        pthread_mutex_lock(thread->mutex);
+    }
     for (; next < ALLOC_THREAD_POOL_SIZE; next++) { 
         threads_t* t = &allocator.pool[next];
         if (!t->mutex) {
@@ -356,21 +362,25 @@ FORCE_INLINE void thread_pool_ctor(size_t next) {
             t->args.arr = aligned_alloc(alignof(void), sizeof(void*));
         }
     }
+    if (thread->flag == 0x01) {
+        printf("Unlocking the mutex\n");
+        pthread_mutex_unlock(thread->mutex);
+    }
     
     return;
 }
 
-void* thread_arguments(args_t* args) {
+void* thread_arguments(void* arg) {
+    args_t* args = (args_t*)arg;
     if (strcmp(args->visit, "arena_offset") == 0) {
         bucket_t* slot = args->arr[0];
         arena_offset(slot);
     }
     else if (strcmp(args->visit, "sync_threads") == 0) {
-        bucket_t* slot = (bucket_t*)(args->arr[0]);
+        bucket_t* slot = args->arr[0];
         sync_thread_pool(slot);
         threads_t* thread = allocator.pool + ALLOC_THREAD_POOL_SIZE - 1;
         thread->flag = 0x0;
-        join_thread(thread->thread_id, NULL);
     }
     else if (strcmp(args->visit, "thread_pool_ctor") == 0) {
         size_t next = (size_t)args->arr[0];
@@ -384,7 +394,7 @@ void* thread_arguments(args_t* args) {
         if (res == -1) DBG("%d", res);
         else {
             sync_allocator_buckets(slot);
-            join_thread(thread->thread_id, NULL);
+            join_thread(thread, NULL);
             munmap_address(thread, sizeof(threads_t));
         }
         memset(thread, 0, sizeof(threads_t));
@@ -447,7 +457,6 @@ FORCE_INLINE void alloc_init(void) {
 
         thread->args.arr[0] = (void*)next;
         thread = create_thread(thread, 0x01, thread_arguments);
-        sched_yield();
         allocator.n_bytes = sizeof(allocator.bits);
         
     }
@@ -488,25 +497,23 @@ void* allocate(size_t bytes) {
                 tao = private_address(tao, sizeof(threads_t), PROT_WRITE | PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);;
                 res = madvise(tao, sizeof(threads_t), MADV_DONTNEED);
                 memmove(tao, tmp, sizeof(threads_t));
-                free(tmp);
-                memset(tmp, 0, sizeof(threads_t));
+                munmap_address(tmp, sizeof(threads_t));
             }
             tao->args.visit = "extra_thread";
             tao->args.size = 2;
             tao->args.arr[0] = slot;
             tao->args.arr = (void**)((uintptr_t)tao->args.arr[0] + (uintptr_t)tao);
             tao = create_thread(thread, 0x01, thread_arguments);
-            sched_yield();
         }
 
         thread->flag = 0x01; 
         thread->args.visit = "sync_threads";
+        thread->args.arr[0] = (void*)slot;
         thread = create_thread(thread, 0x01, thread_arguments);
-        sched_yield();
     }
 
     if (slot) {
-        if (!slot->arena && allocator.arena->curr != ARENA_SIZE) {
+        if (!slot->arena) {
             slot->arena = allocator.arena;
             #if (DEFAULT_ALIGNMENT > EMBEDDED_SYSTEMS) 
                 slot->entries.bytes = private_address(slot->bytes, 448 * sizeof(uint8_t), PROT_WRITE | PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
@@ -571,6 +578,7 @@ void* allocate(size_t bytes) {
                 address = allocator.arena->res;
                 size_t offset = (uintptr_t)address - (uintptr_t)allocator.arena->chunk;
                 slot->bytes[offset] = bytes;
+                sync_allocator_buckets(slot);
                 memset(address, 0, bytes);
                 return address;
             }
@@ -633,14 +641,6 @@ FORCE_INLINE void deallocate(void* ptr) {
 }
 
 [[gnu::cold]]
-void clear_allocator() {
-    for (size_t i = 0; ALLOC_THREAD_POOL_SIZE; i++) clean_threads(&allocator.pool[i]);
-    clear_buckets();
-    munmap_address(allocator.arena->chunk, ARENA_SIZE);
-    munmap_address(allocator.arena, sizeof(arena_t));
-    
-}
-
 void init_allocator_t() {
     if (!allocator.bits)  alloc_init();
 
@@ -648,4 +648,13 @@ void init_allocator_t() {
         allocator.allocate   = allocate;
         allocator.deallocate = deallocate;
     }
+}
+
+[[gnu::cold]]
+void clear_allocator() {
+    for (size_t i = 0; ALLOC_THREAD_POOL_SIZE; i++) clean_threads(&allocator.pool[i]);
+    clear_buckets();
+    munmap_address(allocator.arena->chunk, ARENA_SIZE);
+    munmap_address(allocator.arena, sizeof(arena_t));
+    
 }

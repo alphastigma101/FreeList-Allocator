@@ -88,7 +88,7 @@ int main(void) {
     size_t e_two = len;
     assert(allocator.bucket.small[1].flag == 0x01 && "small[1] arena should be full");
 
-    for (; len < 340; len++) {
+    for (; len < 341; len++) {
         size_t bytes       = (rand() % 64) + 1;
         s_stack[len].ptr   = allocator.allocate(bytes);
         if (allocator.bucket.small[2].flag == 0x01) {
