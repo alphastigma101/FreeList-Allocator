@@ -348,10 +348,8 @@ FORCE_INLINE void* arena_offset(bucket_t* slot) {
 [[gnu::hot]]
 FORCE_INLINE void thread_pool_ctor(size_t next) {
     threads_t* thread = &allocator.pool[ALLOC_THREAD_POOL_SIZE - 1];
-    if (thread->flag == 0x01) {
-        printf("Locking the mutex\n");
-        pthread_mutex_lock(thread->mutex);
-    }
+    int state = pthread_mutex_trylock(thread->mutex);
+    
     for (; next < ALLOC_THREAD_POOL_SIZE; next++) { 
         threads_t* t = &allocator.pool[next];
         if (!t->mutex) {
@@ -362,7 +360,8 @@ FORCE_INLINE void thread_pool_ctor(size_t next) {
             t->args.arr = aligned_alloc(alignof(void), sizeof(void*));
         }
     }
-    if (thread->flag == 0x01) {
+
+    if (state == 0) {
         printf("Unlocking the mutex\n");
         pthread_mutex_unlock(thread->mutex);
     }
@@ -394,13 +393,12 @@ void* thread_arguments(void* arg) {
         if (res == -1) DBG("%d", res);
         else {
             sync_allocator_buckets(slot);
-            join_thread(thread, NULL);
-            munmap_address(thread, sizeof(threads_t));
+            
         }
-        memset(thread, 0, sizeof(threads_t));
+        join_thread(thread, NULL);
     }
 
-    return NULL;
+    pthread_exit(NULL);
 }
 
 [[gnu::hot]]

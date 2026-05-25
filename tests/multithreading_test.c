@@ -1,3 +1,4 @@
+#include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -82,9 +83,9 @@ int main(void) {
         printf(TEST_HEADER "  NUMERICAL VALUE TEST  ·  Thread Pool           \n" ANSI_RESET);
         printf(TEST_HEADER "  ══════════════════════════════════════════════\n" ANSI_RESET);
 
-        int* i = NULL;
-        i = shared_address(i, sizeof(int), PROT_WRITE | PROT_READ, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
-        if (!i) {
+
+        int* i = shared_address(NULL, sizeof(int), PROT_WRITE | PROT_READ, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+        if (i == MAP_FAILED) {
             printf(TEST_FAIL "ERROR 74: Failed to allocate memory for i\n");
             return 1;
         }
@@ -92,25 +93,10 @@ int main(void) {
         *i = 0;
         
         threads[0]->args.size = 1;
-        threads[0]->args.arr = aligned_alloc(alignof(void), sizeof(void*));
+        threads[0]->args.arr = aligned_alloc(alignof(void), sizeof(void*)); 
         threads[0]->args.arr[0] = i;
         threads[0] = create_thread(threads[0], 0x01, thread_arguments);
-        /*pthread_t pid;
-        pthread_attr_t thread_attr;
-
-        if (pthread_attr_init(&thread_attr) != 0) {
-            printf("ERROR 103: FAILED TO INIT THREAD ATTRIBUTES\n");
-            return 1;
-        }
-
-        pthread_attr_setdetachstate(&thread_attr, PTHREAD_CREATE_JOINABLE);
-        int rc = pthread_create(&pid, &thread_attr, thread_arguments, (void*)&threads[0]->args);
-
-        if (rc) {
-            printf("yer suck: error code %d\n", rc);
-        }*/
-
-
+        
         printf(TEST_INFO "Thread spawned — shared address mapped @ %p\n", i);
 
         printf(SEPARATOR);
@@ -118,8 +104,6 @@ int main(void) {
 
         int main_value     = 0;
         int last_thread_value = -1;
-        // We are gonna need to either adjust the thread pool or have it contain a hash map to store the virtual memory addresses that are not 
-        // in use. I am planning on creating an arena and an allocator 
 
         for (int j = 0; j < 1000; j++) {
             main_value = j + 1;

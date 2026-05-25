@@ -15,7 +15,6 @@
  * https://busybox.net
 */
 #include "threads.h"
-#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -254,18 +253,20 @@ void clean_threads(threads_t* t) {
     }
 }
 
-FORCE_INLINE pthread_t current_thread() { return pthread_self(); }
 
 void debug_threads(const threads_t* tp) {
     uint8_t flag = 0;
     if (tp) {
+        // 1. Output all of the important field members  
         printf("\n============================================\n");
         printf("Targeted thread address: [ %p ]\n", tp);
         printf("Lock thread address: [ %p ]\n\t", tp->mutex);
+        // print out the attributes to see if the shared_process is enabled or not. use sysconf
         printf("Lock Attributes: [ %p ]\n", &tp->mutex_attr);
+        printf("\n============================================\n");
 
         // Compare the threads to see if they are the same
-        pthread_t pid = current_thread(); 
+        pthread_t pid = pthread_self(); 
         if (pthread_equal(tp->thread_id, pid) == 0) {
             printf("\n========================================\n");
             printf("In debug_threads function: %p which is a pointer to user space threads id is not the same\n", tp);
