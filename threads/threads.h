@@ -1,3 +1,4 @@
+#pragma once
 #ifndef _THREADS_H
 #define _THREADS_H
 #define _GNU_SOURCE 1
@@ -12,32 +13,28 @@
 #include <sys/mman.h>
 #include "../debugging/debugging.h"
 
-#define GUARD_SIZE 0
-
-#ifndef STACK_SIZE
-    #define STACK_SIZE PTHREAD_STACK_MIN
+/* INHERITSCHED — Thread scheduling inheritance */
+#ifndef INHERITSCHED
+    #define INHERITSCHED -1
 #endif
 
+/* MUTEX_ATTR — Mutex type attribute */
+#ifndef MUTEX_ATTR
+    #define MUTEX_ATTR -1
+#endif
+
+/* THREAD_STATE — Choose either to join or detach */
 #ifndef THREAD_STATE
-    #define THREAD_STATE PTHREAD_CREATE_JOINABLE
+    #define THREAD_STATE -1
 #endif
 
 /* USTP — User Space Thread Policy */
-/* Override via Makefile: -DUSTP=SCHED_FIFO or -DUSTP=SCHED_RR (requires root) */
 #ifndef USTP
-    #define USTP SCHED_OTHER
-#endif
-
-#ifndef SCHED_PRIORITY
-    #if defined(USTP) && (USTP == SCHED_OTHER)
-        #define SCHED_PRIORITY 0        // SCHED_OTHER only supports priority 0
-    #else
-        #define SCHED_PRIORITY 1        // SCHED_FIFO / SCHED_RR minimum priority
-    #endif
+    #define USTP -1
 #endif
 
 
-#define EMBEDDED_SYSTEMS 8
+#define EMBEDDED_SYSTEMS 16
 #define GAMING 64
 
 #ifdef GAMING_ENABLED
@@ -63,7 +60,7 @@ typedef struct threads_t {
     pthread_attr_t*                thread_attr;
     pthread_mutex_t*               mutex;
     atomic_uintptr_t               aut;                                     
-    void*                          addr;     
+    void**                         stackaddr;     
     args_t                         args;
 
 } threads_t;
@@ -72,6 +69,7 @@ extern threads_t* init_threads_t();
 extern threads_t* create_thread(threads_t* tp, const uint8_t mode, void* func);
 extern void join_thread(threads_t* tp, const void** rtn);
 extern void* thread_arguments(void* args);
+extern void upid(threads_t* tp);
 extern void debug_threads(const threads_t* tp);
 extern void clean_threads(threads_t* t);
 

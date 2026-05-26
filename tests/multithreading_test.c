@@ -7,6 +7,7 @@
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/types.h>
+#include <unistd.h>
 #include "../threads/threads.h" // Production
 #include "../DataStructures/C/structures.h" // Development
 
@@ -25,42 +26,66 @@
 #define TEST_HEADER  ANSI_BOLD ANSI_MAGENTA
 #define SEPARATOR    ANSI_CYAN "  ────────────────────────────────────────────\n" ANSI_RESET
 
-
 // Numerical Value Test
-static void* addition(int* i) {
-    for (int j = 0; *i < 1000; j+=3) *i = j;
+static void* addition(args_t* args) {
+    int* i = args->arr[0];
+    pthread_mutex_t* mutex = (pthread_mutex_t*)args->arr[1];
+    for (int j = 0; *i < 1000; j+=3) { 
+        pthread_mutex_lock(mutex);
+        *i = j;
+        pthread_mutex_unlock(mutex);
+    }
     return NULL;
 }
 
 // String Traversal Test mode can be either forward or backwards
-static void* traversal(const char* _str, uint8_t* mode) {
-    const uint8_t d_mode = *mode;
-    if (d_mode == 0x01) {
-        while (*_str != '\0') {
-            const char* copy_str = _str;
-            _str++;
-            assert((strlen(copy_str) - strlen(_str)) == 1);
+static void* traversal(args_t* args) {
+    const uint8_t* d_mode = (uint8_t*)args->arr[1];
+    const char** _str    = (const char**)args->arr[0];
+    pthread_mutex_t* mutex = (pthread_mutex_t*)args->arr[2];
+    if (*d_mode == 0x01) {
+        
+        while (1) {
+            pthread_mutex_lock(mutex);
+            if (strlen(*_str) == 0) {
+                pthread_mutex_unlock(mutex);
+                break;
+            }
+            const char* copy = *_str;
+            (*_str)++; 
+            assert((strlen(copy) - strlen(*_str)) == 1);
+            pthread_mutex_unlock(mutex);
         }
     }
-    else if (d_mode == 0x02) {
-        while (*_str != '\0') {
-            const char* copy_str = _str;
-            _str++;
-            assert((strlen(copy_str) - strlen(_str)) == 1);
+    if (*d_mode == 0x02) {
+            
+        while (1) {
+            pthread_mutex_lock(mutex);
+            if (strlen(*_str) == 0) {
+                pthread_mutex_unlock(mutex);
+                break;
+            }
+            const char* copy = *_str;
+            (*_str)++;
+            assert((strlen(copy) - strlen(*_str)) == 1);
+            pthread_mutex_unlock(mutex);
         }
+        
+        
     }
-    return (void*)0;
+
+    return NULL;
 }
 
 void* thread_arguments(void* arg) {
     args_t* args = (args_t*)arg;
     switch (args->size) {
         case 1:
-            addition(args->arr[0]);
+            addition(args);
             break;
-        case 2:
-            traversal(args->arr[0], args->arr[1]);
-
+        case 3:
+            traversal(args);
+            break;
         default:
             break;
     }    
@@ -72,7 +97,7 @@ void* thread_arguments(void* arg) {
 // TODO: ZSTD Also has its own threading library, so that needs to be integrated into busybox's configuration
 
 int main(void) {
-    threads_t* threads[8];
+    threads_t* threads[8];    
     for (int i = 0; i < 8; i++)
         threads[i] = init_threads_t();
     
@@ -93,8 +118,9 @@ int main(void) {
         *i = 0;
         
         threads[0]->args.size = 1;
-        threads[0]->args.arr = aligned_alloc(alignof(void), sizeof(void*)); 
+        threads[0]->args.arr = malloc(2 * sizeof(void*)); 
         threads[0]->args.arr[0] = i;
+        threads[0]->args.arr[1] = threads[0]->mutex;
         threads[0] = create_thread(threads[0], 0x01, thread_arguments);
         
         printf(TEST_INFO "Thread spawned — shared address mapped @ %p\n", i);
@@ -104,10 +130,14 @@ int main(void) {
 
         int main_value     = 0;
         int last_thread_value = -1;
+        int current_thread_value = 0;
 
         for (int j = 0; j < 1000; j++) {
             main_value = j + 1;
-            int current_thread_value = *i;
+            pthread_mutex_lock(threads[0]->mutex);
+            current_thread_value = *i;
+            pthread_mutex_unlock(threads[0]->mutex);
+
 
             assert(main_value == j + 1 &&
                    "Main thread: should increment by 1");
@@ -133,87 +163,69 @@ int main(void) {
         printf(SEPARATOR);
         printf(TEST_HEADER "  RESULT: " ANSI_GREEN "PASSED ✔\n" ANSI_RESET);
         printf(TEST_HEADER "  ══════════════════════════════════════════════\n\n" ANSI_RESET);
+        munmap_address(i, sizeof(int));
     }
  
     {
-        // TODO: Right now as of 3/4/26, I have achieved concurrency threading i.e it can utilize one core 
-        // We should also off support for parrellism, but that would require the cpu to have more than one core 
         printf("\n");
         printf(TEST_HEADER "  ══════════════════════════════════════════════\n" ANSI_RESET);
         printf(TEST_HEADER "  STRING TRAVERSAL TEST  ·  Thread Pool          \n" ANSI_RESET);
         printf(TEST_HEADER "  ══════════════════════════════════════════════\n" ANSI_RESET);
 
-        char* local_one = "This is a short string";
-        char* local_two = "This is a very very very very long string"; 
+        char* one = shared_address(NULL, sizeof(char), PROT_WRITE | PROT_READ, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+        one = "This is a short string";
+        char* two = shared_address(NULL, sizeof(char), PROT_WRITE | PROT_READ, MAP_SHARED | MAP_ANONYMOUS, -1, 0); 
+        two = "This is a very very very very long string"; 
 
-        printf(TEST_INFO "Short string : " ANSI_YELLOW "\"%s\"\n" ANSI_RESET, local_one);
-        printf(TEST_INFO "Long string  : " ANSI_YELLOW "\"%s\"\n" ANSI_RESET, local_two);
+        printf(TEST_INFO "Short string : " ANSI_YELLOW "\"%s\"\n" ANSI_RESET, one);
+        printf(TEST_INFO "Long string  : " ANSI_YELLOW "\"%s\"\n" ANSI_RESET, two);
         printf(SEPARATOR);
 
-        uint8_t* mode_1 = malloc(sizeof(uint8_t));
-        memset(mode_1, 0, sizeof(uint8_t)); 
-        mode_1 = shared_address(mode_1, sizeof(uint8_t), PROT_WRITE | PROT_READ, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
-        *mode_1 = 0x01;
+        const uint8_t mode_1 = 0x01;
+        threads[1]->args.size = 3;
+        threads[1]->args.arr = malloc(3 * sizeof(void*));
+        threads[1]->args.arr[0] = (void*)&one;
+        threads[1]->args.arr[1] = (void*)&mode_1;
+        threads[1]->args.arr[2] = (void*)threads[1]->mutex;
+        threads[1] = create_thread(threads[1], 0x01, thread_arguments);
 
-        threads[1]->addr = shared_address(local_one, sizeof(char), PROT_WRITE | PROT_READ, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
-        char* shared_one = threads[1]->addr;
-        threads[1]->args.size = 2;
-        threads[1]->args.arr = aligned_alloc(alignof(void), sizeof(void*) * 2);
-        threads[1]->args.arr[0] = shared_one;
-        threads[1]->args.arr[1] = mode_1;
+        const uint8_t mode_2 = 0x02;
+        threads[2]->args.size = 3;
+        threads[2]->args.arr = malloc(sizeof(void*) * 3);
+        threads[2]->args.arr[0] = (void*)&two;
+        threads[2]->args.arr[1] = (void*)&mode_2;
+        threads[2]->args.arr[2] = (void*)threads[2]->mutex;
+        threads[2] = create_thread(threads[2], 0x01, thread_arguments);
         
-        shared_one = strcpy(shared_one, local_one);
-        if (*shared_one != ' ') {
-            threads[1] = create_thread(threads[1], 0x01, thread_arguments);
-            printf(TEST_INFO "Thread[1] spawned — short string mapped @ %p\n", threads[1]->addr);
-        }
-
-        uint8_t* mode_2 = malloc(sizeof(uint8_t));
-        memset(mode_2, 0, sizeof(uint8_t));
-        mode_2 = shared_address(mode_2, sizeof(uint8_t), PROT_WRITE | PROT_READ, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
-        *mode_2 = 0x02;
-
-        threads[2]->addr = shared_address(local_two, sizeof(char), PROT_WRITE | PROT_READ, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
-        char* shared_two = threads[2]->addr; // ( Get the mapped region of the memory block. This allows us to increment here and in the other thread.)
-        shared_two = strcpy(shared_two, local_two);
-        threads[2]->args.size = 2;
-        threads[2]->args.arr = aligned_alloc(alignof(void), sizeof(void*) * 2);
-        threads[2]->args.arr[0] = shared_two;
-        threads[2]->args.arr[1] = mode_2;
-        
-        if (*shared_two != ' ') {
-            threads[2] = create_thread(threads[2], 0x01, thread_arguments);
-            printf(TEST_INFO "Thread[2] spawned — long string mapped  @ %p\n", threads[2]->addr);
-        }
-        
-        // TOOD: Store one and two's memory addresses in a map so they can be used again
-        // Useful the allocator we will eventually make  
         printf(SEPARATOR);
         printf(TEST_INFO "Entering traversal loop — monitoring both threads...\n");
 
-        uint8_t esc = 0;
+        float esc = 0.0;
+        float r1 = 0.0;
+        float r2 = 0.0;
         for (;;) {
             if (esc == 1) break;
-            else {
-                if (*shared_one != '\0') {
-                    assert(*shared_one >= 0x20 && *shared_one <= 0x7E);
-                    assert((void*)shared_one >= threads[1]->addr);
 
-                    const char* cpy_so = shared_one; 
-                    shared_one+=2; // This is thread zero (this is the main thread)
-                    assert((strlen(cpy_so) - strlen(shared_one) == 2));
+            pthread_mutex_lock(threads[1]->mutex);
+            if (strlen(one) != 0) {
+                const char* cpy_so = one;
+                one += 2;
+                assert((strlen(cpy_so) - strlen(one) == 2));
+            } else r1 = 0.5;
+            pthread_mutex_unlock(threads[1]->mutex);
 
-                }
-                if (*shared_two != '\0') {
-                    assert(*shared_two >= 0x20 && *shared_two <= 0x7E);
-                    assert((void*)shared_two >= threads[2]->addr);
-                    const char* cpy_so = shared_two;
-                    shared_two+=2; 
-                    assert((strlen(cpy_so) - strlen(shared_two) == 2));
-                }
-                else if (*shared_one == '\0' && *shared_two == '\0') esc = 1;
-            }
+            pthread_mutex_lock(threads[2]->mutex);
+            if (strlen(two) != 0) {
+                const char* cpy_so = two;
+                two += 2;
+                assert((strlen(cpy_so) - strlen(two) == 2));
+            } else r2 = 0.5;
+            pthread_mutex_unlock(threads[2]->mutex);
+            
+            esc = r1 + r2;
+              
         }
+        
         printf(TEST_PASS "Thread[1] — all chars valid printable ASCII, pointer stayed in bounds\n");
         printf(TEST_PASS "Thread[2] — all chars valid printable ASCII, pointer stayed in bounds\n");
         printf(SEPARATOR);
@@ -223,6 +235,8 @@ int main(void) {
         for (int i = 1; i < 3; i++) {
             join_thread(threads[i], NULL);
         }
+        munmap_address(one, sizeof(char));
+        munmap_address(two, sizeof(char));
     } 
 
     // User defined data structures / Objects 

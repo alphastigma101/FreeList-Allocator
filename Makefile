@@ -1,6 +1,7 @@
 CC = clang-19
 CFLAGS = -Wall -Wextra -g -O0 -fno-omit-frame-pointer
-SANITIZERS = -fsanitize=address,undefined,leak
+#SANITIZERS = -fsanitize=address,undefined,leak
+SANITIZERS = -fsanitize=thread,undefined
 LDFLAGS = $(SANITIZERS) -pthread
 PRODUCTION ?= 0
 
@@ -51,7 +52,7 @@ test_allocator: $(ALLOCATOR_OBJS)
 		$(CC) -O2 -pthread -c $< -o $@; \
 	else \
 		echo "🔧 Debug build: $<"; \
-		$(CC) $(CFLAGS) $(SANITIZERS) -c $< -o $@; \
+		$(CC) $(CFLAGS) $(SANITIZERS) -D __SANITIZE_THREAD__=1 -D MUTEX_ATTR=2 -D THREAD_STATE=0 -D USTP=2 -D INHERITSCHED=1 -c  $< -o $@; \
 	fi
 
 clean:

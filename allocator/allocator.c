@@ -357,7 +357,7 @@ FORCE_INLINE void thread_pool_ctor(size_t next) {
             memmove(t, tmp, sizeof(threads_t));
             memset(tmp, 0, sizeof(threads_t));
             munmap_address(tmp, sizeof(threads_t));
-            t->args.arr = aligned_alloc(alignof(void), sizeof(void*));
+            t->args.arr = malloc(sizeof(void*));
         }
     }
 

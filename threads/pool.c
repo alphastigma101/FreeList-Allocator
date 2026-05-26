@@ -15,11 +15,23 @@
  * https://busybox.net
 */
 #include "threads.h"
+#include <asm-generic/errno-base.h>
+#include <pthread.h>
+#include <stdalign.h>
+#include <stddef.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
+#include <sys/mman.h>
 
+#if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__)
+    // ASAN/TSAN need significantly more stack space for instrumentation
+    #define ASAN_STACK_MULTIPLIER 16
+#else
+    #define ASAN_STACK_MULTIPLIER 1
+#endif
 
 /**
  * @brief Creates a shared memory mapping accessible across processes
@@ -120,23 +132,40 @@ threads_t* init_threads_t() {
         pthread_mutexattr_destroy(&t->mutex_attr);
         munmap_address(t, sizeof(threads_t));
         return NULL;
-    } else t->mutex = &mutex;
+    } else {
+
+        t->mutex = aligned_alloc(alignof(pthread_mutex_t), sizeof(pthread_mutex_t));
+        memmove(t->mutex,       &mutex,       sizeof(pthread_mutex_t));
+        pthread_mutex_destroy(&mutex);
+
+    }
 
     pthread_attr_t thread_attr = {0};
     if (pthread_attr_init(&thread_attr) != 0) {
         munmap_address(t, sizeof(threads_t));
         printf("ERROR 103: FAILED TO INIT THREAD ATTRIBUTES\n");
         return NULL;
-    } else t->thread_attr = &thread_attr;
+    } else {
+
+        t->thread_attr = aligned_alloc(alignof(pthread_attr_t), sizeof(pthread_attr_t));
+        memmove(t->thread_attr,       &thread_attr,       sizeof(pthread_mutex_t));
+        pthread_attr_destroy(&thread_attr);
+
+    }
 
     // Configure the schedular policy here 
-    schedparam.sched_priority = SCHED_PRIORITY;
-    if (pthread_attr_setinheritsched(t->thread_attr, PTHREAD_EXPLICIT_SCHED) != 0) {
+    schedparam.sched_priority = USTP == 0 ? 1 : USTP == 1 ? 1 : USTP == 2 ? 0 : -1;
+    int inherit = INHERITSCHED == 1 ? PTHREAD_EXPLICIT_SCHED : INHERITSCHED == 0 ? PTHREAD_INHERIT_SCHED : -1;
+    if (pthread_attr_setinheritsched(t->thread_attr, inherit) != 0) {
+        printf("inherit value is: [ %d ]\n\t INHERITSCHED macro numerical values are: (0, 1)\n", inherit);
+        printf("\n\t Where 0 == PTHREAD_INHERIT_SCHED, 1 == PTHREAD_EXPLICIT_SCHED\n");
         munmap_address(t, sizeof(threads_t));
         return NULL;
     }
-
-    if (pthread_attr_setschedpolicy(t->thread_attr, USTP) != 0) {
+    int policy = USTP == 0 ? SCHED_FIFO : USTP == 1 ? SCHED_RR : USTP == 2 ? SCHED_OTHER : -1;
+    if ((pthread_attr_setschedpolicy(t->thread_attr, policy) != 0) && schedparam.sched_priority != -1) {
+        printf("policy value is: [ %d ]\n\t User space thread pool policy i.e USTP macro numerical values are: (0, 1, 2)\n", policy);
+        printf("\n\t Where 0 == SCHED_FIFO, 1 == SCHED_RR, and 2 == SCHED_OTHER\n");
         munmap_address(t, sizeof(threads_t));
         return NULL;
     }
@@ -145,8 +174,10 @@ threads_t* init_threads_t() {
         munmap_address(t, sizeof(threads_t));
         return NULL;
     }
-    
-    if (pthread_attr_setdetachstate(t->thread_attr, THREAD_STATE) != 0) {
+    int detachstate = THREAD_STATE == 1 ? PTHREAD_CREATE_JOINABLE : THREAD_STATE == 0 ? PTHREAD_CREATE_DETACHED : -1;
+    if (pthread_attr_setdetachstate(t->thread_attr, detachstate) != 0) {
+        printf("detachstate value is: [ %d ]\n\t THREAD_STATE Macro numerical values are: (0, 1)", detachstate);
+        printf("\n\t Where 0 == PTHREAD_CREATE_DETACHED, and 1 == PTHREAD_CREATE_JOINABLE\n");
         munmap_address(t, sizeof(threads_t));
         return NULL;
     }
@@ -156,50 +187,51 @@ threads_t* init_threads_t() {
 }
 
 FORCE_INLINE threads_t* create_attrs(threads_t* tp, const uint8_t mode) {
+    int rc;
     if (mode == 0x01) {
-        // Configure the mutex attributes 
-        if (pthread_mutexattr_setpshared(&tp->mutex_attr, PTHREAD_PROCESS_SHARED) != 0) {
-            printf("ERROR 37: FAILED TO INITIALIZE MUTEX AND ATTRIBUTES\n");
-            pthread_mutex_destroy(tp->mutex);
+        rc = pthread_mutexattr_setpshared(&tp->mutex_attr, PTHREAD_PROCESS_SHARED); 
+        if (rc) {
+            printf("pthread_mutexattr_setpshared failed: %s (errno: %d)\n\t swapping to default settings\n", strerror(rc), rc);
             pthread_mutexattr_destroy(&tp->mutex_attr);
-            munmap_address(tp, sizeof(threads_t));
-            return NULL;
+        }
+        int kind = MUTEX_ATTR == 0 ? PTHREAD_MUTEX_DEFAULT : MUTEX_ATTR == 1 ? PTHREAD_MUTEX_ERRORCHECK : MUTEX_ATTR == 2 ? PTHREAD_MUTEX_RECURSIVE : -1;
+        rc = pthread_mutexattr_settype(&tp->mutex_attr, kind);
+        if (rc) {
+            printf("pthread_mutexattr_settype failed: %s (errno: %d)\n\t swapping to mutex default settings\n", strerror(rc), rc);
+            printf("kind value is: [ %d ]\n\t MUTEX_ATTR macro numerical values are: (0, 1, 2)\n", kind);
+            printf("\n\t Where 0 == PTHREAD_MUTEX_DEFAULT, 1 == PTHREAD_MUTEX_ERRORCHECK, and 2 == PTHREAD_MUTEX_RECURSIVE\n");
+            pthread_mutexattr_destroy(&tp->mutex_attr);
         }
 
-        int pshared = 0;
-        if (pthread_mutexattr_getpshared(&tp->mutex_attr, &pshared) != 0) {
-            printf("ERROR 38: FAILED TO GET MUTEX PSHARED ATTRIBUTE\n");
-            pthread_mutex_destroy(tp->mutex);
-            pthread_mutexattr_destroy(&tp->mutex_attr);
-            munmap_address(tp, sizeof(threads_t));
-            return NULL;
+        size_t page_size = (size_t)sysconf(_SC_PAGESIZE);
+        size_t base_size = PTHREAD_STACK_MIN * ASAN_STACK_MULTIPLIER;
+        size_t ss        = (base_size + page_size - 1) & ~(page_size - 1);
+        rc = pthread_attr_setstacksize(tp->thread_attr, ss);
+        if (rc) {
+            printf("pthread_attr_setstacksize failed: %s (errno: %d)\n\t swapping to pthread attribute default settings\n", strerror(rc), rc);
+            pthread_attr_destroy(tp->thread_attr);
         }
 
-        if (pshared != PTHREAD_PROCESS_SHARED) {
-            printf("ERROR 39: MUTEX PSHARED NOT SET CORRECTLY\n");
-            pthread_mutex_destroy(tp->mutex);
-            pthread_mutexattr_destroy(&tp->mutex_attr);
-            munmap_address(tp, sizeof(threads_t));
-            return NULL;
+        // pthread_attr_setguardsize will be ignored, since pthread_attr_setstacksize is used in this scope
+        // TODO: Swap malloc out with this and modify the flags: private_address(NULL, ss, PROT_WRITE | PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        tp->stackaddr = malloc(ss); 
+        rc = pthread_attr_getstack(tp->thread_attr, tp->stackaddr, &ss);
+        if (rc) {
+            printf("ppthread_attr_getstack failed: %s (errno: %d)\n\t failed to get stack address\n", strerror(rc), rc);
         }
-
-        // Configure the pthread_attributes here .... More of a fine tune 
-
-        // Fine tune the stack size for only our thread pool.
-        
-        // Error can occur if stack address is not aligned or stack address + stack size are not properly aligned
-        //if (pthread_attr_setstack(tp->thread_attr, PTHREAD_STACK_MIN) != 0) {
-
-        //}
-        //if (pthread_attr_setguardsize(tp->thread_attr, 0) != 0) {
-
-        //}
+        else {
+            rc = mprotect(tp->stackaddr, ss, PROT_NONE);
+            if (rc == -1) {
+                printf("mprotect failed: %s (errno: %d)\n\t failed to get stack address\n", strerror(rc), rc);
+            }
+        }
     }
     else if (mode == 0x02) {
-        // Default settings should suffice
+        // Aquire default settings 
         if (tp->thread_attr) pthread_attr_destroy(tp->thread_attr);
-        // Default settings. Meaning that we do not enable shared memory 
-        // Have not been tested as of 3/3/26
+        const void* mutex_attr = &tp->mutex_attr;
+        if (mutex_attr) pthread_mutexattr_destroy(&tp->mutex_attr);
+        // Configure mutex or the desired lock with default settings here
     }
     return tp;
 
@@ -219,16 +251,13 @@ threads_t* create_thread(threads_t* tp, const uint8_t mode, void* func) {
         int rc = pthread_create(&tp->thread_id, tp->thread_attr, func, (void*)&tp->args);
         if (rc) {
             printf("pthread_create failed: %s (errno: %d)\n", strerror(rc), rc);
-            pthread_mutex_destroy(tp->mutex);
-            pthread_mutexattr_destroy(&tp->mutex_attr);
-            pthread_attr_destroy(tp->thread_attr);
-            munmap_address(tp, sizeof(threads_t));
-            return NULL;
+            return tp;
         }
     }
 
     return tp;
 }
+
 
 void join_thread(threads_t* t, const void** rtn) {
     int state; 
@@ -236,6 +265,19 @@ void join_thread(threads_t* t, const void** rtn) {
     if (state != PTHREAD_CREATE_DETACHED)
         pthread_join(t->thread_id, (void**)rtn); 
     return;
+}
+
+void upid(threads_t *tp) {
+    // Compare the threads to see if they are the same
+    pthread_t pid = pthread_self(); 
+    if (pthread_equal(tp->thread_id, pid) == 0) {
+        printf("\n========================================\n");
+        printf("In debug_threads function: %p which is a pointer to user space threads id is not the same\n", tp);
+    }
+    else {
+
+    }
+
 }
 
 void clean_threads(threads_t* t) {
@@ -255,48 +297,35 @@ void clean_threads(threads_t* t) {
 
 
 void debug_threads(const threads_t* tp) {
-    uint8_t flag = 0;
     if (tp) {
-        // 1. Output all of the important field members  
-        printf("\n============================================\n");
         printf("Targeted thread address: [ %p ]\n", tp);
-        printf("Lock thread address: [ %p ]\n\t", tp->mutex);
-        // print out the attributes to see if the shared_process is enabled or not. use sysconf
-        printf("Lock Attributes: [ %p ]\n", &tp->mutex_attr);
-        printf("\n============================================\n");
-
-        // Compare the threads to see if they are the same
-        pthread_t pid = pthread_self(); 
-        if (pthread_equal(tp->thread_id, pid) == 0) {
-            printf("\n========================================\n");
-            printf("In debug_threads function: %p which is a pointer to user space threads id is not the same\n", tp);
+        if (tp->mutex) {
+            printf("\n============================================\n");
+            printf("Lock Attributes: [ %p ]\n", &tp->mutex_attr);
+            int pshared;
+            if (pthread_mutexattr_getpshared(&tp->mutex_attr, &pshared) != 0) 
+                printf("Error failed to get thread [ %p ] mutex attribute pshared state\n", tp);
+            
+            if (pshared != PTHREAD_PROCESS_SHARED) 
+                printf("Thread [ %p ] process shared was not enabled.\n", &tp->mutex_attr);
+            printf("shared process is not enabled, assuming default settings are being used\n");
+            printf("\n============================================\n");
         }
-        else {
-
-        }
-        // Check the attributes set for mutex
-        const void* mutex = &tp->mutex_attr;
-        if (mutex) {
-            int pshared = 0;
-            pshared = _SC_THREAD_PROCESS_SHARED;
-            if (pthread_mutexattr_getpshared(&tp->mutex_attr, &pshared) != 0) {
-                flag = flag << 2; // Shift it over twice: 000000010
-
-                // Check to see if the default settings were set   
-                if (pthread_mutexattr_gettype(&tp->mutex_attr, NULL) != 0) {
-                    // we do not know what kind of settings are set, so they are not supported
-                } 
-                else flag = (flag | 1) >> 2; // Should look like this 0000011
-                if (flag == 0x11) printf("\nFunction debug_threads, source line 47: \n\tMutex has default settings set\n");
-                else printf("\nFunction debug_threads, source line 48: \n\tMutex has unsupported settings set\n");
-            }
-        }
+        
         const void* thread_attr = &tp->thread_attr;
         if (thread_attr) {
-            flag = 0;
-            // We need to check the threads attributes to see if they are default or not 
-            // We then can check to see the size of the stack and get the stack address if needed 
-            // It is all intertwined with the thread attributes
+            printf("\n============================================\n");
+            printf("Thread Attribute [ %p ]\n", thread_attr);
+            //size_t size = pthread_attr_getstack(thread_attr, void **__restrict stackaddr, STACK_SIZE);
+            //printf("pthread's stack size is: [ %ud ]\n", size);
         }
+
+        printf("\n============================================\n");
+        //int *schedpolicy;
+        //struct sched_param *schedparam;
+        //int res = pthread_getschedparam(tp->thread_id,  schedpolicy,  schedparam);
+
     }
+
+    printf("\n============================================\n");
 }
