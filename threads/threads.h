@@ -43,6 +43,10 @@
     #define DEFAULT_ALIGNMENT EMBEDDED_SYSTEMS
 #endif
 
+#define FORCE_COMPILER_ALIGNED(n) __attribute__((aligned(n)))
+#define FORCE_PACK __attribute__((packed))
+#define FORCE_INLINE __attribute__((always_inline)) static inline
+
 typedef struct args_t {
 
     void**                     arr; 

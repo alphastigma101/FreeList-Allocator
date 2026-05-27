@@ -104,9 +104,11 @@ int main(void) {
     printf(SEPARATOR);
     printf(TEST_HEADER "  RESULT: " ANSI_GREEN "PASSED ✔\n" ANSI_RESET);
     printf(TEST_HEADER "  ══════════════════════════════════════════════\n\n" ANSI_RESET);
+
     // ─────────────────────────────────────────────────────────────────────
     // 2. Pointer validation for small buckets
     // ─────────────────────────────────────────────────────────────────────
+    
     printf(SEPARATOR);
     printf(TEST_INFO "2. Pointer validation for small buckets\n");
     int val_1 = 0;

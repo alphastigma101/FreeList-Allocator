@@ -32,6 +32,19 @@
 #define BUCKET_MEDIUM_CAP 128U
 #define BUCKET_LARGE_CAP 256U
 
+#ifndef BITMAP_SIZE
+    #if DEFAULT_ALIGNMENT > EMBEDDED_SYSTEMS
+
+        #define BITMAP_SIZE BUCKET_SMALL_CAP + BUCKET_MEDIUM_CAP + BUCKET_LARGE_CAP
+        
+    #else 
+
+        #define BITMAP_SIZE BUCKET_SMALL_CAP + BUCKET_MEDIUM_CAP
+
+    #endif
+#endif
+
+
 /**
    * @description: Free List allocator highly optimized.
    * @note: Buckets will store bytes based on size  

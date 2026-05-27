@@ -52,7 +52,7 @@ test_allocator: $(ALLOCATOR_OBJS)
 		$(CC) -O2 -pthread -c $< -o $@; \
 	else \
 		echo "🔧 Debug build: $<"; \
-		$(CC) $(CFLAGS) $(SANITIZERS) -D __SANITIZE_THREAD__=1 -D MUTEX_ATTR=2 -D THREAD_STATE=0 -D USTP=2 -D INHERITSCHED=1 -c  $< -o $@; \
+		$(CC) $(CFLAGS) $(SANITIZERS) -D __SANITIZE_THREAD__=1 -D MUTEX_ATTR=2 -D THREAD_STATE=0 -D USTP=2 -D INHERITSCHED=1 -DLOGGING=2 -c  $< -o $@; \
 	fi
 
 clean:

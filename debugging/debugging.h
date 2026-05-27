@@ -1,9 +1,29 @@
+// Header and translation unit are not tightly integrated. Basically what a logger should do 
+// Have the ability to include it or exclude it to redude the amount of bytes needed 
 #ifndef _DEBUGGING_H_
 #define _DEBUGGING_H_
 
-#define FORCE_COMPILER_ALIGNED(n) __attribute__((aligned(n)))
-#define FORCE_PACK __attribute__((packed))
-#define FORCE_INLINE __attribute__((always_inline)) static inline
+/* Place where the logs will be stored at */
+/* Files are formatted as .json files */
+#ifndef DIRECTORY
+    #define DIRECTORY "../logs/"
+#endif 
+
+/* Include printf and other functions into the translation unit files - 0 is off 1 is on */
+#ifndef PRINT_DEBUGGING 
+    #define PRINT_DEBUGGING 0
+#endif
+
+/* Include the logger variable into the translation unit files - 0 is off 1 is on */
+#ifndef LOGGING 
+    #define LOGGING 1
+#endif
+
+/* Control the logging 5 being the most critical and 0 being debugging */
+#ifndef LOGLEVEL
+    #define LOGLEVEL 5
+#endif
+
 // {
 // "": [],
 //}

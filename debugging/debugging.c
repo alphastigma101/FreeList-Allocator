@@ -1,6 +1,8 @@
 #include "debugging.h"
 #include <stdio.h>
 
+#define FORCE_INLINE __attribute__((always_inline)) static inline
+
 logger_t logger = {0};
 typedef struct {
     int priority : 3;

@@ -116,7 +116,7 @@ threads_t* init_threads_t() {
 
     struct sched_param schedparam;
     int rc;
-    threads_t* t = private_address(NULL, sizeof(threads_t), PROT_WRITE | PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    threads_t* t = shared_address(NULL, sizeof(threads_t), PROT_WRITE | PROT_READ, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
     if (!t) return NULL;
 
     rc = pthread_mutexattr_init(&t->mutex_attr);
