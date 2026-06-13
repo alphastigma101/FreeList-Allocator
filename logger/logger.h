@@ -65,7 +65,7 @@ typedef struct logger_t {
     void               (*add)(int priority, const char* file, int line, const char* desc, ...);
     void               (*clean)(const char* file, const int line); // key is date and time
     //#if TESTING == 1
-        void               (*write)(); // This will iterate through keys and entries ad add the {} at the correct spots
+        int               (*write_to_logger)(); // This will iterate through keys and entries ad add the {} at the correct spots
     //#endif
     void               (*parse)(const char* file, const int line);
     code_fragment_t*   (*find)(const char* file, const int line);

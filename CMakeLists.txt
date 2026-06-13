@@ -45,6 +45,16 @@ if (CMAKE_BUILD_TYPE STREQUAL "Testing")
     endif()
 
     add_executable(test_arena)
+    if (DEFINED __SANITIZE_THREAD__ STREQUAL "1")
+
+        add_compile_definitions(test_threads PRIVATE ASAN_STACK_MULTIPLIER)
+        add_link_options(-fsanitize=thread,undefined)
+    
+    else()
+        if (DEFINED ENABLE_DEBUGGING STREQUAL "1")
+            add_link_options(-fsanitize=address,undefined,leak)
+        endif()
+    endif()
     target_sources(test_arena
         PRIVATE
             arena/arena.c
@@ -67,6 +77,16 @@ if (CMAKE_BUILD_TYPE STREQUAL "Testing")
     if (DEFINED LOGGING AND LOGGING STREQUAL "1")
 
         add_executable(test_allocator)
+        if (DEFINED __SANITIZE_THREAD__ STREQUAL "1")
+
+            add_compile_definitions(test_threads PRIVATE ASAN_STACK_MULTIPLIER)
+            add_link_options(-fsanitize=thread,undefined)
+        
+        else()
+            if (DEFINED ENABLE_DEBUGGING STREQUAL "1")
+                add_link_options(-fsanitize=address,undefined,leak)
+            endif()
+        endif()
         target_sources(test_allocator
             PRIVATE
                 allocator/allocator.c
@@ -94,6 +114,16 @@ if (CMAKE_BUILD_TYPE STREQUAL "Testing")
         )
 
         add_executable(test_logger)
+        if (DEFINED __SANITIZE_THREAD__ STREQUAL "1")
+
+            add_compile_definitions(test_threads PRIVATE ASAN_STACK_MULTIPLIER)
+            add_link_options(-fsanitize=thread,undefined)
+        
+        else()
+            if (DEFINED ENABLE_DEBUGGING STREQUAL "1")
+                add_link_options(-fsanitize=address,undefined,leak)
+            endif()
+        endif()
         target_compile_definitions(test_logger PRIVATE LOGGING)
         target_sources(test_logger
             PRIVATE
@@ -112,7 +142,7 @@ if (CMAKE_BUILD_TYPE STREQUAL "Testing")
                     logger/buffer.h
         )
     else()
-
+        
         target_sources(test_allocator
             PRIVATE
                 allocator/allocator.c

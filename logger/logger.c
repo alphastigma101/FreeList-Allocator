@@ -69,12 +69,10 @@ void add(int priority, const char* file, int line, const char* desc, ...) {
         
         #if LOGGING == 1 
 
-            write();
+            write_to_logger();
 
-        #endif
-        
+        #endif   
     }
-
     else if (RUNTIME_TABLE_SIZE == ITEM_SIZE) {
         clean_logger();
         init_logger_t();
@@ -95,7 +93,6 @@ void add(int priority, const char* file, int line, const char* desc, ...) {
 
         frag->line = line; 
         frag->desc = format_target_cstr(desc, args);
-
         va_end(args);
 
         if (!frag->desc) {
@@ -104,7 +101,6 @@ void add(int priority, const char* file, int line, const char* desc, ...) {
             return;
         }
 
-        
         frag->priority = priority;
         frag->file     = (char*)file;
 
@@ -143,7 +139,7 @@ FORCE_INLINE void clean_logging_files() {
 
 [[gnu::cold]]
 [[gnu::optimize("O0")]]
-void write() {
+int write_to_logger() {
     //char* dir = NULL;
     struct stat sb;
     if (stat(DIRECTORY, &sb) == 0) {
@@ -154,7 +150,6 @@ void write() {
         if (!buffer.dir.str) {
             create_buffer_t_dir(target_size);
             char* tmp = write_long_cstr(0x0, 3, DIRECTORY, s_time, LOGGER_FILE_TYPE);
-            //dir = append_to_cstr(tmp, NULL, 0x01); // TODO: Swapping to this function after everything works
             memcpy(buffer.dir.str, tmp, target_size);
             memset(tmp, 0, target_size);
             free(tmp);
@@ -168,16 +163,13 @@ void write() {
                 memset(err, 0, 1);
                 free(err);
             }
-            return;
+            return 0;
         }
         memset(&t, 0, sizeof(time_t));
 
         int res = fprintf(fp, "%s", "{\n\t");
         char** arr_file = mmap(NULL, ITEM_SIZE, PROT_WRITE | PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
-        if (arr_file == MAP_FAILED) {
-            DBG(ANSI_RED "write: failed to allocate memory for arr_file!\n" ANSI_RESET, NULL);
-            return;
-        } 
+        if (arr_file == MAP_FAILED) return 0;
 
         char* modified_cstring = "";
         for (size_t i = 0; i < ITEM_SIZE; i++) {
@@ -187,7 +179,7 @@ void write() {
                 size_t hash = (size_t)(((uintptr_t)(file_length * 2654435761UL) ^ (uintptr_t)iter->line) % (size_t)ITEM_SIZE);
 
                 target_size = cstr_size(1, "\n\t\"%s\":\n\t[\n\t\t%d,\n\t\t%d,\n\t\t\"%s\",\n\t\t%d\n\t]");
-                create_buffer_t_msg(target_size); 
+                create_buffer_t_msg(MESSAGE_LEN); 
                 const int_fast8_t size_check = check_cstr_len(0x01, buffer.msg.size, target_size, 1, ANSI_YELLOW "[%d] is less than or equal to: [%d]" ANSI_RESET, buffer.msg.size, target_size);
                 if (size_check == 0) { // empty the buffer regardless
                     DBG(buffer.msg.str, NULL);
@@ -203,12 +195,9 @@ void write() {
                         modified_cstring = write_long_cstr(0x0, 1, buffer.msg.str);
                         arr_file[hash] = modified_cstring;
                         reset_buffer(0x01);
-                    } else {
-                        DBG(ANSI_RED "Failed to copy data to arr_file!\n" ANSI_RESET, NULL);
-                    }
+                    } else return 0;
                 }
                 else {
-            
                     res = snprintf(buffer.msg.str, buffer.msg.size,
                                                     "\n\t\"%s\":\n\t[\n\t\t%d,\n\t\t%d,\n\t\t\"%s\",\n\t\t%d\n\t]",
                                                     iter->file, iter->priority, iter->occurances, iter->desc, iter->line);
@@ -218,9 +207,7 @@ void write() {
                         arr_file[hash] = modified_cstring;
                         reset_buffer(0x01);
 
-                    } else {
-                        DBG(ANSI_RED "Failed to copy data to arr_file!\n" ANSI_RESET, NULL);
-                    }
+                    } else return 0;
                 }
             }
         }
@@ -241,8 +228,7 @@ void write() {
         }
 
         memset(&sb, 0, sizeof(struct stat));
-        reset_buffer(0x01);
-        return;
+        return 1;
 
     }
     else {
@@ -250,12 +236,9 @@ void write() {
         check = mkdir(DIRECTORY,0777);
         if (!check) {
             memset(&sb, 0, sizeof(struct stat));
-            return write();
+            return  write_to_logger();
         }
-        else {
-            DBG(ANSI_RED "Unable to create directory\n" ANSI_RESET, NULL);
-            return;
-        }
+        else return 0;
     }
 } 
 
@@ -364,7 +347,7 @@ void init_logger_t() {
         if (!logger.add) {
 
             logger.add = &add;
-            logger.write = &write;
+            logger.write_to_logger = &write_to_logger;
             logger.clean = &clean;
             logger.find = find;
             logger.parse = &parse;
