@@ -69,7 +69,7 @@ void add(int priority, const char* file, int line, const char* desc, ...) {
         
         #if LOGGING == 1 
 
-            write_to_logger();
+            logger.write_to_logger();
 
         #endif   
     }
@@ -137,15 +137,26 @@ FORCE_INLINE void clean_logging_files() {
 
 }
 
+
+/***
+    * @description: Free function that updates the static variable called `arr` and `table` 
+    * @return: 
+        1) -1: Failed to create file in specific folder
+        2) -2: Failed too mmap a local variable called arr_file. 
+                Meaning that, there is too much memory being used or we hit an edge case not here, but the other tu that uses this api
+        3) -3: sprintf failed to write the c string into buffer
+        4) -4: We failed to unmap arr_file 
+        5)  1: Success. No further diagnostics needed.
+*/
 [[gnu::cold]]
 [[gnu::optimize("O0")]]
 int write_to_logger() {
-    //char* dir = NULL;
+
     struct stat sb;
     if (stat(DIRECTORY, &sb) == 0) {
         time_t t = time(NULL);
         const char* s_time = asctime(gmtime(&t));
-        size_t target_size = cstr_size(3, DIRECTORY, s_time, LOGGER_FILE_TYPE); 
+        int target_size = cstr_size(3, DIRECTORY, s_time, LOGGER_FILE_TYPE); 
 
         if (!buffer.dir.str) {
             create_buffer_t_dir(target_size);
@@ -163,25 +174,26 @@ int write_to_logger() {
                 memset(err, 0, 1);
                 free(err);
             }
-            return 0;
+            return -1;
         }
         memset(&t, 0, sizeof(time_t));
 
         int res = fprintf(fp, "%s", "{\n\t");
         char** arr_file = mmap(NULL, ITEM_SIZE, PROT_WRITE | PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
-        if (arr_file == MAP_FAILED) return 0;
+        if (arr_file == MAP_FAILED) return -2;
 
         char* modified_cstring = "";
-        for (size_t i = 0; i < ITEM_SIZE; i++) {
+        for (int i = 0; i < ITEM_SIZE; i++) {
             code_fragment_t* iter = (code_fragment_t*)arr[i];
             if (iter != NULL) {
                 const int file_length = cstr_size(1, iter->file);
+                // Because ITEM_SIZE can be redefined and reset to a different value exceeding the capacity of 4 bytes, we will stick with size_t
                 size_t hash = (size_t)(((uintptr_t)(file_length * 2654435761UL) ^ (uintptr_t)iter->line) % (size_t)ITEM_SIZE);
 
                 target_size = cstr_size(1, "\n\t\"%s\":\n\t[\n\t\t%d,\n\t\t%d,\n\t\t\"%s\",\n\t\t%d\n\t]");
-                create_buffer_t_msg(MESSAGE_LEN); 
+                create_buffer_t_msg(target_size + 1); 
                 const int_fast8_t size_check = check_cstr_len(0x01, buffer.msg.size, target_size, 1, ANSI_YELLOW "[%d] is less than or equal to: [%d]" ANSI_RESET, buffer.msg.size, target_size);
-                if (size_check == 0) { // empty the buffer regardless
+                if (size_check == 0 || size_check == 3) { // empty the buffer regardless
                     DBG(buffer.msg.str, NULL);
                     reset_buffer(0x01);
                 } else reset_buffer(0x01);
@@ -191,23 +203,23 @@ int write_to_logger() {
                     res = snprintf(buffer.msg.str, buffer.msg.size,
                                                     ",\n\t[\n\t\t%d,\n\t\t%d,\n\t\t\"%s\",\n\t\t%d\n\t]",
                                                     iter->priority, iter->occurances, iter->desc, iter->line);
-                    if (res > 0) {
+                    if (res == target_size) {
                         modified_cstring = write_long_cstr(0x0, 1, buffer.msg.str);
                         arr_file[hash] = modified_cstring;
                         reset_buffer(0x01);
-                    } else return 0;
+                    } else return -3;
                 }
                 else {
                     res = snprintf(buffer.msg.str, buffer.msg.size,
                                                     "\n\t\"%s\":\n\t[\n\t\t%d,\n\t\t%d,\n\t\t\"%s\",\n\t\t%d\n\t]",
                                                     iter->file, iter->priority, iter->occurances, iter->desc, iter->line);
-                    if (res > 0) {
+                    if (res == target_size) {
                         modified_cstring = write_long_cstr(0x0, 1, buffer.msg.str);
                         printf("String value is: %s\n", modified_cstring);
                         arr_file[hash] = modified_cstring;
                         reset_buffer(0x01);
 
-                    } else return 0;
+                    } else return -3;
                 }
             }
         }
@@ -222,10 +234,7 @@ int write_to_logger() {
             //free(arr_file);
         //else 
             res = munmap(arr_file, ITEM_SIZE);
-        if (res == -1) {
-
-            DBG(ANSI_RED "Error: Failed to unmap arr_file!\n" ANSI_RESET, NULL); 
-        }
+        if (res == -1) return -4;
 
         memset(&sb, 0, sizeof(struct stat));
         return 1;
@@ -238,7 +247,7 @@ int write_to_logger() {
             memset(&sb, 0, sizeof(struct stat));
             return  write_to_logger();
         }
-        else return 0;
+        else return -5;
     }
 } 
 

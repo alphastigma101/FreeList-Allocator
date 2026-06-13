@@ -19,7 +19,9 @@ inline extern char* append_to_cstr_or_buffer_field(char* cstrt, const char* cstr
     if (mode == 0x0) {
         // we are appending cstrs to cstrt and returning it 
         cstrt = strcat(cstrt, cstrs);
-        char* res = parse_cstr_or_buffer_field(cstrt, (char*)cstrs, 0x0); 
+        const size_t size = cstr_size(1, cstrt) +  cstr_size(1, cstrs);
+        char* res = parse_cstr_or_buffer_field(cstrt, (char*)cstrs, 0x0);
+        res[size - 1] = '\0'; 
         return res;
     }
     else if (mode == 0x01 || mode == 0x02) {
@@ -171,12 +173,10 @@ FORCE_INLINE void buffer_t_resize(const size_t size, uint8_t mode) {
     if (mode == 0x01) {
 
         if (size < ALLOC_THRESHOLD) {
-            memset(buffer.msg.str, 0, buffer.msg.size);
             char* tmp = realloc(buffer.msg.str, size);
             if (tmp) {
                 memset(tmp, 0, size);
                 tmp[size - 1] = '\0';
-                free(buffer.msg.str);
                 buffer.msg.str = tmp;
             }
             else {
@@ -226,7 +226,6 @@ FORCE_INLINE void buffer_t_resize(const size_t size, uint8_t mode) {
             if (tmp) {
                 memset(tmp, 0, size);
                 tmp[size - 1] = '\0';
-                free(buffer.msg.str);
                 buffer.dir.str = tmp;
             }
             else {
@@ -266,14 +265,14 @@ FORCE_INLINE void buffer_t_resize(const size_t size, uint8_t mode) {
 }
 
 [[gnu::hot]]
-inline size_t cstr_size(const int length, ...) { 
+inline int cstr_size(const int length, ...) { 
     va_list args;
     va_start(args, length);
-    size_t size = 0;
+    int size = 0;
    
     for (int i = 0; i < length && length > 0; i++) { 
         const char* val = va_arg(args, const char *);
-        if (val != NULL) size += strlen(val) + 1;
+        if (val) size += strlen(val) + 1; // + 1 for the null terminator 
     }
     
     va_end(args);
