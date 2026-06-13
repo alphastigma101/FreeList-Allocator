@@ -1,8 +1,11 @@
 #include "allocator.h"
 #include <pthread.h>
+#include <stdatomic.h>
+#include <stddef.h>
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <sys/mman.h>
 #include <sys/types.h>
 
 typedef struct bucket_t {
@@ -19,8 +22,7 @@ typedef struct bucket_t {
 
 allocator_t allocator = {0};
 FORCE_INLINE void thread_pool_ctor(args_t* args);
-FORCE_INLINE void resize_arg_t_arr(size_t next);
-FORCE_INLINE threads_t* find_available_thread();
+FORCE_INLINE threads_t find_available_thread();
 
 /**
     * @description: A Free function that uses a specific bucket index to update its state. 
@@ -49,24 +51,6 @@ FORCE_INLINE int bitmap_clear(int idx, int start, int end) {
     return 1;
 }
 
-FORCE_INLINE size_t bitmap_find_index(bucket_t* slot, size_t start) {
-    uintptr_t slot_addr = (uintptr_t)slot;
-    uintptr_t bucket_start = 0;
-    switch (start) {
-        case BUCKET_SMALL_CAP:
-            bucket_start = (uintptr_t)allocator.bucket.small + start * sizeof(bucket_t);
-        case BUCKET_MEDIUM_CAP: 
-            bucket_start = (uintptr_t)allocator.bucket.medium + start * sizeof(bucket_t);
-        #if DEFAULT_ALIGNMENT > EMBEDDED_SYSTEMS
-            case BUCKET_LARGE_CAP:
-                bucket_start = (uintptr_t)allocator.bucket.large + start * sizeof(bucket_t);
-        #endif
-    }
-    uintptr_t offset = slot_addr - bucket_start;
-    size_t index = offset / sizeof(bucket_t);
-    return index;
-}
-
 /**
     * @description: A Free function that uses a specific bucket index to test and see if the desired index in the bitmap is 0 or 1.
     * @param bm: allocator's bitmap. 
@@ -87,7 +71,6 @@ FORCE_INLINE int bitmap_test(size_t start, size_t end) {
     uintptr_t target_bits = data & range_mask;
     if (target_bits == 0) return -1;
 
-    // Each byte is 0x01 or 0x00 — byte position maps to slot index
     return start + ((__builtin_ffsl((long)target_bits) - 1) / CHAR_BIT);
 }
 
@@ -103,15 +86,50 @@ FORCE_INLINE int bitmap_find_free(size_t start, size_t end) { return bitmap_test
 /**
     * @description: A Free function that copies over the modified bucket to the global variable allocator causing it to sync properly.
     * @param slot: bucket_t pointer type that needs to be synced with allocator variable
+    * @param mutex: A pointer that can be either null or not.
     * @return: None.
 */
-FORCE_INLINE void sync_allocator_buckets(bucket_t* slot) {
-    threads_t* sync_thread = &allocator.pool[ALLOC_THREAD_POOL_SIZE - 1];
-    pthread_mutex_lock(sync_thread->mutex);
+FORCE_INLINE void sync_allocator_buckets(bucket_t* slot, pthread_mutex_t* mutex) {
+
+    if (mutex) {
+
+        int rc;
+        rc = pthread_mutex_lock(mutex);
+        
+        if (rc == 0) {
+
+            uintptr_t slot_offset = (uintptr_t)slot - (uintptr_t)&allocator;
+            bucket_t* _slot = (bucket_t*)((uintptr_t)&allocator + slot_offset);
+            *_slot = *slot;
+            pthread_mutex_unlock(mutex);
+
+        }
+
+        #if LOGGING == 1
+
+            #if LOGLEVEL == 0  
+
+                // print out the status of rc and the memory address of the thread which should also display
+                // the index of allocator.pool the thread that was used  
+
+            #elif LOGLEVEL > 1
+
+                // TODO: Include the logger variable here and its functions
+
+            #endif
+
+        #endif
+
+        return;
+    }
+
     uintptr_t slot_offset = (uintptr_t)slot - (uintptr_t)&allocator;
     bucket_t* _slot = (bucket_t*)((uintptr_t)&allocator + slot_offset);
-    *_slot = *slot;
-    pthread_mutex_unlock(sync_thread->mutex);
+    if (_slot == slot) {
+
+        *_slot = *slot;
+    }
+    return;
 
 }
 
@@ -119,50 +137,23 @@ FORCE_INLINE void sync_thread_pool(args_t* args) {
     bucket_t* shared_slot = args->arr[0];
     threads_t* shared_thread = args->arr[1];
     for (size_t i = 0; i < ALLOC_THREAD_POOL_SIZE - 2; i++) {
-        threads_t* iter = allocator.pool + i;
-        if (iter->flag == 0x01) {
+        threads_t iter = allocator.pool[i];
+        if (iter.flag == 0x01) {
             // if any threads are set to 0x01, they were marked with MADV_SEQUENTIAL and MADV_MERGEABLE
             // Meaning that we are preventing stale caches, and will mitigates msync's overhead. 
             join_thread(iter, NULL);
-            memset(&iter->args, 0, sizeof(args_t));
-            iter->flag = 0x0;
+            memset(&iter.args, 0, sizeof(args_t));
+            iter.flag = 0x0;
             const int res = msync(shared_slot->arena, sizeof(arena_t), MS_SYNC);
             if (res != -1) {
-                sync_allocator_buckets(shared_slot);
+                sync_allocator_buckets(shared_slot, &shared_thread->lock.mutex);
             }
-            else DBG("%d", res);
+            //else DBG("%d", NULL);
         }
     }
+
     shared_thread->flag = 0x0;
     return;
-}
-
-/** 
-    * @description: A Free function that syncs bucket_t flags with arena.
-    * @param b: A specific bucket that needs to be updated
-*/
-FORCE_INLINE void bucket_sync_flag(bucket_t* b) {
-    b->flag = (b->arena && b->arena->flag == 0x01) ? 0x01 : 0x0;
-    sync_allocator_buckets(b);
-}
-
-/**
-    * @description: A free function of O(1) that syncs the arena flag and the bucket flag indicating it is free and ready to be used. 
-    * @param b: bucket_t pointer that needs to be marked. 
-    * @param start: Is a macro value. it can be: SMALL_BIT_START, MEDIUM_BIT_START, or LARGE_BIT_START
-    * @param end: Is a macro value. It can be: SMALL_BIT_END, MEDIUM_BIT_END, or LARGE_BIT_END
-    * @param abs_idx: the absolute index from one of the buckets slot that is used to obtain 'b'. 
-                      It is used to update the bitmap to mark 'b' as full.              
-*/
-FORCE_INLINE int bucket_mark_full(bucket_t* b, int start, int end, int abs_idx) {
-    b->flag = (b->arena && b->arena->flag == 0x01) ? 0x01 : 0x0;
-    if (b->flag == 0x01) {
-        bitmap_clear(abs_idx, start, end);
-        bucket_t* slot = (bucket_t*)((uintptr_t)&allocator + offsetof(allocator_t, bucket) + (abs_idx) * sizeof(bucket_t));
-        *slot = *b;
-        return 1;
-    }
-    return 0;
 }
 
 /**
@@ -173,12 +164,33 @@ FORCE_INLINE int bucket_mark_full(bucket_t* b, int start, int end, int abs_idx) 
     * @param abs_idx: the absolute index from one of the buckets slot that is used to obtain 'b'. 
                       It is used to update the bitmap to mark 'b' as free.              
 */
-FORCE_INLINE void bucket_mark_free(bucket_t* b, int start, int end, int abs_idx) {
-    b->flag = 0x0;
-    b->arena->flag = 0x0;
-    bitmap_set(abs_idx, start, end);
-    bucket_t* slot = (bucket_t*)((uintptr_t)&allocator + offsetof(allocator_t, bucket) + (abs_idx) * sizeof(bucket_t));
-    *slot = *b;
+FORCE_INLINE void bucket_mark_free(int abs_idx) {
+    size_t size = abs_idx;
+    if (size < BUCKET_SMALL_CAP) {
+
+        allocator.bucket.small[abs_idx].flag = 0x0;
+        allocator.bucket.small[abs_idx].arena->flag = 0x0;
+        bitmap_clear(abs_idx, SMALL_BIT_START, SMALL_BIT_END - 1);
+        return;
+
+    }
+    else if (size < BUCKET_MEDIUM_CAP && size >= BUCKET_SMALL_CAP) {
+
+        allocator.bucket.medium[abs_idx].flag = 0x0;
+        allocator.bucket.medium[abs_idx].arena->flag = 0x0;
+        bitmap_clear(abs_idx, MEDIUM_BIT_START, MEDIUM_BIT_END - 1);
+        return;
+
+    }
+    else {
+        #if MODERN_ARCH == 1
+            allocator.bucket.large[abs_idx].flag = 0x0;
+            allocator.bucket.large[abs_idx].arena->flag = 0x0;
+            bitmap_clear(abs_idx, LARGE_BIT_START, LARGE_BIT_END - 1);
+            return;
+        #endif 
+    }
+
 }
 
 /**
@@ -189,23 +201,68 @@ FORCE_INLINE void bucket_mark_free(bucket_t* b, int start, int end, int abs_idx)
 */
 FORCE_INLINE uintptr_t alloc_find_free_slot(size_t sz) {
     int idx = -1;
+
     if (sz < BUCKET_SMALL_CAP) {
         idx = bitmap_find_free(SMALL_BIT_START, SMALL_BIT_END - 1);
-        #if PRINT_DEBUGGING == 1
-            printf("[find_free_slot] small idx: %d\n", idx);
-        #endif 
+        #if LOGGING == 1
+
+            #if LOGLEVEL == 0  
+
+                printf("[find_free_slot] small idx: %d\n", idx);
+
+            #elif LOGLEVEL > 1
+
+                // TODO: Include the logger variable here and its functions
+
+            #endif
+
+        #endif
+
         if (idx != -1) return (uintptr_t)allocator.bucket.small + (idx - SMALL_BIT_START) * sizeof(bucket_t);
+
     }
     else if (sz < BUCKET_MEDIUM_CAP) {
         idx = bitmap_find_free(MEDIUM_BIT_START, MEDIUM_BIT_END - 1);
+
+        #if LOGGING == 1
+
+            #if LOGLEVEL == 0 
+
+                printf("[find_free_slot] medium idx: %d\n", idx);
+
+            #elif LOGLEVEL > 1
+
+                // TODO: Include the logger variable here and its functions
+
+            #endif
+
+        #endif 
+
         if (idx != -1) return (uintptr_t)allocator.bucket.medium + (idx - MEDIUM_BIT_START) * sizeof(bucket_t);
     }
     else {
-        #if (DEFAULT_ALIGNMENT > EMBEDDED_SYSTEMS)
+
+        #if MODERN_ARCH == 1
             idx = bitmap_find_free(LARGE_BIT_START, LARGE_BIT_END - 1);
+            #if LOGGING == 1
+
+                #if LOGLEVEL == 0 
+
+                    printf("[find_free_slot] large idx: %d\n", idx);
+
+                #elif LOGLEVEL > 1
+
+                    // TODO: Include the logger variable here and its functions
+
+                #endif
+                
+            #endif 
+
             if (idx != -1) return (uintptr_t)allocator.bucket.large + (idx - LARGE_BIT_START) * sizeof(bucket_t);
+
         #endif
     }
+
     return -1;
 }
 
@@ -217,40 +274,66 @@ FORCE_INLINE uintptr_t alloc_find_free_slot(size_t sz) {
              Or an address that was allocated on the heap. 
 */
 FORCE_INLINE bucket_t* find_slot(void* ptr) {
+    uintptr_t p = (uintptr_t)ptr;
     int abs_index = -1;
-    bucket_t* b = NULL;
-    uintptr_t mask = ~((uintptr_t)allocator.bucket.small + offsetof(bucket_t, arena) + offsetof(arena_t, chunk) - 1); 
-    b = ((uintptr_t)ptr & mask) >= (uintptr_t)allocator.bucket.small + offsetof(bucket_t, arena) + offsetof(arena_t, chunk) && 
-            ((uintptr_t)ptr & mask) <= (uintptr_t)allocator.bucket.small + ((SMALL_BIT_END - 1) - SMALL_BIT_START) * sizeof(bucket_t) + offsetof(bucket_t, arena) + offsetof(arena_t, chunk) ?
-            (bucket_t*)((uintptr_t)ptr & (mask - (offsetof(bucket_t, arena) + offsetof(arena_t, chunk)))) : NULL;
-    if (b) {
-        abs_index = bitmap_find_index(b, SMALL_BIT_START);
-        if (bucket_mark_full(b, SMALL_BIT_START, SMALL_BIT_END - 1, abs_index))
-                bucket_mark_free(b, SMALL_BIT_START, SMALL_BIT_END - 1, abs_index);
-            return b;
-    }
-    mask = ~((uintptr_t)allocator.bucket.medium + offsetof(bucket_t, arena) + offsetof(arena_t, chunk) - 1);
-    b = ((uintptr_t)ptr & mask) >= (uintptr_t)allocator.bucket.medium + offsetof(bucket_t, arena) + offsetof(arena_t, chunk) && 
-            ((uintptr_t)ptr & mask) <= (uintptr_t)allocator.bucket.medium + ((MEDIUM_BIT_END - 1) - MEDIUM_BIT_START) * sizeof(bucket_t) + offsetof(bucket_t, arena) + offsetof(arena_t, chunk) ?
-            (bucket_t*)((uintptr_t)ptr & (mask - (offsetof(bucket_t, arena) + offsetof(arena_t, chunk)))) : NULL;
-    if (b) {
-        abs_index = bitmap_find_index(b, MEDIUM_BIT_START);
-        if (bucket_mark_full(b, MEDIUM_BIT_START, MEDIUM_BIT_END - 1, abs_index))
-                bucket_mark_free(b, MEDIUM_BIT_START, MEDIUM_BIT_END - 1, abs_index);
-            return b;
+
+    uintptr_t small_base = (uintptr_t)allocator.bucket.small;
+    uintptr_t idx_bits   = (p - (uintptr_t)allocator.bucket.small[0].arena->chunk) / ARENA_SIZE;
+    uintptr_t b_addr     = small_base + idx_bits * sizeof(bucket_t);
+    bucket_t* b          = (bucket_t*)b_addr;
+
+    if (b >= allocator.bucket.small &&
+        b <  allocator.bucket.small + BUCKET_SMALL_CAP &&
+        b->arena && p >= (uintptr_t)b->arena->chunk &&
+        p <  (uintptr_t)b->arena->chunk + b->arena->size) {
+        abs_index = (int)(b - allocator.bucket.small);
+        if (b->flag == 0x01 && b->arena->flag == 0x01) {
+
+            bucket_mark_free(abs_index);
+            b = &allocator.bucket.small[abs_index];
+
+        }
+
+        return b;
     }
 
-    #if (DEFAULT_ALIGNMENT > EMBEDDED_SYSTEMS)
-        mask = ~((uintptr_t)allocator.bucket.large + offsetof(bucket_t, arena) + offsetof(arena_t, chunk) - 1);
-        b = ((uintptr_t)ptr & mask) >= (uintptr_t)allocator.bucket.large + offsetof(bucket_t, arena) + offsetof(arena_t, chunk) && 
-            ((uintptr_t)ptr & mask) <= (uintptr_t)allocator.bucket.large + ((LARGE_BIT_END - 1) - LARGE_BIT_START) * sizeof(bucket_t) + offsetof(bucket_t, arena) + offsetof(arena_t, chunk) ?
-            (bucket_t*)((uintptr_t)ptr & (mask - (offsetof(bucket_t, arena) + offsetof(arena_t, chunk)))) : NULL;
-        if (b) {
-            abs_index = bitmap_find_index(b, LARGE_BIT_START);
-            if (bucket_mark_full(b, LARGE_BIT_START, LARGE_BIT_END - 1, abs_index))
-                    bucket_mark_free(b, LARGE_BIT_START, LARGE_BIT_END - 1, abs_index);
-                return b;
+    idx_bits = (p - (uintptr_t)allocator.bucket.medium[0].arena->chunk) / ARENA_SIZE;
+    b_addr   = (uintptr_t)allocator.bucket.medium + idx_bits * sizeof(bucket_t);
+    b        = (bucket_t*)b_addr;
+
+    if (b >= allocator.bucket.medium &&
+        b <  allocator.bucket.medium + BUCKET_MEDIUM_CAP &&
+        b->arena && p >= (uintptr_t)b->arena->chunk &&
+        p <  (uintptr_t)b->arena->chunk + b->arena->size) {
+        abs_index = (int)(b - allocator.bucket.medium);
+        if (b->flag == 0x01 && b->arena->flag == 0x01) {
+
+            bucket_mark_free(abs_index);
+            b = &allocator.bucket.medium[abs_index];
+
         }
+        return b;
+    }
+
+    #if MODERN_ARCH == 1
+        idx_bits = (p - (uintptr_t)allocator.bucket.large[0].arena->chunk) / ARENA_SIZE;
+        b_addr   = (uintptr_t)allocator.bucket.large + idx_bits * sizeof(bucket_t);
+        b        = (bucket_t*)b_addr;
+
+        if (b >= allocator.bucket.large &&
+            b <  allocator.bucket.large + BUCKET_LARGE_CAP &&
+            b->arena && p >= (uintptr_t)b->arena->chunk &&
+            p <  (uintptr_t)b->arena->chunk + b->arena->size) {
+            abs_index = (int)(b - allocator.bucket.large);
+            if (b->flag == 0x01 && b->arena->flag == 0x01) {
+
+                bucket_mark_free(abs_index);
+                b = &allocator.bucket.large[abs_index];
+
+            }
+            return b;
+        }
+
     #endif
 
     return NULL;
@@ -267,8 +350,10 @@ FORCE_INLINE void push_to_bucket(bucket_t* slot, size_t offset) {
         slot->inuse[offset] = 0x0;
         slot->bytes[offset] = bytes;
         slot->ua = (void*)((uintptr_t)slot->ua + offset);
-        sync_allocator_buckets(slot);
+        sync_allocator_buckets(slot, NULL);
     }
+
+    return;
 }
 
 /**
@@ -281,16 +366,33 @@ FORCE_INLINE void* pop_from_bucket(bucket_t* slot, size_t bytes) {
     if (!slot->ua || slot->ua == slot->arena->chunk) return NULL;
 
     uintptr_t uint_addr = (uintptr_t)slot->ua - (bytes & ~(bytes - 1)); // clamp to nearest power of two of bytes
+    
     void* address = (void*)(uint_addr);
     slot->ua = (void*)uint_addr;
     size_t offset = (size_t)((uintptr_t)address - (uintptr_t)slot->arena->chunk); // This also needs to be squeezed
+    
     slot->inuse[offset] = 0x01;
     slot->bytes[offset] = 0;
     slot->arena = push(slot->arena, bytes);
-    sync_allocator_buckets(slot);
+    
+    sync_allocator_buckets(slot, NULL);
+    #if LOGGING == 0
+        // TODO: We are going to need a buffer api 
+        //printf("[find_free_slot] large idx: %d\n", idx);
+    #else 
+
+        // TODO: Include the logger variable here and its functions
+        
+    #endif 
     return address;
+
 }
 
+/**
+    * @description: Function that returns the size where it came from 
+    * @param slot: Pointer variable that possibly comes from one of the bucket's memory regions
+    * @return: Returns either BUCKET_SMALL_CAP, BUCKET_MEDIUM_CAP, or BUCKET_LARGE_CAP, or returns 0
+*/
 FORCE_INLINE size_t find_bucket_size(const bucket_t* slot) {
     uintptr_t addr = (uintptr_t)slot;
     uintptr_t small_start  = (uintptr_t)allocator.bucket.small;
@@ -301,7 +403,7 @@ FORCE_INLINE size_t find_bucket_size(const bucket_t* slot) {
     if (addr >= small_start && addr < small_end)   return BUCKET_SMALL_CAP;
     if (addr >= medium_start && addr < medium_end) return BUCKET_MEDIUM_CAP;
 
-    #if DEFAULT_ALIGNMENT > EMBEDDED_SYSTEMS
+    #if MODERN_ARCH == 1
         uintptr_t large_start = (uintptr_t)allocator.bucket.large;
         uintptr_t large_end   = large_start + BUCKET_LARGE_CAP * sizeof(bucket_t);
         if (addr >= large_start && addr < large_end) return BUCKET_LARGE_CAP;
@@ -309,6 +411,7 @@ FORCE_INLINE size_t find_bucket_size(const bucket_t* slot) {
 
     return 0;
 }
+
 
 [[gnu::cold]]
 FORCE_INLINE void clear_buckets() {
@@ -335,7 +438,7 @@ FORCE_INLINE void clear_buckets() {
         }
         medium = medium + 1;
     }
-    #if DEFAULT_ALIGNMENT > EMBEDDED_SYSTEMS
+    #if MODERN_ARCH == 1
         size_t large = 0;
         while (large < 256) {
             arena_t* arena = allocator.bucket.large[large].arena;
@@ -356,7 +459,7 @@ FORCE_INLINE void* arena_offset(args_t* args) {
     size_t offset = 0;
 
     int rc;
-    rc = pthread_mutex_lock(shared_thread->mutex);
+    rc = pthread_mutex_lock(&shared_thread->lock.mutex);
     if (rc == 0) {
         for (size_t i = 0; i < ARENA_SIZE; i++) {
             if (shared_slot->inuse[i] == 0x0 && shared_slot->bytes[offset] != 0) offset = offset + i;
@@ -374,11 +477,13 @@ FORCE_INLINE void* arena_offset(args_t* args) {
                 shared_slot->arena->curr -= offset;
                 shared_slot->arena->prev -= offset;
                 shared_slot->offset = 0;
-                sync_allocator_buckets(shared_slot);
+                sync_allocator_buckets(shared_slot, &shared_thread->lock.mutex);
             }
         }
+
         shared_thread->flag = 0x0;
-        pthread_mutex_unlock(shared_thread->mutex);
+        pthread_mutex_unlock(&shared_thread->lock.mutex);
+
     }
 
     return NULL;
@@ -396,41 +501,38 @@ FORCE_INLINE void thread_pool_ctor(args_t* args) {
     threads_t* shared_thread = (threads_t*)args->arr[1];
     int rc;
 
-    if (pthread_equal(shared_thread->thread_id, allocator.pool[ALLOC_THREAD_POOL_SIZE - 1].thread_id)) {
-        rc = pthread_mutex_lock(shared_thread->mutex);
-        if (rc == 0) {
+    
+    rc = pthread_mutex_lock(&shared_thread->lock.mutex);
+    if (rc == 0) {
 
-            for (size_t i = *next; i < ALLOC_THREAD_POOL_SIZE; i++) { 
-                threads_t* t = &allocator.pool[i];
-                if (!t->mutex) {
-                    threads_t* tmp = init_threads_t();
-                    memmove(t, tmp, sizeof(threads_t));
-                    memset(tmp, 0, sizeof(threads_t));
-                    munmap_address(tmp, sizeof(threads_t));
-                    t->args.arr = malloc(2 * sizeof(void*));
-                }
+        for (size_t i = *next; i < ALLOC_THREAD_POOL_SIZE; i++) { 
+            if (allocator.pool[i].args.arr == NULL) {
+                allocator.pool[i] = init_threads_t();
+                allocator.pool[i].args.arr = malloc(2 * sizeof(void*));
+                printf("Executing!\n");
             }
-
-            shared_thread->flag = 0x0;
-            pthread_mutex_unlock(shared_thread->mutex);
-            
         }
 
-        memset(next, 0, sizeof(size_t));
-        free(next);
+        shared_thread->flag = 0x0;
+        pthread_mutex_unlock(&shared_thread->lock.mutex);
+        
     }
 
+    memset(next, 0, sizeof(size_t));
+    free(next);
+
     #if LOGGING == 1
-            #if LOGLEVEL == 0  
+        #if LOGLEVEL == 0  
 
-                //printf("thread_arguments success: Successfully synced and joined thread process for thread_pool_ctor \n");
-                // include the rc lvalue and the memory address of the thread and match it with the index
-            #elif LOGLEVEL > 1
+            //printf("thread_arguments success: Successfully synced and joined thread process for thread_pool_ctor \n");
+            // include the rc lvalue and the memory address of the thread and match it with the index
+        #elif LOGLEVEL > 1
 
-                // TODO: Include the logger variable here and its functions
+            // TODO: Include the logger variable here and its functions
 
-            #endif
         #endif
+
+    #endif
     
 }
 
@@ -449,15 +551,16 @@ void* thread_arguments(void* arg) {
         threads_t* thread = NULL;
         thread = (threads_t*)(args->arr[1]);
         
-        rc = pthread_mutex_lock(thread->mutex);
+        rc = pthread_mutex_lock(&thread->lock.mutex);
         if (rc == 0)  {
 
             arena_offset(args);
-            pthread_mutex_unlock(thread->mutex);
-            join_thread(thread, NULL);
+            pthread_mutex_unlock(&thread->lock.mutex);
+            join_thread(*thread, NULL);
 
         }
         #if LOGGING == 1
+
             #if LOGLEVEL == 0  
 
                 printf("thread_arguments success: Successfully synced and joined thread process for sync_threads \n");
@@ -475,15 +578,17 @@ void* thread_arguments(void* arg) {
         threads_t* thread = NULL;
         thread = (threads_t*)(args->arr[1]);
         
-        rc = pthread_mutex_lock(thread->mutex);
+        rc = pthread_mutex_lock(&thread->lock.mutex);
         if (rc == 0)  {
 
             sync_thread_pool(args);
-            pthread_mutex_unlock(thread->mutex);
-            join_thread(thread, NULL);
+            pthread_mutex_unlock(&thread->lock.mutex);
+            join_thread(*thread, NULL);
 
         }
+
         #if LOGGING == 1
+
             #if LOGLEVEL == 0  
 
                 printf("thread_arguments success: Successfully synced and joined thread process for sync_threads \n");
@@ -493,22 +598,25 @@ void* thread_arguments(void* arg) {
                 // TODO: Include the logger variable here and its functions
 
             #endif
+
         #endif
     }
     else if (strcmp(args->visit, "thread_pool_ctor") == 0) {
         thread_pool_ctor(args);
         threads_t* thread = NULL;
         
-        rc = pthread_mutex_lock(allocator.pool[ALLOC_THREAD_POOL_SIZE - 1].mutex);
+        rc = pthread_mutex_lock(&allocator.pool[ALLOC_THREAD_POOL_SIZE - 1].lock.mutex);
         if (rc == 0) {
 
             thread = (threads_t*)(args->arr[1]);
-            pthread_mutex_unlock(allocator.pool[ALLOC_THREAD_POOL_SIZE - 1].mutex);
+            pthread_mutex_unlock(&allocator.pool[ALLOC_THREAD_POOL_SIZE - 1].lock.mutex);
 
         }
 
-        join_thread(thread, NULL);
+        join_thread(*thread, NULL);
+
         #if LOGGING == 1
+
             #if LOGLEVEL == 0  
 
                 printf("thread_arguments success: Successfully synced and joined thread process for thread_pool_ctor \n");
@@ -518,6 +626,7 @@ void* thread_arguments(void* arg) {
                 // TODO: Include the logger variable here and its functions
 
             #endif
+
         #endif
 
     }
@@ -526,20 +635,42 @@ void* thread_arguments(void* arg) {
         threads_t* shared_thread = (threads_t*)args->arr[1];
         arena_offset(args);
         
-        if (pthread_mutex_trylock(shared_thread->mutex) != 0) {
+        int rc;
+        rc = pthread_mutex_lock(&shared_thread->lock.mutex);
+        if (rc == 0) {
+
             const int res = msync(shared_slot->arena, sizeof(arena_t), MS_SYNC);
-            if (res != -1) {
-               sync_allocator_buckets(shared_slot);
-            }
-            else {
-                // Debugging info goes here....
-            }
-            pthread_mutex_unlock(shared_thread->mutex);
+            if (res != -1) sync_allocator_buckets(shared_slot, &shared_thread->lock.mutex);
+            pthread_mutex_unlock(&shared_thread->lock.mutex);
+
+            #if LOGGING == 1
+
+                #if LOGLEVEL == 0  
+
+                    // print of the status and see if msync actually synced successfully or not 
+                    // print off the rc and thread memory address and the index associated with allocator.pool 
+                    
+                #elif LOGLEVEL > 1
+
+                    // TODO: Include the logger variable here and its functions
+
+                #endif
+
+            #endif
+
         }
 
-        join_thread(shared_thread, NULL);
+        join_thread(*shared_thread, NULL);
+        
+        uint8_t* base = (uint8_t*)allocator.pool;
+        if (!((uint8_t*)shared_thread < base || !((uint8_t*)shared_thread >= base + ALLOC_THREAD_POOL_SIZE))) {
+
+            clean_threads(*shared_thread);
+
+        }
 
         #if LOGGING == 1
+
             #if LOGLEVEL == 0  
 
                 printf("thread_arguments success: Successfully synced and joined thread process for thread_pool_ctor \n");
@@ -549,82 +680,356 @@ void* thread_arguments(void* arg) {
                 // TODO: Include the logger variable here and its functions
 
             #endif
+
         #endif
     }
 
     pthread_exit(NULL);
+
 }
 
 [[gnu::hot]]
-FORCE_INLINE threads_t* find_available_thread() {
-    for (size_t _i = 0; _i < ALLOC_THREAD_POOL_SIZE; _i++) { 
-        if (allocator.pool[_i].flag == 0x0) {
-            allocator.pool[_i].flag = 0x01;
-            return &allocator.pool[_i];
+FORCE_INLINE threads_t find_available_thread() {
+
+    int rc; 
+    threads_t t = {0};
+    rc = pthread_mutex_lock(&allocator.pool[ALLOC_THREAD_POOL_SIZE - 1].lock.mutex);
+    if (rc == 0) {
+        for (size_t _i = 0; _i < ALLOC_THREAD_POOL_SIZE; _i++) { 
+            if (allocator.pool[_i].flag == 0x0) {
+                allocator.pool[_i].flag = 0x01;
+                return allocator.pool[_i];
+            }
         }
+        pthread_mutex_unlock(&allocator.pool[ALLOC_THREAD_POOL_SIZE - 1].lock.mutex);
     }
-    return NULL;
+
+    return t;
 }
 
 [[gnu::hot]]
 //[[gnu::constructor(0)]]
 // TODO: Need to make sure that MADV_MERGEABLE enabled does not consume a lot of processing power; use with care.
 FORCE_INLINE void alloc_init(void) {
-    int res = 0;
-    threads_t* thread = NULL;
-    if (!allocator.bits) {
-        #if (DEFAULT_ALIGNMENT > EMBEDDED_SYSTEMS)
-            allocator.bits = private_address(NULL, BITMAP_SIZE * sizeof(uint8_t), PROT_WRITE | PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
-            res = madvise(allocator.bits, BITMAP_SIZE * sizeof(uint8_t), MADV_SEQUENTIAL | MADV_MERGEABLE);
-            if (res == -1) DBG("%d", res);
-            memset(allocator.bits, 1, 448 * sizeof(uint8_t));
 
+    int res = 0;
+    if (!allocator.bits) {
+
+        init_logger_t();
+
+        #if MODERN_ARCH == 1
+
+            allocator.bits = private_address(NULL, BITMAP_SIZE * sizeof(uint8_t), PROT_WRITE | PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+            #if LOGGING == 0
+
+                // TODO: THIS IS ALL BROKEN WE NEED A BUFFER API AND RE-ADVICE THIS CODE
+                /*printer.msg = strcat(buffer, "alloc_init: allocating memory for allocator.bits field\n\t");
+                if (allocator.bits == MAP_FAILED) {
+                    char status[] = "error: ";
+                    printer.msg = strcat(buffer, status);
+                    printer.msg = strcat(msg, strerror(res)); 
+                    DBG(msg);
+                }
+                else {
+                    printer.msg = strcat(buffer, "success: No further info is needed... Continuing");
+                    DBG(msg);
+                }
+
+                memset(printer.msg, 0, sizeof(char));
+                memset(printer.buffer, 0, MESSAGE_LEN);*/
+
+            #elif LOGGING == 1 
+            
+                // TODO: Include the logger variable here and its functions
+
+            #else 
+
+                if (res == -1) {
+
+                }
+                
+            #endif
+
+            res = madvise(allocator.bits, BITMAP_SIZE * sizeof(uint8_t), MADV_SEQUENTIAL | MADV_MERGEABLE);
+            
+            #if LOGGING == 0
+
+                /*printer.msg = strcat(buffer, "alloc_init: setting flags for madvice for allocator.bits field\n\t");
+                if (res == -1) {
+                    char status[] = ANSI_RED "error: ";
+                    printer.msg = strcat(buffer, status);
+                    printer.msg = strcat(msg, strerror(res)); 
+                    DBG(msg);
+                }
+                else {
+                    printer.msg = strcat(buffer, "success: No further info is needed... Continuing");
+                    DBG(printer.msg);
+                }
+
+                memset(printer.msg, 0, sizeof(char));
+                memset(printer.buffer, 0, MESSAGE_LEN);*/
+
+            #elif LOGGING == 1
+                // TODO: Include the logger variable here and its functions
+            #endif
+
+            memset(allocator.bits, 1, BITMAP_SIZE * sizeof(uint8_t));
             allocator.bucket.large = shared_address(NULL, BUCKET_LARGE_CAP * sizeof(bucket_t), PROT_WRITE | PROT_READ, MAP_SHARED | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+
+            #if LOGGING == 0
+
+                /*msg = strcat(buffer, "alloc_init: allocating memory for allocator.bucket.large field\n\t");
+                if (allocator.bucket.large == MAP_FAILED) {
+                    char status[] = "error: ";
+                    msg = strcat(buffer, status);
+                    msg = strcat(msg, strerror(res)); 
+                    DBG(msg);
+                }
+                else {
+                    msg = strcat(msg, "success: No further info is needed... Continuing");
+                    DBG(msg);
+                }
+
+                memset(msg, 0, sizeof(char));
+                memset(buffer, 0, MESSAGE_LEN);*/
+            
+            #elif LOGGING == 1
+
+                // TODO: Include the logger variable here and its functions
+
+            #endif
+            
             res = madvise(allocator.bucket.large, BUCKET_LARGE_CAP * sizeof(bucket_t), MADV_SEQUENTIAL | MADV_MERGEABLE);
-            if (res == -1) DBG("%d", res);
+            
+            #if LOGGING == 0
+                /*msg = strcat(buffer, "alloc_init: using madvise on allocator.bucket.large\n\t");
+                if (res == -1) {
+                    char status[] = "error: ";
+                    msg = strcat(buffer, status);
+                    msg = strcat(msg, strerror(res)); 
+                    DBG(msg);
+                }
+                else {
+                    msg = strcat(msg, "success: No further info is needed... Continuing");
+                    DBG(msg);
+                }
+
+                memset(msg, 0, sizeof(char));
+                memset(buffer, 0, MESSAGE_LEN);*/
+
+            #elif LOGGING == 1
+                // TODO: Include the logger variable here and its functions
+            #endif
            
-        #else 
-            allocator.bits = private_address(NULL, BITMAP_SIZE * sizeof(uint8_t), PROT_WRITE | PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        #else
+
+            allocator.bits = private_address(NULL, BITMAP_SIZE * sizeof(uint8_t), PROT_WRITE | PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+            #if LOGGING == 0
+                
+                /*msg = strcat(buffer, "alloc_init: allocating memory for allocator.bits field\n\t");
+                if (allocator.bits == MAP_FAILED) {
+                    char status[] = "error: ";
+                    msg = strcat(buffer, status);
+                    msg = strcat(msg, strerror(res)); 
+                    DBG(msg);
+                }
+                else {
+                    msg = strcat(buffer, "success: No further info is needed... Continuing");
+                    DBG(msg);
+                }
+
+                memset(msg, 0, sizeof(char));
+                memset(buffer, 0, MESSAGE_LEN);*/
+
+            #elif LOGLEVEL == 1
+                // TODO: Include the logger variable here and its functions
+            #endif
+
             memset(allocator.bits, 1, BITMAP_SIZE * sizeof(uint8_t));
             res = madvise(allocator.bits, BITMAP_SIZE * sizeof(uint8_t), MADV_SEQUENTIAL | MADV_MERGEABLE);
-            if (res == -1) DBG("%d", res);
+
+            #if LOGGING == 0
+            
+                /*msg = strcat(buffer, "alloc_init: using madvise on allocator.bits field\n\t");
+                if (res == -1) {
+                    char status[] = "error: ";
+                    msg = strcat(buffer, status);
+                    msg = strcat(msg, strerror(res)); 
+                    DBG(msg);
+                }
+                else {
+                    msg = strcat(buffer, "success: No further info is needed... Continuing");
+                    DBG(msg);
+                }
+
+                memset(msg, 0, sizeof(char));
+                memset(buffer, 0, MESSAGE_LEN);*/
+
+            #elif LOGGING == 1
+                // TODO: Include the logger variable here and its functions
+            #endif
+
         #endif
 
         allocator.bucket.small = shared_address(NULL, BUCKET_SMALL_CAP * sizeof(bucket_t), PROT_WRITE | PROT_READ, MAP_SHARED | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+        
+        #if LOGGING == 0
+            
+            /*msg = strcat(buffer, "alloc_init: allocating memory for allocator.bucket.small field\n\t");
+            if (allocator.bucket.small == MAP_FAILED) {
+                char status[] = "error: ";
+                msg = strcat(buffer, status);
+                msg = strcat(msg, strerror(res)); 
+                DBG(msg);
+            }
+            else {
+                msg = strcat(msg, "success: No further info is needed... Continuing");
+                DBG(msg);
+            }
+
+            memset(msg, 0, sizeof(char));
+            memset(buffer, 0, MESSAGE_LEN);*/
+
+            #elif LOGGING == 1
+
+                // TODO: Include the logger variable here and its functions
+
+        #endif
+
         res = madvise(allocator.bucket.small, BUCKET_SMALL_CAP * sizeof(bucket_t), MADV_SEQUENTIAL | MADV_MERGEABLE);
-        if (res == -1) DBG("%d", res);
+        
+        #if LOGGING == 0
+            
+            /*msg = strcat(buffer, "alloc_init: using madvise on allocator.bucket.small field\n\t");
+            if (res == -1) {
+                char status[] = "error: ";
+                msg = strcat(buffer, status);
+                msg = strcat(msg, strerror(res));  
+                DBG(msg);
+            }
+            else {
+                msg = strcat(msg, "success: No further info is needed... Continuing");
+                DBG(msg);
+            }
+            memset(msg, 0, sizeof(char));
+            memset(buffer, 0, MESSAGE_LEN);*/
+
+        #elif LOGGING == 1
+            // TODO: Include the logger variable here and its functions
+        #endif
 
         allocator.bucket.medium = shared_address(NULL, BUCKET_MEDIUM_CAP * sizeof(bucket_t), PROT_WRITE | PROT_READ, MAP_SHARED | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+        
+        #if LOGGING == 0
+            
+            /*msg = strcat(buffer, "alloc_init: allocating memory for allocator.bucket.medium field\n\t");
+            if (allocator.bucket.small == MAP_FAILED) {
+                char status[] = "error: ";
+                msg = strcat(buffer, status);
+                msg = strcat(msg, strerror(res)); 
+                DBG(msg);
+            }
+            else {
+                msg = strcat(msg, "success: No further info is needed... Continuing");
+                DBG(msg);
+            }
+            memset(msg, 0, sizeof(char));
+            memset(buffer, 0, MESSAGE_LEN);*/
+        #elif LOGGING == 1
+            // TODO: Include the logger variable here and its functions
+        #endif
+        
         res = madvise(allocator.bucket.medium, BUCKET_MEDIUM_CAP * sizeof(bucket_t), MADV_SEQUENTIAL | MADV_MERGEABLE);
-        if (res == -1) DBG("%d", res);
+        
+        #if LOGGING == 0
+            
+            /*msg = strcat(buffer, "alloc_init: using madavise on allocator.bucket.medium field\n\t");
+            if (res == -1) {
+                char status[] = "error: ";
+                msg = strcat(buffer, status);
+                msg = strcat(msg, strerror(res));  
+                DBG(msg);
+            }
+            else {
+                msg = strcat(msg, "success: No further info is needed... Continuing");
+                DBG(msg);
+            }
+            memset(msg, 0, sizeof(char));
+            memset(buffer, 0, MESSAGE_LEN);*/
+
+        #elif LOGGING == 1
+            // TODO: Include the logger variable here and its functions
+        #endif
         
         allocator.pool = shared_address(NULL, ALLOC_THREAD_POOL_SIZE * sizeof(threads_t), PROT_WRITE | PROT_READ, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+        
+        #if LOGGING == 0
+            
+            /*msg = strcat(buffer, "alloc_init: allocating memory for allocator.pool field\n\t");
+            if (allocator.pool == MAP_FAILED) {
+                char status[] = "error: ";
+                msg = strcat(buffer, status);
+                msg = strcat(msg, strerror(res)); 
+                DBG(msg);
+            }
+            else {
+                msg = strcat(msg, "success: No further info is needed... Continuing");
+                DBG(msg);
+            }
+
+            memset(msg, 0, sizeof(char));
+            memset(buffer, 0, MESSAGE_LEN);*/
+              
+        #elif LOGGING== 1
+            // TODO: Include the logger variable here and its functions
+        #endif
+
         res = madvise(allocator.pool, ALLOC_THREAD_POOL_SIZE * sizeof(threads_t), MADV_SEQUENTIAL | MADV_MERGEABLE);
-        if (res == -1) DBG("%d", res);
         
-        thread = &allocator.pool[ALLOC_THREAD_POOL_SIZE - 1];
-        threads_t* tmp = init_threads_t();
-        memmove(thread, tmp, sizeof(threads_t));
-        munmap_address(tmp, sizeof(threads_t));
+        #if LOGGING == 0
+
+            /*msg = strcat(buffer, "alloc_init: using madvise on allocator.pool field\n\t");
+            if (res == -1) {
+                char status[] = "error: ";
+                msg = strcat(buffer, status);
+                msg = strcat(msg, strerror(res)); 
+                DBG(msg);
+            }
+            else {
+                msg = strcat(msg, "success: No further info is needed... Continuing");
+                DBG(msg);
+            }
+            memset(msg, 0, sizeof(char));
+            memset(buffer, 0, MESSAGE_LEN);*/
         
-        thread->args.arr = malloc(2 * sizeof(void*));
-        thread->args.visit = "thread_pool_ctor";
+        #elif LOGGING == 1
+            // TODO: Include the logger variable here and its functions
+        #endif
+        
+    
+        allocator.pool[ALLOC_THREAD_POOL_SIZE - 1] = init_threads_t();
+
+        allocator.pool[ALLOC_THREAD_POOL_SIZE - 1].args.arr = malloc(2 * sizeof(void*));
+        allocator.pool[ALLOC_THREAD_POOL_SIZE - 1].args.visit = "thread_pool_ctor";
         size_t* next = aligned_alloc(alignof(size_t), sizeof(size_t));
         *next = 0;
 
-        thread->args.arr[0] = (void*)next;
-        thread->args.arr[1] = (void*)thread;
-        thread->flag = 0x01;
-        thread = create_thread(thread, 0x01, thread_arguments);
+        allocator.pool[ALLOC_THREAD_POOL_SIZE - 1].args.arr[0] = (void*)next;
+        allocator.pool[ALLOC_THREAD_POOL_SIZE - 1].args.arr[1] = (void*)&allocator.pool[ALLOC_THREAD_POOL_SIZE - 1];
+        allocator.pool[ALLOC_THREAD_POOL_SIZE - 1].flag = 0x01;
+       
+        create_thread(allocator.pool[ALLOC_THREAD_POOL_SIZE - 1], 0x01, thread_arguments);
         allocator.n_bytes = sizeof(allocator.bits);
         
     }
 
     allocator.arena = init_arena_t();
     if (!allocator.arena) {
+
         fprintf(stderr, "ERROR: Failed to init arena\n");
         munmap_address(allocator.arena, sizeof(arena_t));
         return;
+
     }
 
 }
@@ -646,58 +1051,69 @@ FORCE_INLINE void debug_allocator() {
 [[gnu::hot]]
 void* allocate(size_t bytes) {
     char* address = NULL;
-    int idx = -1; 
-    int res = 0;
+    int idx = -1;
+    int res = -1;  
 
-    threads_t* thread = &allocator.pool[ALLOC_THREAD_POOL_SIZE - 1];
-    threads_t* tao = NULL;
+    threads_t thread = allocator.pool[ALLOC_THREAD_POOL_SIZE - 1];
+    threads_t tao = {0};
     bucket_t* slot = (bucket_t*)alloc_find_free_slot(bytes);
     
     int rc;
-    rc = pthread_mutex_lock(thread->mutex);
+    rc = pthread_mutex_lock(&thread.lock.mutex);
     if (rc == 0) {
         
-        if (thread->flag == 0x0) {
-            thread->flag = 0x01; 
-            thread->args.visit = "sync_threads";
-            thread->args.arr[0] = (void*)slot;
-            thread->args.arr[1] = (void*)thread;
-            thread = create_thread(thread, 0x01, thread_arguments);
+        if (thread.flag == 0x0) {
+
+            thread.flag = 0x01; 
+            thread.args.visit = "sync_threads";
+            thread.args.arr[0] = (void*)slot;
+            thread.args.arr[1] = (void*)&thread;
+
+            create_thread(thread, 0x01, thread_arguments);
+
         }
-        #if LOGGING == 1
-            #if LOGLEVEL == 0  
 
-                printf("allocate error: Failed to assign memory address... printing out information\n");
-                //debug_allocator();
+        #if LOGGING == 0 || LOGGIN0 == 1
+            char* half = "";
+            half = strcat(half, "Result is: [ %d ]\n\t");
+            res = sprintf(half, "Result is: [ %d ]\n\t", rc);
+            
+            if (res > 0) {
+                size_t size = cstr_size(2, "allocate: Successfully able to lock the user choice lock!\n\t", half);
+                create_buffer_t_msg(size);
 
-            #elif LOGLEVEL > 1
-
-                // TODO: Include the logger variable here and its functions
-
-            #endif
+                buffer.msg.str = write_long_ctr(2, "allocate: Successfully able to lock the user choice lock!\n\t", half);
+                #if LOGGING == 0
+                    printer.add(0, __FILE__, buffer.msg.str, __LINE__);
+                    printer.print(__FILE__, __LINE__);
+                #else
+                    logger.add(0, __FILE__, buffer.msg.str, __LINE__);
+                #endif
+            }
         #endif
-        pthread_mutex_unlock(thread->mutex);
 
+        pthread_mutex_unlock(&thread.lock.mutex);
     }
 
     if (slot->offset > 0) {
         tao = find_available_thread();
         
-        if (tao == NULL) {
+        if (tao.thread_id == 0) {
 
-            threads_t* tmp = init_threads_t();
-            tao = shared_address(tao, sizeof(threads_t), PROT_WRITE | PROT_READ, MAP_SHARED | MAP_ANONYMOUS, -1, 0);;
-            res = madvise(tao, sizeof(threads_t), MADV_DONTNEED);
-            memmove(tao, tmp, sizeof(threads_t));
-            munmap_address(tmp, sizeof(threads_t));
+            threads_t tmp = init_threads_t();
+            memcpy(&tao, &tmp, sizeof(threads_t));
+            res = madvise(&tao, sizeof(threads_t), MADV_DONTNEED);
+            
+            memcpy(&tao, &tmp, sizeof(threads_t));
+            memset(&tmp, 0, sizeof(threads_t));
 
         }
 
-        tao->args.visit = "extra_thread";
-        tao->args.size = 2;
-        tao->args.arr[0] = (void*)slot;
-        tao->args.arr[1] = (void*)tao;
-        tao = create_thread(thread, 0x01, thread_arguments);
+        tao.args.visit = "extra_thread";
+        tao.args.size = 2;
+        tao.args.arr[0] = (void*)slot;
+        tao.args.arr[1] = (void*)&tao;
+        create_thread(thread, 0x01, thread_arguments);
 
     }
     
@@ -709,12 +1125,92 @@ void* allocate(size_t bytes) {
             if (!slot->bytes && !slot->inuse) {
 
                 slot->bytes = private_address(slot->bytes, BITMAP_SIZE * sizeof(uint8_t), PROT_WRITE | PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+                /*#if LOGGING == 1
+                    msg = "allocate: allocating memory for slot->bytes field\n\t";
+                    #if LOGLEVEL == 0
+                        if (slot->bytes == MAP_FAILED) {
+                            msg = strcat(msg, "error: " +  strerror(res)); 
+                            DBG(msg);
+                        }
+                        else {
+                            msg = strcat(msg, "success: No further info is needed... Continuing");
+                            DBG(msg);
+                        }
+                        msg = "";
+                    #elif LOGLEVEL > 1
+
+                        // TODO: Include the logger variable here and its functions
+
+                    #endif
+
+                #endif*/
+
                 slot->inuse = private_address(slot->inuse, BITMAP_SIZE * sizeof(uint8_t), PROT_WRITE | PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
-                res = madvise(slot->bytes, 192 * sizeof(uint8_t), MADV_SEQUENTIAL | MADV_MERGEABLE | MADV_DONTNEED);
-                if (res == -1) DBG("%d", res);
-                res = madvise(slot->inuse, 192 * sizeof(uint8_t), MADV_SEQUENTIAL | MADV_MERGEABLE | MADV_DONTNEED);
-                if (res == -1) DBG("%d", res);
                 
+                /*#if LOGGING == 1
+                    msg = "allocate: allocating memory for slot->bytes field\n\t";
+                    #if LOGLEVEL == 0
+                        if (slot->inuse == MAP_FAILED) {
+                            msg = strcat(msg, "error: " +  strerror(res)); 
+                            DBG(msg);
+                        }
+                        else {
+                            msg = strcat(msg, "success: No further info is needed... Continuing");
+                            DBG(msg);
+                        }
+                        msg = "";
+                    #elif LOGLEVEL > 1
+
+                        // TODO: Include the logger variable here and its functions
+
+                    #endif
+
+                #endif*/
+
+                res = madvise(slot->bytes, BITMAP_SIZE * sizeof(uint8_t), MADV_SEQUENTIAL | MADV_MERGEABLE | MADV_DONTNEED);
+                
+                /*#if LOGGING == 1
+                    msg = "allocate: used madvise on slot->bytes field\n\t";
+                    #if LOGLEVEL == 0
+                        if (res == -1) {
+                            msg = strcat(msg, "error: " +  strerror(res)); 
+                            DBG(msg);
+                        }
+                        else {
+                            msg = strcat(msg, "success: No further info is needed... Continuing");
+                            DBG(msg);
+                        }
+                        msg = "";
+                    #elif LOGLEVEL > 1
+
+                        // TODO: Include the logger variable here and its functions
+
+                    #endif
+
+                #endif*/
+
+                res = madvise(slot->inuse, BITMAP_SIZE * sizeof(uint8_t), MADV_SEQUENTIAL | MADV_MERGEABLE | MADV_DONTNEED);
+                
+                /*#if LOGGING == 1
+                    msg = "allocate: used madvise on slot->inuse field\n\t";
+                    #if LOGLEVEL == 0
+                        if (res == -1) {
+                            msg = strcat(msg, "error: " +  strerror(res)); 
+                            DBG(msg);
+                        }
+                        else {
+                            msg = strcat(msg, "success: No further info is needed... Continuing");
+                            DBG(msg);
+                        }
+                        msg = "";
+                    #elif LOGLEVEL > 1
+
+                        // TODO: Include the logger variable here and its functions
+
+                    #endif
+
+                #endif*/
+
             }
         }
         
@@ -725,7 +1221,7 @@ void* allocate(size_t bytes) {
                 start = SMALL_BIT_START;
                 end = SMALL_BIT_END;
 
-                address = pop_from_bucket(slot, bytes);              
+                address = pop_from_bucket(slot, bytes); // TODO: If data race occurs in here, then we need to pass in tao->mutex into it              
                 if (address) {
                     memset(address, 0, bytes);
                     return address;
@@ -738,7 +1234,7 @@ void* allocate(size_t bytes) {
                 start = MEDIUM_BIT_START;
                 end = MEDIUM_BIT_END;
 
-                address = pop_from_bucket(slot, bytes); 
+                address = pop_from_bucket(slot, bytes); // TODO: If data race occurs in here, then we need to pass in tao->mutex into it 
                 if (address) {
                     memset(address, 0, bytes);
                     return address;
@@ -748,7 +1244,8 @@ void* allocate(size_t bytes) {
 
             }
             else {
-                #if (DEFAULT_ALIGNMENT > EMBEDDED_SYSTEMS)
+
+                #if MODERN_ARCH == 1
                     start = LARGE_BIT_START;
                     end = LARGE_BIT_END;
                     
@@ -758,26 +1255,34 @@ void* allocate(size_t bytes) {
                         return address;
                     }
 
-                    idx = bitmap_find_free(allocator.map, LARGE_BIT_START, LARGE_BIT_END);
+                    idx = bitmap_find_free( LARGE_BIT_START, LARGE_BIT_END);
+
                 #endif
+
             }
 
             if (allocator.arena->flag != 0x01) {
                 allocator.arena = push(allocator.arena, bytes);
-                if (allocator.arena->flag == 0x01) { 
+                
+                if (allocator.arena->flag == 0x01) {
+
                     allocator.bits[(idx) / CHAR_BIT] &= ~(1U << ((idx) % CHAR_BIT));
                     bitmap_set(idx, start, end);
-                    bucket_sync_flag(slot);
+                    slot->flag = (slot->arena && slot->arena->flag == 0x01) ? 0x01 : 0x0;
+                    
+                    sync_allocator_buckets(slot, NULL);
                     arena_t* full = allocator.arena;
                     allocator.arena = NULL;
+                    
                     alloc_init();
                     allocator.arena->next = full;
                     return allocate(bytes);
+
                 }
 
                 address = allocator.arena->res;
                 size_t offset = (uintptr_t)address - (uintptr_t)allocator.arena->chunk;
-                slot->bytes[offset] = bytes;
+                slot->bytes[offset] = bytes; // TODO: Data race can occur here as well, use tao->mutex and lock it if needed 
                 memset(address, 0, bytes);
                 return address;
             }
@@ -790,7 +1295,7 @@ void* allocate(size_t bytes) {
             // 2 large
             #if LOGLEVEL == 0  
 
-                printf("allocate error: Failed to assign memory address... printing out information\n");
+                //DBG("allocate error [ %d ]: Failed to assign memory address... printing out information\n", __LINE__);
                 debug_allocator();
                 
             #elif LOGLEVEL > 1
@@ -798,8 +1303,9 @@ void* allocate(size_t bytes) {
                 // TODO: Include the logger variable here and its functions
 
             #endif
+
         #endif
-        return NULL;
+
     }
 
     return NULL;
@@ -846,21 +1352,30 @@ FORCE_INLINE void deallocate(void* ptr) {
 
     size_t offset = (size_t)((uintptr_t)ptr - (uintptr_t)slot->arena->chunk);
     if (slot->offset == slot->arena->curr) {
-        threads_t* thread = find_available_thread();
-        if (thread) {
-            thread->flag = 0x01;
-            thread->args.visit = "arena_offset";
-            thread->args.size = 1;
-            thread->args.arr[0] = (void*)slot;
-            thread->args.arr[1] = (void*)thread;
-            thread = create_thread(thread, 0x01, thread_arguments);
+        threads_t thread = find_available_thread();
+        // TODO: We need to check to see if the memory address is from the memory region of allocator.pool 
+        if (thread.flag == 0x0) {
+
+            thread.flag = 0x01;
+            thread.args.visit = "arena_offset";
+            thread.args.size = 1;
+            thread.args.arr[0] = (void*)slot;
+            thread.args.arr[1] = (void*)&thread;
+            
+            create_thread(thread, 0x01, thread_arguments);
+
         }
     } else slot->offset = slot->offset + offset;
     size_t bytes = slot->bytes[offset];
 
     if (!slot->ua) slot->ua = ptr;
     else push_to_bucket(slot, offset);
+    //int rc = 0;
     
+    /*rc = mprotect(ptr, bytes, PROT_READ);
+    if (rc == -1) {
+        printf("Failed to make memory address read only\n");
+    }*/
     memset(ptr, 0xFF, bytes);
 
 }
@@ -877,7 +1392,7 @@ void init_allocator_t() {
 
 [[gnu::cold]]
 void clear_allocator() {
-    for (size_t i = 0; ALLOC_THREAD_POOL_SIZE; i++) clean_threads(&allocator.pool[i]);
+    for (size_t i = 0; ALLOC_THREAD_POOL_SIZE; i++) clean_threads(allocator.pool[i]);
     clear_buckets();
     munmap_address(allocator.arena->chunk, ARENA_SIZE);
     munmap_address(allocator.arena, sizeof(arena_t));

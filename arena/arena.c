@@ -25,7 +25,7 @@ uintptr_t alignment(uintptr_t ptr, size_t align) {
 arena_t* init_arena_t() {
     arena_t* arena = NULL;
     int res = 0;
-    arena = private_address(arena, sizeof(arena_t), PROT_WRITE | PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    arena = private_address(NULL, sizeof(arena_t), PROT_WRITE | PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     res = madvise(arena, sizeof(arena_t), MADV_MERGEABLE);
     if (!arena || res == -1) {
         printf("ERROR 10 IN ARENA.C, FAILED TO ALLOCATE MEMORY FOR ARENA!\n");

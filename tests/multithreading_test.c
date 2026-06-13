@@ -97,10 +97,15 @@ void* thread_arguments(void* arg) {
 // TODO: ZSTD Also has its own threading library, so that needs to be integrated into busybox's configuration
 
 int main(void) {
-    threads_t* threads[8];    
-    for (int i = 0; i < 8; i++)
-        threads[i] = init_threads_t();
-    
+
+    threads_t* threads = aligned_alloc(alignof(threads_t), 8 * sizeof(threads_t));
+    threads_t tmp = {0};
+
+    for (int i = 0; i < 8; i++) {
+        tmp = init_threads_t();
+        memcpy(&threads[i], &tmp, sizeof(threads_t));
+        memset(&tmp, 0, sizeof(threads_t));
+    }
 
     {
         printf("\n");
@@ -117,11 +122,12 @@ int main(void) {
         printf(TEST_INFO "Allocated shared int @ %p\n", (void*)i);
         *i = 0;
         
-        threads[0]->args.size = 1;
-        threads[0]->args.arr = malloc(2 * sizeof(void*)); 
-        threads[0]->args.arr[0] = i;
-        threads[0]->args.arr[1] = threads[0]->mutex;
-        threads[0] = create_thread(threads[0], 0x01, thread_arguments);
+        threads[0].args.size = 1;
+        threads[0].args.arr = malloc(2 * sizeof(void*)); 
+        threads[0].args.arr[0] = i;
+        threads[0].args.arr[1] = &threads[0].lock.mutex;
+
+        create_thread(threads[0], 0x01, thread_arguments);
         
         printf(TEST_INFO "Thread spawned — shared address mapped @ %p\n", i);
 
@@ -134,9 +140,9 @@ int main(void) {
 
         for (int j = 0; j < 1000; j++) {
             main_value = j + 1;
-            pthread_mutex_lock(threads[0]->mutex);
+            pthread_mutex_lock(&threads[0].lock.mutex);
             current_thread_value = *i;
-            pthread_mutex_unlock(threads[0]->mutex);
+            pthread_mutex_unlock(&threads[0].lock.mutex);
 
 
             assert(main_value == j + 1 &&
@@ -182,20 +188,20 @@ int main(void) {
         printf(SEPARATOR);
 
         const uint8_t mode_1 = 0x01;
-        threads[1]->args.size = 3;
-        threads[1]->args.arr = malloc(3 * sizeof(void*));
-        threads[1]->args.arr[0] = (void*)&one;
-        threads[1]->args.arr[1] = (void*)&mode_1;
-        threads[1]->args.arr[2] = (void*)threads[1]->mutex;
-        threads[1] = create_thread(threads[1], 0x01, thread_arguments);
+        threads[1].args.size = 3;
+        threads[1].args.arr = malloc(3 * sizeof(void*));
+        threads[1].args.arr[0] = (void*)&one;
+        threads[1].args.arr[1] = (void*)&mode_1;
+        threads[1].args.arr[2] = (void*)&threads[1].lock.mutex;
+        create_thread(threads[1], 0x01, thread_arguments);
 
         const uint8_t mode_2 = 0x02;
-        threads[2]->args.size = 3;
-        threads[2]->args.arr = malloc(sizeof(void*) * 3);
-        threads[2]->args.arr[0] = (void*)&two;
-        threads[2]->args.arr[1] = (void*)&mode_2;
-        threads[2]->args.arr[2] = (void*)threads[2]->mutex;
-        threads[2] = create_thread(threads[2], 0x01, thread_arguments);
+        threads[2].args.size = 3;
+        threads[2].args.arr = malloc(sizeof(void*) * 3);
+        threads[2].args.arr[0] = (void*)&two;
+        threads[2].args.arr[1] = (void*)&mode_2;
+        threads[2].args.arr[2] = (void*)&threads[2].lock.mutex;
+        create_thread(threads[2], 0x01, thread_arguments);
         
         printf(SEPARATOR);
         printf(TEST_INFO "Entering traversal loop — monitoring both threads...\n");
@@ -206,21 +212,21 @@ int main(void) {
         for (;;) {
             if (esc == 1) break;
 
-            pthread_mutex_lock(threads[1]->mutex);
+            pthread_mutex_lock(&threads[1].lock.mutex);
             if (strlen(one) != 0) {
                 const char* cpy_so = one;
                 one += 2;
                 assert((strlen(cpy_so) - strlen(one) == 2));
             } else r1 = 0.5;
-            pthread_mutex_unlock(threads[1]->mutex);
+            pthread_mutex_unlock(&threads[1].lock.mutex);
 
-            pthread_mutex_lock(threads[2]->mutex);
+            pthread_mutex_lock(&threads[2].lock.mutex);
             if (strlen(two) != 0) {
                 const char* cpy_so = two;
                 two += 2;
                 assert((strlen(cpy_so) - strlen(two) == 2));
             } else r2 = 0.5;
-            pthread_mutex_unlock(threads[2]->mutex);
+            pthread_mutex_unlock(&threads[2].lock.mutex);
             
             esc = r1 + r2;
               
@@ -243,8 +249,7 @@ int main(void) {
     // Create a queue, linked lists, binary search tree, and a couple other data structures 
     // that will really test to see if multi-threading is working or not 
     { 
-        threads_t** arr = aligned_alloc(alignof(threads_t), 4);
-        if (arr) memset(arr, 0, 4);
+        
         queue_t* q = (void*)0;
         QUEUE_INIT(q);
         
@@ -276,7 +281,6 @@ int main(void) {
         // Add in the asserts
         // --------
 
-        for (int i = 0; i < 4; i++) clean_threads(arr[i]);
     }
 
     {

@@ -23,4 +23,5 @@ extern arena_t* push(arena_t* arena, size_t bytes);
 extern arena_t* pop(arena_t* arena, size_t offset);
 extern void* resize(arena_t *arena, void *old_memory, size_t old_size, size_t new_size, size_t align);
 extern void clear_arena_t(arena_t* arena);
+
 #endif

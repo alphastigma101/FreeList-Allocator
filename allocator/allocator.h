@@ -59,7 +59,7 @@ typedef struct allocator_t {
     struct bucket {
         struct bucket_t*       small;
         struct bucket_t*       medium;
-        #if DEFAULT_ALIGNMENT > EMBEDDED_SYSTEMS
+        #if MODERN_ARCH == 1
             struct bucket_t*   large;
         #endif
     } bucket;

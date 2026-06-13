@@ -1,7 +1,5 @@
 #include "../allocator/allocator.h"
 #include <assert.h> 
-#include <stddef.h>
-#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdalign.h>
@@ -76,28 +74,37 @@ int main(void) {
     assert(allocator.bucket.small[0].flag == 0x01 && "small[0] arena should be full");
 
     for (; len < 170; len++) {
+
         size_t bytes       = (rand() % 64) + 1;
         s_stack[len].ptr = allocator.allocate(bytes);
+        
         if (allocator.bucket.small[1].flag == 0x01) {
+            
             len = len - 1;
             break;
+
         }
         s_stack[len].bytes = bytes;
-        //printf("Random byte value for small[1] is: %zu  Offset is: %zu\n", bytes, offset);
     }
     size_t e_two = len;
     assert(allocator.bucket.small[1].flag == 0x01 && "small[1] arena should be full");
 
     for (; len < 341; len++) {
+
         size_t bytes       = (rand() % 64) + 1;
         s_stack[len].ptr   = allocator.allocate(bytes);
+
         if (allocator.bucket.small[2].flag == 0x01) {
+
             len = len - 1;
             break;
+
         }
+
         s_stack[len].bytes = bytes;
-        //printf("Random byte value for small[2] is: %zu  Offset is: %zu\n", bytes, offset);
+
     }
+
     size_t e_three = len;
     assert(allocator.bucket.small[2].flag == 0x01 && "small[2] arena should be full");
         
