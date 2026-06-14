@@ -156,15 +156,9 @@ int write_to_logger() {
     if (stat(DIRECTORY, &sb) == 0) {
         time_t t = time(NULL);
         const char* s_time = asctime(gmtime(&t));
-        int target_size = cstr_size(3, DIRECTORY, s_time, LOGGER_FILE_TYPE); 
+        int_fast8_t write_check = check_or_write_cstr(0x0, 0, 0, 3, "%s%s%s", DIRECTORY, s_time, LOGGER_FILE_TYPE); 
 
-        if (!buffer.dir.str) {
-            create_buffer_t_dir(target_size);
-            char* tmp = write_long_cstr(0x0, 3, DIRECTORY, s_time, LOGGER_FILE_TYPE);
-            memcpy(buffer.dir.str, tmp, target_size);
-            memset(tmp, 0, target_size);
-            free(tmp);
-        }
+        if (write_check != 1) return -1;
 
         FILE *fp = fopen(buffer.dir.str, "w");
         if (fp == NULL) {
@@ -190,30 +184,27 @@ int write_to_logger() {
                 // Because ITEM_SIZE can be redefined and reset to a different value exceeding the capacity of 4 bytes, we will stick with size_t
                 size_t hash = (size_t)(((uintptr_t)(file_length * 2654435761UL) ^ (uintptr_t)iter->line) % (size_t)ITEM_SIZE);
 
-                target_size = cstr_size(1, "\n\t\"%s\":\n\t[\n\t\t%d,\n\t\t%d,\n\t\t\"%s\",\n\t\t%d\n\t]");
-                create_buffer_t_msg(target_size + 1); 
-                const int_fast8_t size_check = check_cstr_len(0x01, buffer.msg.size, target_size, 1, ANSI_YELLOW "[%d] is less than or equal to: [%d]" ANSI_RESET, buffer.msg.size, target_size);
-                if (size_check == 0 || size_check == 3) { // empty the buffer regardless
+                write_check = check_or_write_cstr(0x01, 0, 0, 1, ANSI_YELLOW "[%d] is less than or equal to: [%d]" ANSI_RESET, buffer.msg.size, cstr_size(1, ANSI_YELLOW "[%d] is less than or equal to: [%d]" ANSI_RESET));
+                if (write_check == 0 || write_check == 3) { // empty the buffer regardless
                     DBG(buffer.msg.str, NULL);
                     reset_buffer(0x01);
                 } else reset_buffer(0x01);
                 
                 if (arr_file[hash] != NULL) {
                     
-                    res = snprintf(buffer.msg.str, buffer.msg.size,
-                                                    ",\n\t[\n\t\t%d,\n\t\t%d,\n\t\t\"%s\",\n\t\t%d\n\t]",
+                    write_check = check_or_write_cstr(0x01, 0, 0, 6, ",\n\t[\n\t\t%d,\n\t\t%d,\n\t\t\"%s\",\n\t\t%d\n\t]",
                                                     iter->priority, iter->occurances, iter->desc, iter->line);
-                    if (res == target_size) {
+                    if (write_check == 1) {
                         modified_cstring = write_long_cstr(0x0, 1, buffer.msg.str);
                         arr_file[hash] = modified_cstring;
                         reset_buffer(0x01);
                     } else return -3;
                 }
                 else {
-                    res = snprintf(buffer.msg.str, buffer.msg.size,
-                                                    "\n\t\"%s\":\n\t[\n\t\t%d,\n\t\t%d,\n\t\t\"%s\",\n\t\t%d\n\t]",
-                                                    iter->file, iter->priority, iter->occurances, iter->desc, iter->line);
-                    if (res == target_size) {
+
+                    write_check = check_or_write_cstr(0x01, 0, 0, 6, "\n\t\"%s\":\n\t[\n\t\t%d,\n\t\t%d,\n\t\t\"%s\",\n\t\t%d\n\t]",
+                        iter->file, iter->priority, iter->occurances, iter->desc, iter->line); 
+                    if (write_check == 1) {
                         modified_cstring = write_long_cstr(0x0, 1, buffer.msg.str);
                         printf("String value is: %s\n", modified_cstring);
                         arr_file[hash] = modified_cstring;

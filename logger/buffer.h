@@ -49,7 +49,7 @@ extern void reset_buffer(const uint8_t mode);
 extern char* append_to_cstr_or_buffer_field(char* cstrt, const char* cstrs, uint8_t mode);
 extern char* parse_cstr_or_buffer_field(char* cstrt, char* cstrs, const uint8_t mode);
 extern int cstr_size(const int length, ...); 
-extern int_fast8_t check_cstr_len(const uint8_t mode, const size_t c1, const size_t c2, const int length, ...);
+extern int_fast8_t check_or_write_cstr(const uint8_t mode, const size_t c1, const size_t c2, const int length, ...);
 extern char* write_long_cstr(const uint8_t mode, const int length, ...);
 extern char* format_target_cstr(const char* fmt, va_list args);  
 

@@ -2,6 +2,7 @@
 #include <stdarg.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/types.h>
@@ -29,14 +30,14 @@ inline extern char* append_to_cstr_or_buffer_field(char* cstrt, const char* cstr
         // Expecting cstrt to be NULL if mode is 0x01
         // Expecting cstrt and cstrc to not be NULL
         size_t src_size = cstr_size( 1, cstrs);
-        int_fast8_t check_size = check_cstr_len(mode, mode == 0x01 ? buffer.dir.size : mode == 0x02 ? buffer.msg.size : 0, src_size, 0);
+        int_fast8_t check_size = check_or_write_cstr(0x0, mode == 0x01 ? buffer.dir.size : mode == 0x02 ? buffer.msg.size : 0, src_size, 0);
         if (check_size == 1 || check_size == 2) {
             return parse_cstr_or_buffer_field(mode == 0x01 ? buffer.dir.str : mode == 0x02 ? buffer.msg.str : NULL, (char*)cstrs, mode);
         }
         else {
             mode == 0x01 ? create_buffer_t_dir(src_size) : mode == 0x02 ? create_buffer_t_dir(src_size) : mode;
             src_size = cstr_size(1, cstrs);
-            check_size = check_cstr_len(mode, mode == 0x01 ? buffer.dir.size : mode == 0x02 ? buffer.msg.size : 0, src_size, 0);
+            check_size = check_or_write_cstr(0x0, mode == 0x01 ? buffer.dir.size : mode == 0x02 ? buffer.msg.size : 0, src_size, 0);
             if (check_size == 1 || check_size == 2) {
                 return parse_cstr_or_buffer_field(mode == 0x01 ? buffer.dir.str : mode == 0x02 ? buffer.msg.str : NULL, (char*)cstrs, mode);
             }   
@@ -280,7 +281,7 @@ inline int cstr_size(const int length, ...) {
 }
 
 /***
-    * @description: Free function that performs a comparison check of size
+    * @description: Free function that performs a comparison check of size, and can write to msg_t or dir_t 
     * @param c1: c1 is abbreviated as cstring one, so pass in the representation of size of it 
     * @param c2: c2 is abbreviated as cstring two, we compare it heavily against c1
     * @param length: if length is greater than 0, then caller is using the logger api 
@@ -299,19 +300,28 @@ inline int cstr_size(const int length, ...) {
         4) 3 c1 < c2. This could be potentionally bad. If c1 is less than c2, c1 cannot hold c2.    
 */
 [[gnu::hot]]           
-inline int_fast8_t check_cstr_len(const uint8_t mode, const size_t c1, const size_t c2, const int length, ...) {
+inline int_fast8_t check_or_write_cstr(const uint8_t mode, const size_t c1, const size_t c2, const int length, ...) {
     if (length > 0) {
-        if (mode == 0x01) {
+        if (mode == 0x01 || mode == 0x0) {
             va_list args;
             va_start(args, length);
             const char* fmt = va_arg(args, const char*);
-            if (buffer.msg.str) {
-
-                const size_t size = cstr_size(length, fmt);
-                if (size > buffer.msg.size) buffer_t_resize(size, 0x01);
-                vsnprintf(buffer.msg.str, buffer.msg.size, fmt, args);
+            size_t res;
+            if (buffer.msg.str || buffer.dir.str) {
+                const size_t size = vsnprintf(NULL, 0, fmt, args) + 1;
+                mode == 0x01 ? buffer.msg.size < size ? buffer_t_resize(size, 0x01) : mode : buffer.dir.size < size ? buffer_t_resize(size, 0x0) : mode;
+                res = vsnprintf(mode == 0x01 ? buffer.msg.str : buffer.dir.str, mode == 0x01 ? buffer.msg.size : buffer.dir.size, fmt, args);
+                va_end(args);
+                return res == size ? 1 : 0;
             }
-            va_end(args);
+            else {
+                const size_t size = vsnprintf(NULL, 0, fmt, args) + 1;
+                mode == 0x01 ? create_buffer_t_msg(size) : create_buffer_t_dir(size);
+                res = vsnprintf(mode == 0x01 ? buffer.msg.str : buffer.dir.str, mode == 0x01 ? buffer.msg.size : buffer.dir.size, fmt, args);
+                va_end(args);
+                return res == size ? 1 : 0; 
+            }
+            return 1;
         }
     }
 
