@@ -1,7 +1,5 @@
 #include "buffer.h"
 #include <stdlib.h>
-#include <string.h>
-#include <sys/mman.h>
 #include <sys/types.h>
 
 //#include "buffer.h"
@@ -9,7 +7,6 @@
 //#include <sys/types.h>
 
 #define FORCE_INLINE __attribute__((always_inline)) static inline
-#define OPTIMIZE_SIZE __attribute__((optimize("O0")))
 
 // TODO: Move msg_t and dir_t structs here and make setters and getters in buffer field to get them 
 buffer_t buffer = {0};
@@ -21,7 +18,7 @@ FORCE_INLINE char* resize_cstr(char* cstr, const size_t target_size, const size_
 
 
 [[gnu::hot]]
-inline extern char* append_to_cstr(char* cstrt, char* cstrs, const uint8_t mode) {
+inline char* append_to_cstr(char* cstrt, char* cstrs, const uint8_t mode) {
     char* res = NULL;
     if (mode == 0x0) {
         const size_t size = cstr_size(1, cstrt) +  cstr_size(1, cstrs);
@@ -31,10 +28,10 @@ inline extern char* append_to_cstr(char* cstrt, char* cstrs, const uint8_t mode)
         return res;
     }
     else if (mode == 0x01 || mode == 0x02) {
-        const size_t new_size = cstr_size(2, "\n\t\t", cstrt);
-        const size_t src_size = cstr_size(1, cstrs);
-        if (src_size < new_size) res = resize_cstr(cstrs, src_size, new_size);
-        res = strcat(mode == 0x01 ? cstrs : cstrt, "\n\t\t");
+        const size_t a = cstr_size(2, "\n\t\t ", mode == 0x01 ? cstrt : cstrs);
+        const size_t b = cstr_size(1, mode == 0x01 ? cstrs : cstrt);
+        if (b < a) res = resize_cstr(mode == 0x01 ? cstrs : cstrt, b, a);
+        res = strcat(res, "\n\t\t ");
         res = strcat(res, mode == 0x01 ? cstrt : cstrs);
         return res;
     }
@@ -42,20 +39,25 @@ inline extern char* append_to_cstr(char* cstrt, char* cstrs, const uint8_t mode)
 }
 
 [[gnu::hot]]
-char* resize_cstr(char* cstr, const size_t target_size, const size_t src_size) {
+FORCE_INLINE char* resize_cstr(char* cstr, const size_t target_size, const size_t src_size) {
     const size_t total = src_size + target_size;
+    const size_t old_len = cstr_size(1, cstr);
+
     char* res = NULL;
-    if (src_size < ALLOC_THRESHOLD) {
-        cstr = realloc(cstr, total);
-        memset(cstr, 0, total);
-        cstr[total - 1] = '\0';
-        return cstr;
+    if (total < ALLOC_THRESHOLD) {
+        res = calloc(total, 1);
+        if (!res) return NULL;
     }
-    char* tmp = mremap(cstr, cstr_size(1, cstr), total, MREMAP_MAYMOVE);
-    if (tmp == MAP_FAILED) { return NULL; }
-    cstr[total - 1] = '\0';
-    cstr = tmp;
-    return  cstr;
+    else {
+        res = mmap(NULL, total, PROT_READ | PROT_WRITE,
+                   MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+        if (res == MAP_FAILED) return NULL;
+    }
+
+    memcpy(res, cstr, old_len);
+    res[total - 1] = '\0';
+
+    return res;
 }
 
 [[gnu::hot]]
@@ -66,18 +68,15 @@ FORCE_INLINE void create_buffer_t_dir(const size_t size) {
             buffer.dir.flag = 0x0;
             buffer.dir.str = calloc(size, 1);
             if (!buffer.dir.str) {
-
                 //DBG(ANSI_RED "init_buffer_t_dir: Failed to allocate memory for buffer.dir.str!\n" ANSI_RESET, NULL);
                 return;
             }
         }
         else {
-
             int res;
             buffer.dir.flag = 0x01;
             buffer.dir.str = mmap(NULL, size, PROT_WRITE | PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
             if (buffer.dir.str == MAP_FAILED) {
-
                 //DBG(ANSI_RED "init_buffer_t_dir: Failed to mmap memory for buffer.dir.str!\n" ANSI_RESET, NULL);
                 return;
             }
@@ -101,7 +100,6 @@ FORCE_INLINE void create_buffer_t_msg(const size_t size) {
             buffer.msg.flag = 0x0;
             buffer.msg.str = calloc(size, 1);
             if (!buffer.msg.str) {
-
                 //DBG(ANSI_RED "init_buffer_t_msg: Failed to allocate memory for buffer.msg.str!\n" ANSI_RESET, NULL);
                 return;
             }
@@ -111,7 +109,6 @@ FORCE_INLINE void create_buffer_t_msg(const size_t size) {
             buffer.msg.flag = 0x01;
             buffer.msg.str = mmap(NULL, size, PROT_WRITE | PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
             if (buffer.msg.str == MAP_FAILED) {
-
                 //DBG(ANSI_RED "init_buffer_t_msg: Failed to mmap memory for buffer.msg.str!\n" ANSI_RESET, NULL);
                 return;
             }
@@ -126,7 +123,6 @@ FORCE_INLINE void create_buffer_t_msg(const size_t size) {
         memcpy(&buffer.msg.size, &new_size, sizeof(size_t));
     }
     if (size > buffer.msg.size) buffer_t_resize(new_size, 0x01);
-
     return;
 }
 
@@ -135,7 +131,7 @@ FORCE_INLINE void create_buffer_t_msg(const size_t size) {
     * @param mode: 0x01 will reset buffer.msg.str and 0x0 will reset buffer.dir.str
 */
 [[gnu::hot]]
-void reset_buffer(const uint8_t mode) {
+inline void reset_buffer(const uint8_t mode) {
     switch (mode) {
         case 0x0:
             memset(buffer.dir.str, 0, buffer.dir.size - 1);
@@ -158,14 +154,14 @@ void reset_buffer(const uint8_t mode) {
 [[gnu::hot]]
 FORCE_INLINE void buffer_t_resize(const size_t size, uint8_t mode) {
     if (mode == 0x01 || mode == 0x0) {
-        int res = -1;
+        int res = 0;
         if (size < ALLOC_THRESHOLD) {
-            if (mode == 0x01) {
+            if (buffer.msg.flag == 0x01) {
                 buffer.msg.flag = 0x0;
                 res = munmap(buffer.msg.str, buffer.msg.size);
                 if (res == -1) return;
             }
-            else {
+            else if (buffer.dir.flag == 0x01) {
                 buffer.dir.flag = 0x0;
                 res = munmap(buffer.dir.str, buffer.dir.size);
                 if (res == -1) return;
@@ -307,7 +303,9 @@ inline char* write_long_cstr(const uint8_t mode, const int length, ...) {
 
     if (mode == 0x01) {
         const char* fmt = va_arg(args, const char*);
-        char* res = format_target_cstr(fmt, args);
+        va_list args_copy;
+        va_copy(args_copy, args);
+        char* res = format_target_cstr(fmt, args_copy);
         va_end(args);
         return res;
     }
@@ -337,6 +335,35 @@ inline char* write_long_cstr(const uint8_t mode, const int length, ...) {
     return NULL;
 }
 
+[[gnu::hot]]
+inline void reset_and_free_cstr(const int length, ...) {
+    va_list args;
+    va_start(args, length);
+    for (int i = 0; i < length && length > 0; i++) {
+       char* val = va_arg(args, char*);
+       memset(val, 0, 1);
+       free(val);
+    }
+    va_end(args);
+    return;
+}
+
+[[gnu::hot]] 
+inline void unmap_cstr(const int length, ...) {
+    va_list args;
+    va_start(args, length);
+    int res = 0;
+    for (int i = 0; i < length && length > 0; i++) {
+       char* val = va_arg(args, char*);
+       res = munmap(val, 1);
+       if (res != -1) continue;
+       else break;
+    }
+    va_end(args);
+    return;
+}
+
+[[gnu::hot]]
 /***
     * @desription: Function that takes a c string and render in whatever objects were passed to args
     * @param fmt: A c string that has specifiers needed to be render in. Expecting this kind of format from caller: "Added values of: [%d] + [%d] Result of a + b is %d\n", 
@@ -344,13 +371,13 @@ inline char* write_long_cstr(const uint8_t mode, const int length, ...) {
     * @return: Returns the string but with the rendered objects 
 */
 inline char* format_target_cstr(const char* fmt, va_list args) {
-
     va_list copy;
     va_copy(copy, args);
     size_t size = vsnprintf(NULL, 0, fmt, copy) + 1;
     va_end(copy);
 
-    char* res = calloc(size, 1);
+    char* res = size < ALLOC_THRESHOLD ? calloc(size, 1) : mmap(NULL, size, PROT_READ | PROT_WRITE,
+                   MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
     if (!res) return NULL;
     vsnprintf(res, size, fmt, args);
     return res;

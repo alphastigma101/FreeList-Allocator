@@ -34,13 +34,10 @@ static int RUNTIME_TABLE_SIZE = 0;
 [[gnu::hot]]
 [[gnu::optimize("O0")]]
 void add(int priority, const char* file, int line, const char* desc, ...) {
-
     va_list args;
     va_start(args, desc);
-
     if (ARR_RUNTIME_SIZE == ITEM_SIZE && RUNTIME_TABLE_SIZE != ITEM_SIZE) {
         memcpy(table[RUNTIME_TABLE_SIZE], arr, sizeof(void**));
-
         #if ITEM_SIZE < 50
             memset(arr, 0, ITEM_SIZE);
             free(arr);
@@ -70,7 +67,7 @@ void add(int priority, const char* file, int line, const char* desc, ...) {
         RUNTIME_TABLE_SIZE = 0;
         ARR_RUNTIME_SIZE = 0;
     }
-    size_t hash = (size_t)(((uintptr_t)(strlen(file) * 2654435761UL) ^ (uintptr_t)line) % (size_t)ITEM_SIZE);
+    size_t hash = (size_t)(((uintptr_t)(cstr_size(1, file) * 2654435761UL) ^ (uintptr_t)line) % (size_t)ITEM_SIZE);
     if (arr[hash] == NULL) {
         code_fragment_t* frag = aligned_alloc(alignof(code_fragment_t), sizeof(code_fragment_t));
         if (!frag) {
@@ -78,6 +75,7 @@ void add(int priority, const char* file, int line, const char* desc, ...) {
             return;
         }
         memset(frag, 0, sizeof(code_fragment_t));
+    
         frag->line = line; 
         frag->desc = format_target_cstr(desc, args);
         va_end(args);
@@ -85,8 +83,10 @@ void add(int priority, const char* file, int line, const char* desc, ...) {
             DBG(ANSI_RED "Error in add function. Failed to allocate memory for frag->desc!\n" ANSI_RESET, NULL);
             return;
         }
+    
         frag->priority = priority;
         frag->file     = (char*)file;
+    
         arr[hash]      = frag;
         ARR_RUNTIME_SIZE++;
         return;
@@ -94,11 +94,15 @@ void add(int priority, const char* file, int line, const char* desc, ...) {
     code_fragment_t* frag = NULL;
     frag = (code_fragment_t*)arr[hash];
     frag->occurances++;
+    
     char* tmp = format_target_cstr(desc, args);
     va_end(args);
-    frag->desc = append_to_cstr(frag->desc, tmp, 0x02);
-    memset(tmp, 0, 1);
-    free(tmp);
+
+    char* new_desc = append_to_cstr(frag->desc, tmp, 0x02);
+    cstr_size(1, frag->desc) < ALLOC_THRESHOLD ? reset_and_free_cstr(1, frag->desc) : unmap_cstr(1, frag->desc);
+    cstr_size(1, tmp) < ALLOC_THRESHOLD ? reset_and_free_cstr(1, tmp) : unmap_cstr(1, tmp);
+    
+    frag->desc = new_desc;
     memcpy(arr[hash], frag, sizeof(code_fragment_t));
 }
 
@@ -121,7 +125,6 @@ FORCE_INLINE void clean_logging_files() {
 
 }
 
-
 /***
     * @description: Free function that updates the static variable called `arr` and `table` 
     * @return: 
@@ -135,13 +138,11 @@ FORCE_INLINE void clean_logging_files() {
 [[gnu::cold]]
 [[gnu::optimize("O0")]]
 int write_to_logger() {
-
     struct stat sb;
     if (stat(DIRECTORY, &sb) == 0) {
         time_t t = time(NULL);
         const char* s_time = asctime(gmtime(&t));
         int_fast8_t write_check = check_or_write_cstr(0x0, 0, 0, 3, "%s%s%s", DIRECTORY, s_time, LOGGER_FILE_TYPE); 
-
         if (write_check != 1) return -1;
 
         FILE *fp = fopen(buffer.dir.str, "w");
@@ -165,9 +166,7 @@ int write_to_logger() {
             code_fragment_t* iter = (code_fragment_t*)arr[i];
             if (iter != NULL) {
                 const int file_length = cstr_size(1, iter->file);
-                // Because ITEM_SIZE can be redefined and reset to a different value exceeding the capacity of 4 bytes, we will stick with size_t
                 size_t hash = (size_t)(((uintptr_t)(file_length * 2654435761UL) ^ (uintptr_t)iter->line) % (size_t)ITEM_SIZE);
-
                 write_check = check_or_write_cstr(0x01, 0, 0, 1, ANSI_YELLOW "[%d] is less than or equal to: [%d]" ANSI_RESET, buffer.msg.size, cstr_size(1, ANSI_YELLOW "[%d] is less than or equal to: [%d]" ANSI_RESET));
                 if (write_check == 0 || write_check == 3) { // empty the buffer regardless
                     DBG(buffer.msg.str, NULL);
@@ -175,7 +174,6 @@ int write_to_logger() {
                 } else reset_buffer(0x01);
                 
                 if (arr_file[hash] != NULL) {
-                    
                     write_check = check_or_write_cstr(0x01, 0, 0, 6, ",\n\t[\n\t\t%d,\n\t\t%d,\n\t\t\"%s\",\n\t\t%d\n\t]",
                                                     iter->priority, iter->occurances, iter->desc, iter->line);
                     if (write_check == 1) {
@@ -185,35 +183,30 @@ int write_to_logger() {
                     } else return -3;
                 }
                 else {
-
                     write_check = check_or_write_cstr(0x01, 0, 0, 6, "\n\t\"%s\":\n\t[\n\t\t%d,\n\t\t%d,\n\t\t\"%s\",\n\t\t%d\n\t]",
                         iter->file, iter->priority, iter->occurances, iter->desc, iter->line); 
                     if (write_check == 1) {
                         modified_cstring = write_long_cstr(0x0, 1, buffer.msg.str);
-                        printf("String value is: %s\n", modified_cstring);
                         arr_file[hash] = modified_cstring;
                         reset_buffer(0x01);
-
                     } else return -3;
                 }
             }
         }
-        for (size_t i = 0; i < ITEM_SIZE; i++)
-            if (arr_file[i] != NULL) 
+        for (size_t i = 0; i < ITEM_SIZE; i++) {
+            if (arr_file[i] != NULL) { 
                 res = fprintf(fp, "%s", arr_file[i]);
+                memset(arr_file[i], 0, 1);
+                free(arr_file[i]);
+            }
+        }
         res = fprintf(fp, "%s", "\n}\n\t");
         fclose(fp);
-
         memset(arr_file, 0, 1);
-        //if (ALLOC_THRESHOLD < ITEM_SIZE) 
-            //free(arr_file);
-        //else 
-            res = munmap(arr_file, ITEM_SIZE);
+        if (ITEM_SIZE < ALLOC_THRESHOLD) free(arr_file);
+        else res = munmap(arr_file, ITEM_SIZE);
         if (res == -1) return -4;
-
-        memset(&sb, 0, sizeof(struct stat));
         return 1;
-
     }
     else {
         int check;
@@ -263,7 +256,7 @@ FORCE_INLINE void print(const char* file, const int line) {
 
 void init_logger_t() {
 
-    if (ITEM_SIZE < 50 && arr == NULL) {
+    if (ITEM_SIZE < ALLOC_THRESHOLD && arr == NULL) {
 
         if (!arr) arr = aligned_alloc(alignof(code_fragment_t), ITEM_SIZE * sizeof(code_fragment_t*));
         if (!arr) {
