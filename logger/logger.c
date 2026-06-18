@@ -44,17 +44,12 @@ void add(int priority, const char* file, int line, const char* desc, ...) {
         #if ITEM_SIZE < 50
             memset(arr, 0, ITEM_SIZE);
             free(arr);
-            
             arr = malloc(ITEM_SIZE * sizeof(code_fragment_t*));
             if (arr == NULL) {
-
                 DBG(ANSI_RED "Error in add: failed to allocate arr!\n" ANSI_RESET, NULL);
                 return;
-
             }
-
         #else 
-
             int res;
             res = munmap(arr, ITEM_SIZE);
             if (res == -1) {
@@ -63,14 +58,10 @@ void add(int priority, const char* file, int line, const char* desc, ...) {
             }
             arr = mremap(arr, ITEM_SIZE, ITEM_SIZE, MREMAP_MAYMOVE);
         #endif
-        
         RUNTIME_TABLE_SIZE++;
         ARR_RUNTIME_SIZE = 0;
-        
         #if LOGGING == 1 
-
             logger.write_to_logger();
-
         #endif   
     }
     else if (RUNTIME_TABLE_SIZE == ITEM_SIZE) {
@@ -79,42 +70,35 @@ void add(int priority, const char* file, int line, const char* desc, ...) {
         RUNTIME_TABLE_SIZE = 0;
         ARR_RUNTIME_SIZE = 0;
     }
-
-    int hash = (int)(((uintptr_t)(strlen(file) * 2654435761UL) ^ (uintptr_t)line) % (unsigned int)ITEM_SIZE);
-
+    size_t hash = (size_t)(((uintptr_t)(strlen(file) * 2654435761UL) ^ (uintptr_t)line) % (size_t)ITEM_SIZE);
     if (arr[hash] == NULL) {
         code_fragment_t* frag = aligned_alloc(alignof(code_fragment_t), sizeof(code_fragment_t));
         if (!frag) {
-
             DBG(ANSI_RED "Error in add: failed to allocate memory for frag variable!\n" ANSI_RESET, NULL);
             return;
         }
         memset(frag, 0, sizeof(code_fragment_t));
-
         frag->line = line; 
         frag->desc = format_target_cstr(desc, args);
         va_end(args);
-
         if (!frag->desc) {
-
             DBG(ANSI_RED "Error in add function. Failed to allocate memory for frag->desc!\n" ANSI_RESET, NULL);
             return;
         }
-
         frag->priority = priority;
         frag->file     = (char*)file;
-
         arr[hash]      = frag;
         ARR_RUNTIME_SIZE++;
         return;
     }
-
     code_fragment_t* frag = NULL;
     frag = (code_fragment_t*)arr[hash];
     frag->occurances++;
-
-    //frag->desc =  append_to_cstr(frag->desc, format_target_cstr(desc, args));
-    //va_end(args);
+    char* tmp = format_target_cstr(desc, args);
+    va_end(args);
+    frag->desc = append_to_cstr(frag->desc, tmp, 0x02);
+    memset(tmp, 0, 1);
+    free(tmp);
     memcpy(arr[hash], frag, sizeof(code_fragment_t));
 }
 

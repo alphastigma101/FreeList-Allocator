@@ -1,11 +1,12 @@
 #include "buffer.h"
-#include <stdarg.h>
-#include <stddef.h>
-#include <stdint.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
 #include <sys/types.h>
+
+//#include "buffer.h"
+//#include <stdlib.h>
+//#include <sys/types.h>
 
 #define FORCE_INLINE __attribute__((always_inline)) static inline
 #define OPTIMIZE_SIZE __attribute__((optimize("O0")))
@@ -14,73 +15,55 @@
 buffer_t buffer = {0};
 
 FORCE_INLINE void buffer_t_resize(const size_t size, uint8_t mode); 
+FORCE_INLINE void create_buffer_t_msg(const size_t size);
+FORCE_INLINE void create_buffer_t_dir(const size_t size);
+FORCE_INLINE char* resize_cstr(char* cstr, const size_t target_size, const size_t src_size);
+
 
 [[gnu::hot]]
-inline extern char* append_to_cstr_or_buffer_field(char* cstrt, const char* cstrs, const uint8_t mode) {
+inline extern char* append_to_cstr(char* cstrt, char* cstrs, const uint8_t mode) {
+    char* res = NULL;
     if (mode == 0x0) {
-        // we are appending cstrs to cstrt and returning it 
-        cstrt = strcat(cstrt, cstrs);
         const size_t size = cstr_size(1, cstrt) +  cstr_size(1, cstrs);
-        char* res = parse_cstr_or_buffer_field(cstrt, (char*)cstrs, 0x0);
+        cstrt[cstr_size(1, cstrt) - 1] = ' ';
+        res = strcat(cstrt, cstrs);
         res[size - 1] = '\0'; 
         return res;
     }
     else if (mode == 0x01 || mode == 0x02) {
-        // We are appending cstrt to buffer.dir.str 
-        // Expecting cstrt to be NULL if mode is 0x01
-        // Expecting cstrt and cstrc to not be NULL
-        size_t src_size = cstr_size( 1, cstrs);
-        int_fast8_t check_size = check_or_write_cstr(0x0, mode == 0x01 ? buffer.dir.size : mode == 0x02 ? buffer.msg.size : 0, src_size, 0);
-        if (check_size == 1 || check_size == 2) {
-            return parse_cstr_or_buffer_field(mode == 0x01 ? buffer.dir.str : mode == 0x02 ? buffer.msg.str : NULL, (char*)cstrs, mode);
-        }
-        else {
-            mode == 0x01 ? create_buffer_t_dir(src_size) : mode == 0x02 ? create_buffer_t_dir(src_size) : mode;
-            src_size = cstr_size(1, cstrs);
-            check_size = check_or_write_cstr(0x0, mode == 0x01 ? buffer.dir.size : mode == 0x02 ? buffer.msg.size : 0, src_size, 0);
-            if (check_size == 1 || check_size == 2) {
-                return parse_cstr_or_buffer_field(mode == 0x01 ? buffer.dir.str : mode == 0x02 ? buffer.msg.str : NULL, (char*)cstrs, mode);
-            }   
-        }
+        const size_t new_size = cstr_size(2, "\n\t\t", cstrt);
+        const size_t src_size = cstr_size(1, cstrs);
+        if (src_size < new_size) res = resize_cstr(cstrs, src_size, new_size);
+        res = strcat(mode == 0x01 ? cstrs : cstrt, "\n\t\t");
+        res = strcat(res, mode == 0x01 ? cstrt : cstrs);
+        return res;
     }
-
     return NULL;
 }
 
 [[gnu::hot]]
-inline char* parse_cstr_or_buffer_field(char* cstrt, char* cstrs, const uint8_t mode) {
-    
-    const size_t src_size = cstr_size(1, cstrs);
-    const size_t target_size = cstr_size(1, cstrt);
+char* resize_cstr(char* cstr, const size_t target_size, const size_t src_size) {
     const size_t total = src_size + target_size;
     char* res = NULL;
-    switch(mode) { 
-        case 0x0:
-            cstrs[src_size - 1] = ' ';
-            res = strcat(cstrt, cstrs);
-            return res;
-        case 0x01: // Add to buffer.dir.str  
-            cstrt[target_size - 1] = ' ';
-            res = strcat(buffer.dir.str, cstrt);
-            memcpy(&buffer.dir.size, &total, sizeof(size_t));
-            return res;
-        case 0x02: // add to buffer.msg.str
-            cstrt[target_size - 1] = ' ';
-            cstrt = strcat(cstrt, "\n\t\t");
-            res = strcat(cstrt, cstrs);
-            memcpy(&buffer.msg.size, &total, sizeof(size_t));
-            break; // TODO: We will only need two getter function pointers in buffer to get the state of either msg_t or dir_t
-        default: break;
+    if (src_size < ALLOC_THRESHOLD) {
+        cstr = realloc(cstr, total);
+        memset(cstr, 0, total);
+        cstr[total - 1] = '\0';
+        return cstr;
     }
-
-    return NULL;
+    char* tmp = mremap(cstr, cstr_size(1, cstr), total, MREMAP_MAYMOVE);
+    if (tmp == MAP_FAILED) { return NULL; }
+    cstr[total - 1] = '\0';
+    cstr = tmp;
+    return  cstr;
 }
 
 [[gnu::hot]]
-void create_buffer_t_dir(const size_t size) {
+FORCE_INLINE void create_buffer_t_dir(const size_t size) {
     const size_t new_size = buffer.dir.size + size;
     if (buffer.dir.str == NULL) {
         if (size < ALLOC_THRESHOLD) {
+            buffer.dir.flag = 0x0;
             buffer.dir.str = calloc(size, 1);
             if (!buffer.dir.str) {
 
@@ -90,28 +73,32 @@ void create_buffer_t_dir(const size_t size) {
         }
         else {
 
-            //int res;
+            int res;
+            buffer.dir.flag = 0x01;
             buffer.dir.str = mmap(NULL, size, PROT_WRITE | PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
             if (buffer.dir.str == MAP_FAILED) {
 
                 //DBG(ANSI_RED "init_buffer_t_dir: Failed to mmap memory for buffer.dir.str!\n" ANSI_RESET, NULL);
                 return;
             }
+            res = madvise(buffer.msg.str, new_size, MADV_SEQUENTIAL | MADV_MERGEABLE);
+            if (res == -1) {
+                res = munmap(buffer.msg.str, size);
+                return;
+            }
         }
-
         memcpy(&buffer.dir.size, &new_size, sizeof(size_t));
         return;
-
     }
     if (size > buffer.dir.size) buffer_t_resize(new_size, 0x0);
 }
 
 [[gnu::hot]]
-void create_buffer_t_msg(const size_t size) {
+FORCE_INLINE void create_buffer_t_msg(const size_t size) {
     const size_t new_size = buffer.msg.size + size;
     if (buffer.msg.str == NULL) {
-        
         if (size < ALLOC_THRESHOLD) {
+            buffer.msg.flag = 0x0;
             buffer.msg.str = calloc(size, 1);
             if (!buffer.msg.str) {
 
@@ -120,8 +107,8 @@ void create_buffer_t_msg(const size_t size) {
             }
         }
         else {
-
             int res;
+            buffer.msg.flag = 0x01;
             buffer.msg.str = mmap(NULL, size, PROT_WRITE | PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
             if (buffer.msg.str == MAP_FAILED) {
 
@@ -170,99 +157,69 @@ void reset_buffer(const uint8_t mode) {
 
 [[gnu::hot]]
 FORCE_INLINE void buffer_t_resize(const size_t size, uint8_t mode) {
-
-    if (mode == 0x01) {
-
+    if (mode == 0x01 || mode == 0x0) {
+        int res = -1;
         if (size < ALLOC_THRESHOLD) {
-            char* tmp = realloc(buffer.msg.str, size);
+            if (mode == 0x01) {
+                buffer.msg.flag = 0x0;
+                res = munmap(buffer.msg.str, buffer.msg.size);
+                if (res == -1) return;
+            }
+            else {
+                buffer.dir.flag = 0x0;
+                res = munmap(buffer.dir.str, buffer.dir.size);
+                if (res == -1) return;
+            }
+            char* tmp = realloc(mode == 0x01 ? buffer.msg.str : buffer.dir.str, size);
             if (tmp) {
                 memset(tmp, 0, size);
                 tmp[size - 1] = '\0';
+                if (mode == 0x01) buffer.msg.str = tmp;
+                else buffer.dir.str = tmp;
+            }
+            else { return; }
+            memcpy(mode == 0x01 ? &buffer.msg.size : &buffer.dir.size, &size, sizeof(size_t));
+            return;
+        }
+        else {
+            if (buffer.msg.flag == 0x0 || buffer.dir.flag == 0x0) {
+                memset(mode == 0x01 ? buffer.msg.str : buffer.dir.str, 0, mode == 0x01 ? buffer.msg.size : buffer.dir.size);
+                free(mode == 0x01 ? buffer.msg.str : buffer.dir.str);
+                if (mode == 0x01) { 
+                    buffer.msg.flag = 0x01;
+                    buffer.msg.str = mmap(buffer.msg.str, size, PROT_WRITE | PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+                    if (buffer.msg.str == MAP_FAILED) return;
+                }
+                else {
+                    buffer.dir.flag = 0x01;
+                    buffer.dir.str = mmap(buffer.dir.str, size, PROT_WRITE | PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+                    if (buffer.dir.str == MAP_FAILED) {
+                        res = munmap(buffer.dir.str, buffer.dir.size);
+                        return;
+                    }
+                }
+                res = madvise(mode == 0x01 ? buffer.msg.str : buffer.dir.str, size, MADV_SEQUENTIAL | MADV_MERGEABLE);
+                if (res == -1) {
+                    res = munmap(mode == 0x01 ? buffer.msg.str : buffer.dir.str, size);
+                    return;
+                }
+                memcpy(mode == 0x01 ? &buffer.msg.size : &buffer.dir.size, &size, sizeof(size_t));
+                return;
+            }
+            char* tmp = mremap(mode == 0x01 ? buffer.msg.str : buffer.dir.str, mode == 0x01 ? buffer.msg.size : buffer.dir.size, size, MREMAP_MAYMOVE);
+            if (tmp == MAP_FAILED) { return; }
+            memcpy(mode == 0x01 ? &buffer.msg.size : &buffer.dir.size, &size, sizeof(size_t));
+            if (mode == 0x01) {
+                buffer.msg.str[size - 1] = '\0';
                 buffer.msg.str = tmp;
             }
             else {
-                //DBG(ANSI_RED "buffer_t_resize: Failed to realloc memory for buffer.msg.str!\n" ANSI_RESET, NULL);
-                return;
-            }
-
-            
-            memcpy(&buffer.msg.size, &size, sizeof(size_t));
-            return;
-
-        }
-        else {
-
-            int res;
-            void* tmp = mremap(buffer.msg.str, buffer.msg.size, size, MREMAP_MAYMOVE);
-            if (tmp == MAP_FAILED) {
-
-                //DBG(ANSI_RED "buffer_t_resize: Failed to remap buffer.msg.str\n" ANSI_RESET, NULL);
-                return;
-            }
-
-            res = munmap(buffer.msg.str, buffer.msg.size);
-            if (res == -1) {
-
-                //DBG(ANSI_RED "buffer_t_resize: Failed to unmap buffer.msg.str\n" ANSI_RESET, NULL);
-                return;
-            }
-
-            res = madvise(tmp, size, MADV_SEQUENTIAL | MADV_MERGEABLE);
-            if (res == -1) {
-                res = munmap(tmp, size);
-                return;
-            }
-
-            memcpy(&buffer.msg.size, &size, sizeof(size_t));
-            buffer.msg.str[size - 1] = '\0';
-            buffer.msg.str = tmp;
-            return;
-        }
-    }
-    else if (mode == 0x0) {
-
-        if (size < ALLOC_THRESHOLD) {
-
-            char* tmp = realloc(buffer.dir.str, size);
-            if (tmp) {
-                memset(tmp, 0, size);
-                tmp[size - 1] = '\0';
+                buffer.dir.str[size - 1] = '\0';
                 buffer.dir.str = tmp;
             }
-            else {
-
-                //DBG(ANSI_RED "buffer_t_resize: Failed to realloc memory for buffer.dir.str!\n" ANSI_RESET, NULL);
-            }
-
-            return;
-        }
-        else {
-
-            int res;
-            void* tmp = mremap(buffer.dir.str, buffer.dir.size, size, MREMAP_MAYMOVE);
-            if (tmp == MAP_FAILED) {
-
-                //DBG(ANSI_RED "buffer_t_resize: Failed to remap buffer.msg.str\n" ANSI_RESET, NULL);
-                return;
-            }
-            res = munmap(buffer.dir.str, size);
-            if (res == -1) {
-
-                //DBG(ANSI_RED "buffer_t_resize: Failed to unmap buffer.dir.str\n" ANSI_RESET, NULL);
-                return;
-            }
-
-            res = madvise(buffer.dir.str, size, MADV_SEQUENTIAL | MADV_MERGEABLE);
-            if (res == -1) {
-                res = munmap(tmp, size);
-                return;
-            }
-
-            buffer.dir.str = tmp;
-            memcpy(&buffer.dir.size, &size, sizeof(size_t));
-            return;
         }
     }
+    return;
 }
 
 [[gnu::hot]]
@@ -308,23 +265,31 @@ inline int_fast8_t check_or_write_cstr(const uint8_t mode, const size_t c1, cons
             const char* fmt = va_arg(args, const char*);
             size_t res;
             if (buffer.msg.str || buffer.dir.str) {
-                const size_t size = vsnprintf(NULL, 0, fmt, args) + 1;
-                mode == 0x01 ? buffer.msg.size < size ? buffer_t_resize(size, 0x01) : mode : buffer.dir.size < size ? buffer_t_resize(size, 0x0) : mode;
+                va_list args_copy;
+                va_copy(args_copy, args);
+                const size_t size = vsnprintf(NULL, 0, fmt, args_copy) + 1;
+                va_end(args_copy);
+                mode == 0x01 ?  size > buffer.msg.size ? buffer_t_resize(size, 0x01) : mode : size > buffer.dir.size ? buffer_t_resize(size, 0x0) : mode;
                 res = vsnprintf(mode == 0x01 ? buffer.msg.str : buffer.dir.str, mode == 0x01 ? buffer.msg.size : buffer.dir.size, fmt, args);
                 va_end(args);
-                return res == size ? 1 : 0;
+                return (res + 1) == size ? 1 : 0;
             }
             else {
-                const size_t size = vsnprintf(NULL, 0, fmt, args) + 1;
+                va_list args_copy;
+                va_copy(args_copy, args);
+                const size_t size = vsnprintf(NULL, 0, fmt, args_copy) + 1;
+                va_end(args_copy);
                 mode == 0x01 ? create_buffer_t_msg(size) : create_buffer_t_dir(size);
-                res = vsnprintf(mode == 0x01 ? buffer.msg.str : buffer.dir.str, mode == 0x01 ? buffer.msg.size : buffer.dir.size, fmt, args);
+                res = vsnprintf(mode == 0x01 ? buffer.msg.str : buffer.dir.str,
+                                mode == 0x01 ? buffer.msg.size : buffer.dir.size,
+                                fmt, args);
                 va_end(args);
-                return res == size ? 1 : 0; 
+                return (res + 1) == size ? 1 : 0;
             }
             return 1;
         }
     }
-
+    
     return c1 > c2 ? 1 : c1 == c2 ? 2 : c1 < c2 ? 3 : 0;
 }
 
