@@ -3,6 +3,8 @@
 #ifndef _LOGGING_H_
 #define _LOGGING_H_
 #include "buffer.h"
+#include <stddef.h>
+#include <stdint.h>
 #include <time.h>
 
 /* Control the time in months, days, or years to clean up the directory default is 30 minutes */
@@ -28,8 +30,15 @@
 
 /* The max length of the message to store in logger */
 #ifndef MESSAGE_LEN // TODO: Rename this to buffer instead
-    #define MESSAGE_LEN 512
+    #define MESSAGE_LEN 512 // NOT NEEDED ANYMORE
 #endif
+
+#define GET_LOCAL_TIME(buf) \
+    do { \
+        struct timespec ts; \
+        timespec_get(&ts, TIME_UTC); \
+        strftime(buf, sizeof(buf), "%a %b %e %T %Y", localtime(&ts.tv_sec)); \
+    } while(0)
 
 /* Include the logger or printer variable into the translation unit files - 0 is include printer 1 is include logger */
 #ifndef LOGGING 
@@ -50,22 +59,30 @@
 #define ANSI_CYAN    "\033[36m"
 #define ANSI_MAGENTA "\033[35m"
 
-typedef struct code_fragment_t {
+typedef struct code_fragment_metadata_t {
+    uint8_t written : 1;
+    uint8_t comma_added : 1;
+    size_t file_pos;
+} code_fragment_metadata_t;
 
+typedef struct code_fragment_t {
+    
     int priority : 3;
     int line;
     int occurances;
     char* desc;
     char* file;
+    code_fragment_metadata_t meta;
 
 } code_fragment_t;
+
 
 typedef struct logger_t {
 
     void               (*add)(int priority, const char* file, int line, const char* desc, ...);
     void               (*clean)(const char* file, const int line); // key is date and time
     //#if TESTING == 1
-        int               (*write_to_logger)(); // This will iterate through keys and entries ad add the {} at the correct spots
+        int               (*initiate_write)(); // This will iterate through keys and entries ad add the {} at the correct spots
     //#endif
     void               (*parse)(const char* file, const int line);
     code_fragment_t*   (*find)(const char* file, const int line);

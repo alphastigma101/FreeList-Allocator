@@ -2,15 +2,12 @@
 #include "buffer.h"
 #include <stdalign.h>
 #include <stddef.h>
-#include <stdint.h>
 #include <stdio.h>
-#include <string.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <stdlib.h>
 
 #define FORCE_INLINE __attribute__((always_inline)) static inline
-#define OPTIMIZE_SIZE __attribute__((optimize("O0")))
  
 static code_fragment_t*** table = NULL; 
 static code_fragment_t** arr = NULL;
@@ -29,6 +26,9 @@ static int RUNTIME_TABLE_SIZE = 0;
     printer_t printer = {0};
 
 #endif
+
+FORCE_INLINE int_fast8_t write_to_log(FILE *fp, const char** arr_file, const int_fast8_t file_exists);
+FORCE_INLINE int_fast8_t log_file_exists(const char* file);
 
 
 [[gnu::hot]]
@@ -58,7 +58,7 @@ void add(int priority, const char* file, int line, const char* desc, ...) {
         RUNTIME_TABLE_SIZE++;
         ARR_RUNTIME_SIZE = 0;
         #if LOGGING == 1 
-            logger.write_to_logger();
+            logger.initiate_write();
         #endif   
     }
     else if (RUNTIME_TABLE_SIZE == ITEM_SIZE) {
@@ -78,6 +78,9 @@ void add(int priority, const char* file, int line, const char* desc, ...) {
     
         frag->line = line; 
         frag->desc = format_target_cstr(desc, args);
+        frag->meta.written = 0x0;
+        frag->meta.comma_added = 0x0; 
+        frag->meta.file_pos = 0;
         va_end(args);
         if (!frag->desc) {
             DBG(ANSI_RED "Error in add function. Failed to allocate memory for frag->desc!\n" ANSI_RESET, NULL);
@@ -125,10 +128,18 @@ FORCE_INLINE void clean_logging_files() {
 
 }
 
+
+FORCE_INLINE int_fast8_t log_file_exists(const char* file) {
+    FILE *fp = fopen(file, "r");
+    int_fast8_t res = fp == NULL ? 0 : 1;
+    res == 1 ? fclose(fp) : res;
+    return res;
+}
+
 /***
     * @description: Free function that updates the static variable called `arr` and `table` 
     * @return: 
-        1) -1: Failed to create file in specific folder
+        1) -1: Failed to create file in specific folder or failed to write to it
         2) -2: Failed too mmap a local variable called arr_file. 
                 Meaning that, there is too much memory being used or we hit an edge case not here, but the other tu that uses this api
         3) -3: sprintf failed to write the c string into buffer
@@ -136,28 +147,36 @@ FORCE_INLINE void clean_logging_files() {
         5)  1: Success. No further diagnostics needed.
 */
 [[gnu::cold]]
-[[gnu::optimize("O0")]]
-int write_to_logger() {
+#if defined(__GNUC__) && !defined(__clang__)
+    #define GCC_OPTIMIZE_O0 __attribute__((optimize("O0")))
+#else
+    #define GCC_OPTIMIZE_O0
+#endif
+GCC_OPTIMIZE_O0 int initiate_write() {
+    char* msg = buffer.get_msg_t_cstr();
+    char* dir = buffer.get_dir_t_cstr();
     struct stat sb;
     if (stat(DIRECTORY, &sb) == 0) {
+        int_fast8_t check_file = 0;
         time_t t = time(NULL);
         const char* s_time = asctime(gmtime(&t));
-        int_fast8_t write_check = check_or_write_cstr(0x0, 0, 0, 3, "%s%s%s", DIRECTORY, s_time, LOGGER_FILE_TYPE); 
+        int_fast8_t write_check = dir == NULL ? check_or_write_cstr(0x0, 0, 0, 3, "%s%s%s", DIRECTORY, s_time, LOGGER_FILE_TYPE) : 1; 
         if (write_check != 1) return -1;
-
-        FILE *fp = fopen(buffer.dir.str, "w");
+        
+        check_file = log_file_exists(dir == NULL ? buffer.get_dir_t_cstr() : dir);
+        FILE *fp = check_file == 0x01 ? fopen(dir == NULL ? buffer.get_dir_t_cstr() : dir, "a+") :  fopen(dir == NULL ? buffer.get_dir_t_cstr() : dir, "w");
         if (fp == NULL) {
-            char* err = write_long_cstr(0x01, 1, ANSI_RED "Error opening the file %s" ANSI_RESET, buffer.dir.str);
+            char* err = write_long_cstr(0x01, 1, ANSI_RED "Error opening the file %s" ANSI_RESET, dir);
             if (err) {
                 DBG(err, NULL);
-                memset(err, 0, 1);
-                free(err);
+                reset_and_free_cstr(1, err);
             }
             return -1;
         }
         memset(&t, 0, sizeof(time_t));
 
-        int res = fprintf(fp, "%s", "{\n\t");
+        int res = check_file != 0x01 ? fprintf(fp, "%s", "{\n\t") + 1 : cstr_size(1, "{\n\t");
+        if (res != cstr_size(1, "{\n\t")) return -1;
         char** arr_file = mmap(NULL, ITEM_SIZE, PROT_WRITE | PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
         if (arr_file == MAP_FAILED) return -2;
 
@@ -167,9 +186,9 @@ int write_to_logger() {
             if (iter != NULL) {
                 const int file_length = cstr_size(1, iter->file);
                 size_t hash = (size_t)(((uintptr_t)(file_length * 2654435761UL) ^ (uintptr_t)iter->line) % (size_t)ITEM_SIZE);
-                write_check = check_or_write_cstr(0x01, 0, 0, 1, ANSI_YELLOW "[%d] is less than or equal to: [%d]" ANSI_RESET, buffer.msg.size, cstr_size(1, ANSI_YELLOW "[%d] is less than or equal to: [%d]" ANSI_RESET));
+                write_check = check_or_write_cstr(0x01, 0, 0, 1, ANSI_YELLOW "[%d] is less than or equal to: [%d]" ANSI_RESET, cstr_size(1, msg == NULL ? buffer.get_msg_t_cstr() : msg), cstr_size(1, ANSI_YELLOW "[%d] is less than or equal to: [%d]" ANSI_RESET));
                 if (write_check == 0 || write_check == 3) { // empty the buffer regardless
-                    DBG(buffer.msg.str, NULL);
+                    DBG(msg, NULL);
                     reset_buffer(0x01);
                 } else reset_buffer(0x01);
                 
@@ -177,7 +196,7 @@ int write_to_logger() {
                     write_check = check_or_write_cstr(0x01, 0, 0, 6, ",\n\t[\n\t\t%d,\n\t\t%d,\n\t\t\"%s\",\n\t\t%d\n\t]",
                                                     iter->priority, iter->occurances, iter->desc, iter->line);
                     if (write_check == 1) {
-                        modified_cstring = write_long_cstr(0x0, 1, buffer.msg.str);
+                        modified_cstring = write_long_cstr(0x0, 1, msg == NULL ? buffer.get_msg_t_cstr() : msg);
                         arr_file[hash] = modified_cstring;
                         reset_buffer(0x01);
                     } else return -3;
@@ -186,38 +205,78 @@ int write_to_logger() {
                     write_check = check_or_write_cstr(0x01, 0, 0, 6, "\n\t\"%s\":\n\t[\n\t\t%d,\n\t\t%d,\n\t\t\"%s\",\n\t\t%d\n\t]",
                         iter->file, iter->priority, iter->occurances, iter->desc, iter->line); 
                     if (write_check == 1) {
-                        modified_cstring = write_long_cstr(0x0, 1, buffer.msg.str);
+                        modified_cstring = write_long_cstr(0x0, 1, msg == NULL ? buffer.get_msg_t_cstr() : msg);
                         arr_file[hash] = modified_cstring;
                         reset_buffer(0x01);
                     } else return -3;
                 }
             }
         }
-        for (size_t i = 0; i < ITEM_SIZE; i++) {
-            if (arr_file[i] != NULL) { 
-                res = fprintf(fp, "%s", arr_file[i]);
-                memset(arr_file[i], 0, 1);
-                free(arr_file[i]);
-            }
-        }
-        res = fprintf(fp, "%s", "\n}\n\t");
-        fclose(fp);
-        memset(arr_file, 0, 1);
-        if (ITEM_SIZE < ALLOC_THRESHOLD) free(arr_file);
-        else res = munmap(arr_file, ITEM_SIZE);
-        if (res == -1) return -4;
-        return 1;
+        return write_to_log(fp, (const char**)arr_file, (const int_fast8_t)check_file);
     }
     else {
         int check;
         check = mkdir(DIRECTORY,0777);
         if (!check) {
             memset(&sb, 0, sizeof(struct stat));
-            return  write_to_logger();
+            return  initiate_write();
         }
         else return -5;
     }
-} 
+}
+
+FORCE_INLINE size_t write_cstr_to_file(FILE *fp, const size_t file_size, const char* cstr) {
+    size_t iter = 0;
+    const size_t size = cstr_size(1, cstr) - 1;
+    size_t res = 0;
+    if (fseek(fp, file_size, SEEK_SET) == 0) {
+        res = ftell(fp);
+        if (res == file_size) {
+            while (iter < size) {
+                res = fputc(cstr[iter], fp);
+                if (res) iter++;
+                else break;
+            }
+        }
+    }
+    return iter == size ? 1 : 0;
+}
+
+FORCE_INLINE int_fast8_t write_to_log(FILE *fp, const char** arr_file, const int_fast8_t check_file) {
+    int res = 0;
+    size_t file_size = 0;
+    for (size_t i = 0; i < ITEM_SIZE; i++) {
+        if (arr_file[i] != NULL ) {
+            if (arr[i]->meta.written == 0x0) { // Has not been written yet
+                if (file_size == 0) res = fprintf(fp, "%s", arr_file[i]) + 1;
+                else res = write_cstr_to_file(fp, (const size_t)file_size, (const char *)arr_file[i]) == (i * 0) + 1 ? cstr_size(1, arr_file[i]) : -1;
+                const int src = cstr_size(1, arr_file[i]);
+                if (res == src) {
+                    arr[i]->meta.written = 0x01;
+                    arr[i]->meta.file_pos = ftell(fp);
+                }
+                reset_and_free_cstr(1, arr_file[i]);
+            }
+            else {
+                printf("String Value is: %s\n", arr_file[i]);
+                if (arr[i]->meta.comma_added == 0x0) {
+                    const size_t off = cstr_size(1, arr_file[i]) + 1;
+                    fseek(fp, off, SEEK_SET);
+                    res = fgetc(fp) == ']' ? fputc(',', fp) : -1;
+                    if (res == (int)',') {
+                        arr[i]->meta.comma_added = 0x01;
+                        file_size += off;
+                    }
+                }
+                reset_and_free_cstr(1, arr_file[i]);
+            }
+        }
+    }
+    res = check_file != 0x01 ? fprintf(fp, "%s", "\n}\n\t") : 0;
+    fclose(fp);
+    ITEM_SIZE < ALLOC_THRESHOLD ? reset_and_free_cstr(1, arr_file) : unmap_cstr(1, arr_file);
+    return 1;
+}
 
 FORCE_INLINE code_fragment_t* find(const char* file, const int line) {
     int hash = (int)(((uintptr_t)(strlen(file) * 2654435761UL) ^ (uintptr_t)line) % (size_t)ITEM_SIZE);
@@ -324,7 +383,7 @@ void init_logger_t() {
         if (!logger.add) {
 
             logger.add = &add;
-            logger.write_to_logger = &write_to_logger;
+            logger.initiate_write = &initiate_write;
             logger.clean = &clean;
             logger.find = find;
             logger.parse = &parse;
@@ -341,7 +400,7 @@ void init_logger_t() {
         }
 
     #endif 
-
+    init_buffer_t();
 }
 
 

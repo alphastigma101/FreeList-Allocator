@@ -20,29 +20,14 @@
     #define ITEM_SIZE 500
 #endif 
 
-typedef struct msg_t {
-    
-    uint8_t flag;
-    char* str;
-    size_t size;
-
-} msg_t;
-
-typedef struct dir_t {
-    uint8_t flag;
-    char* str;
-    size_t size;
-
-} dir_t;
-
 
 typedef struct buffer_t {
-    msg_t msg;
-    dir_t dir;
-
+    char* (*get_msg_t_cstr)();
+    char* (*get_dir_t_cstr)();
 } buffer_t;
 
 extern buffer_t buffer;
+extern void init_buffer_t();
 extern void reset_buffer(const uint8_t mode);
 extern char* append_to_cstr(char* cstrt, char* cstrs, uint8_t mode);
 extern int cstr_size(const int length, ...); 

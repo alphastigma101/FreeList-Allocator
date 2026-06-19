@@ -115,7 +115,9 @@ int main(void) {
             
             add(2, 3);
             add(6, 7);
-            logger.write_to_logger();
+            add(9, 10);
+            add(20, 2);
+            logger.initiate_write();
 
             printf(SEPARATOR);
             printf(TEST_HEADER "  RESULT: " ANSI_GREEN "PASSED ✔\n" ANSI_RESET);
@@ -128,7 +130,7 @@ int main(void) {
             printf(TEST_INFO "2. Init start for subtraction and write to file\n");
             
             substract(2, 3);
-            logger.write_to_logger();
+            logger.initiate_write();
 
             printf(SEPARATOR);
             printf(TEST_HEADER "  RESULT: " ANSI_GREEN "PASSED ✔\n" ANSI_RESET);
