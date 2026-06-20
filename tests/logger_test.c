@@ -44,6 +44,41 @@ static void substract(int a, int b) {
         
 }
 
+static int multiple_line = 0;
+static void multiplication(int a, int b) {
+
+    if (multiple_line == 0) multiple_line = __LINE__;
+    #if LOGGING == 0
+        printer.add(0, "multiplication.c", multiple_line, "Multiple values of: [%d] - [%d] Result of a * b is %d", a, b, a * b);
+        //printer.print("subtract.c", sub_line);
+
+    #else 
+
+        logger.add(0, "multiplication.c", multiple_line, "Multiple values of: [%d] - [%d] Result of a * b is %d", a, b, a * b);
+        
+    #endif
+
+        
+}
+
+
+static int division_line = 0;
+static void division(int a, int b) {
+
+    if (division_line == 0) division_line = __LINE__;
+    #if LOGGING == 0
+        printer.add(0, "division.c", division_line, "Division values of: [%d] - [%d] Result of a / b is %d", a, b, a / b);
+        //printer.print("subtract.c", sub_line);
+
+    #else 
+
+        logger.add(0, "division.c", division_line, "Division values of: [%d] - [%d] Result of a / b is %d", a, b, a / b);
+        
+    #endif
+
+        
+}
+
 int main(void) {
 
     #if LOGGING == 0
@@ -130,6 +165,38 @@ int main(void) {
             printf(TEST_INFO "2. Init start for subtraction and write to file\n");
             
             substract(2, 3);
+            logger.initiate_write();
+
+            printf(SEPARATOR);
+            printf(TEST_HEADER "  RESULT: " ANSI_GREEN "PASSED ✔\n" ANSI_RESET);
+            printf(TEST_HEADER "  ══════════════════════════════════════════════\n\n" ANSI_RESET);
+
+        }
+
+        {
+            printf(SEPARATOR);
+            printf(TEST_INFO "2. Init start for multiplication and write to file\n");
+            
+            multiplication(2, 3);
+            multiplication(6, 7);
+            multiplication(9, 10);
+            multiplication(20, 2);
+            logger.initiate_write();
+
+            printf(SEPARATOR);
+            printf(TEST_HEADER "  RESULT: " ANSI_GREEN "PASSED ✔\n" ANSI_RESET);
+            printf(TEST_HEADER "  ══════════════════════════════════════════════\n\n" ANSI_RESET);
+
+        }
+
+        {
+            printf(SEPARATOR);
+            printf(TEST_INFO "3. Init start for division and write to file\n");
+            
+            division(2, 3);
+            division(6, 7);
+            division(9, 10);
+            division(20, 2);
             logger.initiate_write();
 
             printf(SEPARATOR);

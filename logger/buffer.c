@@ -1,5 +1,7 @@
 #include "buffer.h"
+#include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <sys/types.h>
 
 //#include "buffer.h"
@@ -69,15 +71,9 @@ FORCE_INLINE char* resize_cstr(char* cstr, const size_t target_size, const size_
     const size_t old_len = cstr_size(1, cstr);
 
     char* res = NULL;
-    if (total < ALLOC_THRESHOLD) {
-        res = calloc(total, 1);
-        if (!res) return NULL;
-    }
-    else {
-        res = mmap(NULL, total, PROT_READ | PROT_WRITE,
+    res = total < ALLOC_THRESHOLD ? calloc(total, 1) : mmap(NULL, total, PROT_READ | PROT_WRITE,
                    MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
-        if (res == MAP_FAILED) return NULL;
-    }
+    if (!res) return NULL;
 
     memcpy(res, cstr, old_len);
     res[total - 1] = '\0';
@@ -203,12 +199,14 @@ FORCE_INLINE void buffer_t_resize(const size_t size, uint8_t mode) {
         }
         else {
             if (msg.flag == 0x0 || dir.flag == 0x0) {
-                memset(mode == 0x01 ? msg.str : dir.str, 0, mode == 0x01 ? msg.size : dir.size);
-                free(mode == 0x01 ? msg.str : dir.str);
+                cstr_size(1, mode == 0x01 ? msg.str : dir.str) < ALLOC_THRESHOLD ? reset_and_free_cstr(1, mode == 0x01 ? msg.str : dir.str) : unmap_cstr(1, mode == 0x01 ? msg.str : dir.str);
                 if (mode == 0x01) { 
                     msg.flag = 0x01;
                     msg.str = mmap(msg.str, size, PROT_WRITE | PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
-                    if (msg.str == MAP_FAILED) return;
+                    if (msg.str == MAP_FAILED) {
+                        printf("Error failed to map msg.str!\n");
+                        return;
+                    }
                 }
                 else {
                     dir.flag = 0x01;
@@ -339,9 +337,11 @@ inline char* write_long_cstr(const uint8_t mode, const int length, ...) {
 
         va_end(args);
 
-        char* res = calloc(size, 1);
+        char* res = size < ALLOC_THRESHOLD ? calloc(size, 1) : mmap(NULL, size, PROT_READ | PROT_WRITE,
+                   MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
         if (!res) return NULL;
-
+        
+        res[size - 1] = '\0';
         va_start(args, length);
         char* cursor = res;
         for (int i = 0; i < length && length > 0; i++) {
@@ -361,9 +361,11 @@ inline void reset_and_free_cstr(const int length, ...) {
     va_list args;
     va_start(args, length);
     for (int i = 0; i < length && length > 0; i++) {
-       char* val = va_arg(args, char*);
-       memset(val, 0, 1);
-       free(val);
+        char* val = va_arg(args, char*);
+        if (strcmp(val, "") != 0) {
+            memset(val, 0, 1);
+            free(val);
+        }
     }
     va_end(args);
     return;
@@ -375,10 +377,12 @@ inline void unmap_cstr(const int length, ...) {
     va_start(args, length);
     int res = 0;
     for (int i = 0; i < length && length > 0; i++) {
-       char* val = va_arg(args, char*);
-       res = munmap(val, 1);
-       if (res != -1) continue;
-       else break;
+        char* val = va_arg(args, char*);
+        if (val) {
+            res = munmap(val, 1);
+            if (res != -1) continue;
+            else break;
+        }
     }
     va_end(args);
     return;
@@ -404,41 +408,10 @@ inline char* format_target_cstr(const char* fmt, va_list args) {
     return res;
 }
 
-//[[gnu::destructor(0)]]
+[[gnu::destructor(0)]]
 FORCE_INLINE void dctor_buffer() {
-    if (dir.size < ALLOC_THRESHOLD) {
-        if (dir.str != NULL) {
-
-            memset(dir.str, 0, dir.size - 1);
-            free(dir.str);
-        }
-    }
-
-    if (msg.size < ALLOC_THRESHOLD) {
-        if (msg.str != NULL) {
-
-            memset(msg.str, 0, msg.size - 1);
-            free(msg.str);
-        }
-    }
-
-    if (msg.size > ALLOC_THRESHOLD) {
-
-        int res;
-        res = munmap(dir.str, dir.size - 1);
-        if (res == -1) {
-
-            //DBG(ANSI_RED "dctor_buffer: Failed to unmap buffer.dir.str!\n" ANSI_RESET, NULL);
-
-        }
-        res = munmap(msg.str, msg.size - 1);
-        if (res == -1) {
-
-            //DBG(ANSI_RED "dctor_buffer: Failed to unmap buffer.msg.str!\n" ANSI_RESET, NULL);
-
-        }
-    }
-
-    memset(&buffer, 0, sizeof(buffer_t));
-
+    dir.size < ALLOC_THRESHOLD ? reset_and_free_cstr(1, dir.str) : unmap_cstr(1, dir.str);
+    msg.size < ALLOC_THRESHOLD ? reset_and_free_cstr(1, msg.str) : unmap_cstr(1, msg.str);
+    memset(&msg, 0, sizeof(buffer_t));
+    memset(&dir, 0, sizeof(buffer_t));
 }

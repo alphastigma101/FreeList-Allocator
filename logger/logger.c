@@ -2,7 +2,9 @@
 #include "buffer.h"
 #include <stdalign.h>
 #include <stddef.h>
+#include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <stdlib.h>
@@ -28,8 +30,16 @@ static int RUNTIME_TABLE_SIZE = 0;
 #endif
 
 FORCE_INLINE int_fast8_t write_to_log(FILE *fp, const char** arr_file, const int_fast8_t file_exists);
-FORCE_INLINE int_fast8_t log_file_exists(const char* file);
 
+
+
+
+FORCE_INLINE int_fast8_t log_file_exists(const char* file) {
+    FILE *fp = fopen(file, "r");
+    int_fast8_t res = fp == NULL ? 0 : 1;
+    res == 1 ? fclose(fp) : res;
+    return res;
+}
 
 [[gnu::hot]]
 [[gnu::optimize("O0")]]
@@ -80,7 +90,6 @@ void add(int priority, const char* file, int line, const char* desc, ...) {
         frag->desc = format_target_cstr(desc, args);
         frag->meta.written = 0x0;
         frag->meta.comma_added = 0x0; 
-        frag->meta.file_pos = 0;
         va_end(args);
         if (!frag->desc) {
             DBG(ANSI_RED "Error in add function. Failed to allocate memory for frag->desc!\n" ANSI_RESET, NULL);
@@ -127,15 +136,6 @@ FORCE_INLINE void clean_logging_files() {
 
 
 }
-
-
-FORCE_INLINE int_fast8_t log_file_exists(const char* file) {
-    FILE *fp = fopen(file, "r");
-    int_fast8_t res = fp == NULL ? 0 : 1;
-    res == 1 ? fclose(fp) : res;
-    return res;
-}
-
 /***
     * @description: Free function that updates the static variable called `arr` and `table` 
     * @return: 
@@ -153,20 +153,18 @@ FORCE_INLINE int_fast8_t log_file_exists(const char* file) {
     #define GCC_OPTIMIZE_O0
 #endif
 GCC_OPTIMIZE_O0 int initiate_write() {
-    char* msg = buffer.get_msg_t_cstr();
-    char* dir = buffer.get_dir_t_cstr();
     struct stat sb;
     if (stat(DIRECTORY, &sb) == 0) {
         int_fast8_t check_file = 0;
         time_t t = time(NULL);
         const char* s_time = asctime(gmtime(&t));
-        int_fast8_t write_check = dir == NULL ? check_or_write_cstr(0x0, 0, 0, 3, "%s%s%s", DIRECTORY, s_time, LOGGER_FILE_TYPE) : 1; 
+        int_fast8_t write_check = buffer.get_dir_t_cstr() == NULL ? check_or_write_cstr(0x0, 0, 0, 3, "%s%s%s", DIRECTORY, s_time, LOGGER_FILE_TYPE) : 1; 
         if (write_check != 1) return -1;
         
-        check_file = log_file_exists(dir == NULL ? buffer.get_dir_t_cstr() : dir);
-        FILE *fp = check_file == 0x01 ? fopen(dir == NULL ? buffer.get_dir_t_cstr() : dir, "a+") :  fopen(dir == NULL ? buffer.get_dir_t_cstr() : dir, "w");
+        check_file = log_file_exists(buffer.get_dir_t_cstr());
+        FILE *fp = check_file == 0x01 ? fopen(buffer.get_dir_t_cstr(), "r+") :  fopen(buffer.get_dir_t_cstr(), "w");
         if (fp == NULL) {
-            char* err = write_long_cstr(0x01, 1, ANSI_RED "Error opening the file %s" ANSI_RESET, dir);
+            char* err = write_long_cstr(0x01, 1, ANSI_RED "Error opening the file %s" ANSI_RESET, buffer.get_dir_t_cstr());
             if (err) {
                 DBG(err, NULL);
                 reset_and_free_cstr(1, err);
@@ -177,8 +175,8 @@ GCC_OPTIMIZE_O0 int initiate_write() {
 
         int res = check_file != 0x01 ? fprintf(fp, "%s", "{\n\t") + 1 : cstr_size(1, "{\n\t");
         if (res != cstr_size(1, "{\n\t")) return -1;
-        char** arr_file = mmap(NULL, ITEM_SIZE, PROT_WRITE | PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
-        if (arr_file == MAP_FAILED) return -2;
+        char** arr_file = ITEM_SIZE < ALLOC_THRESHOLD ? calloc(ITEM_SIZE, 1) : mmap(NULL, ITEM_SIZE, PROT_WRITE | PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+        if (!arr_file) return -2;
 
         char* modified_cstring = "";
         for (int i = 0; i < ITEM_SIZE; i++) {
@@ -186,9 +184,9 @@ GCC_OPTIMIZE_O0 int initiate_write() {
             if (iter != NULL) {
                 const int file_length = cstr_size(1, iter->file);
                 size_t hash = (size_t)(((uintptr_t)(file_length * 2654435761UL) ^ (uintptr_t)iter->line) % (size_t)ITEM_SIZE);
-                write_check = check_or_write_cstr(0x01, 0, 0, 1, ANSI_YELLOW "[%d] is less than or equal to: [%d]" ANSI_RESET, cstr_size(1, msg == NULL ? buffer.get_msg_t_cstr() : msg), cstr_size(1, ANSI_YELLOW "[%d] is less than or equal to: [%d]" ANSI_RESET));
+                write_check = check_or_write_cstr(0x01, 0, 0, 1, ANSI_YELLOW "[%d] is less than or equal to: [%d]" ANSI_RESET, cstr_size(1, buffer.get_msg_t_cstr() ), cstr_size(1, ANSI_YELLOW "[%d] is less than or equal to: [%d]" ANSI_RESET));
                 if (write_check == 0 || write_check == 3) { // empty the buffer regardless
-                    DBG(msg, NULL);
+                    DBG(buffer.get_msg_t_cstr(), NULL);
                     reset_buffer(0x01);
                 } else reset_buffer(0x01);
                 
@@ -196,7 +194,7 @@ GCC_OPTIMIZE_O0 int initiate_write() {
                     write_check = check_or_write_cstr(0x01, 0, 0, 6, ",\n\t[\n\t\t%d,\n\t\t%d,\n\t\t\"%s\",\n\t\t%d\n\t]",
                                                     iter->priority, iter->occurances, iter->desc, iter->line);
                     if (write_check == 1) {
-                        modified_cstring = write_long_cstr(0x0, 1, msg == NULL ? buffer.get_msg_t_cstr() : msg);
+                        modified_cstring = write_long_cstr(0x0, 1, buffer.get_msg_t_cstr());
                         arr_file[hash] = modified_cstring;
                         reset_buffer(0x01);
                     } else return -3;
@@ -205,16 +203,18 @@ GCC_OPTIMIZE_O0 int initiate_write() {
                     write_check = check_or_write_cstr(0x01, 0, 0, 6, "\n\t\"%s\":\n\t[\n\t\t%d,\n\t\t%d,\n\t\t\"%s\",\n\t\t%d\n\t]",
                         iter->file, iter->priority, iter->occurances, iter->desc, iter->line); 
                     if (write_check == 1) {
-                        modified_cstring = write_long_cstr(0x0, 1, msg == NULL ? buffer.get_msg_t_cstr() : msg);
+                        modified_cstring = write_long_cstr(0x0, 1, buffer.get_msg_t_cstr());
                         arr_file[hash] = modified_cstring;
                         reset_buffer(0x01);
                     } else return -3;
                 }
             }
         }
-        return write_to_log(fp, (const char**)arr_file, (const int_fast8_t)check_file);
+        int_fast8_t cllr = write_to_log(fp, (const char**)arr_file, (const int_fast8_t)check_file);
+        ITEM_SIZE < ALLOC_THRESHOLD ? reset_and_free_cstr(1, arr_file) : unmap_cstr(1, arr_file);
+        return cllr == 0x01 ? 1 : -1; 
     }
-    else {
+    else { // TODO: This needs to be pulled out and converted into a function
         int check;
         check = mkdir(DIRECTORY,0777);
         if (!check) {
@@ -225,21 +225,33 @@ GCC_OPTIMIZE_O0 int initiate_write() {
     }
 }
 
-FORCE_INLINE size_t write_cstr_to_file(FILE *fp, const size_t file_size, const char* cstr) {
+FORCE_INLINE int_fast8_t write_cstr_to_file(FILE *fp, size_t pos, const char* cstr) {
+    int val = fseek(fp, 0, SEEK_END);
+    const long current_file_size = ftell(fp);
+    if (pos > (size_t)current_file_size || val != 0) return -1;
+    const size_t remaining = (size_t)current_file_size - pos; 
+    
+    if (!(remaining <= 3)) { // three is needed to skip over the ] and able to write the ,
+        if (remaining > 0) pos = (pos + remaining) - 2;
+        else return -1;
+    } 
+
     size_t iter = 0;
     const size_t size = cstr_size(1, cstr) - 1;
     size_t res = 0;
-    if (fseek(fp, file_size, SEEK_SET) == 0) {
+    if (fseek(fp, pos, SEEK_SET) == 0) {
         res = ftell(fp);
-        if (res == file_size) {
+        if (res == pos) {
             while (iter < size) {
-                res = fputc(cstr[iter], fp);
-                if (res) iter++;
+                if (fputc(cstr[iter], fp) != EOF) iter++;
                 else break;
             }
         }
     }
-    return iter == size ? 1 : 0;
+    if (iter != size) return 0;
+    if (fputc('\n', fp) == EOF) return 0;
+    if (fputc('}', fp) == EOF) return 0;
+    return 1;
 }
 
 FORCE_INLINE int_fast8_t write_to_log(FILE *fp, const char** arr_file, const int_fast8_t check_file) {
@@ -247,39 +259,34 @@ FORCE_INLINE int_fast8_t write_to_log(FILE *fp, const char** arr_file, const int
     size_t file_size = 0;
     for (size_t i = 0; i < ITEM_SIZE; i++) {
         if (arr_file[i] != NULL ) {
-            if (arr[i]->meta.written == 0x0) { // Has not been written yet
-                if (file_size == 0) res = fprintf(fp, "%s", arr_file[i]) + 1;
-                else res = write_cstr_to_file(fp, (const size_t)file_size, (const char *)arr_file[i]) == (i * 0) + 1 ? cstr_size(1, arr_file[i]) : -1;
-                const int src = cstr_size(1, arr_file[i]);
-                if (res == src) {
-                    arr[i]->meta.written = 0x01;
-                    arr[i]->meta.file_pos = ftell(fp);
-                }
-                reset_and_free_cstr(1, arr_file[i]);
-            }
-            else {
-                printf("String Value is: %s\n", arr_file[i]);
-                if (arr[i]->meta.comma_added == 0x0) {
-                    const size_t off = cstr_size(1, arr_file[i]) + 1;
-                    fseek(fp, off, SEEK_SET);
-                    res = fgetc(fp) == ']' ? fputc(',', fp) : -1;
-                    if (res == (int)',') {
+            if (arr[i]->meta.comma_added == 0x0 && arr[i]->meta.written == 0x01) {
+                res = fseek(fp, cstr_size(1, arr_file[i]) + file_size + 1, SEEK_SET);
+                res = fseek(fp, cstr_size(1, arr_file[i]) + file_size + 1, SEEK_SET) == 0 ? fgetc(fp) == (int)']' ? fseek(fp, cstr_size(1, arr_file[i]) + file_size + 2, SEEK_SET) : -1 : -1;
+                res = res == 0 ? fputc(',', fp) : res; 
+                if (res == (int)',') {
+                    fseek(fp, cstr_size(1, arr_file[i]) + file_size + 2, SEEK_SET);
+                    if (fgetc(fp) == (int)',') {
                         arr[i]->meta.comma_added = 0x01;
-                        file_size += off;
+                        file_size += cstr_size(1, arr_file[i]);
                     }
                 }
-                reset_and_free_cstr(1, arr_file[i]);
             }
+            else {
+                if (arr[i]->meta.written == 0x0) { // Has not been written yet
+                    res = file_size == 0 ? fprintf(fp, "%s", arr_file[i]) + 1 : write_cstr_to_file(fp, file_size + 3, (const char *)arr_file[i]) == (i * 0) + 1 ? cstr_size(1, arr_file[i]) : -1;
+                    if (res == cstr_size(1, arr_file[i])) arr[i]->meta.written = 0x01; 
+                } else file_size += cstr_size(1, arr_file[i]);
+            }
+            cstr_size(1, arr_file[i]) < ALLOC_THRESHOLD ? reset_and_free_cstr(1, arr_file[i]) : unmap_cstr(1, arr_file[i]);
         }
     }
     res = check_file != 0x01 ? fprintf(fp, "%s", "\n}\n\t") : 0;
     fclose(fp);
-    ITEM_SIZE < ALLOC_THRESHOLD ? reset_and_free_cstr(1, arr_file) : unmap_cstr(1, arr_file);
     return 1;
 }
 
 FORCE_INLINE code_fragment_t* find(const char* file, const int line) {
-    int hash = (int)(((uintptr_t)(strlen(file) * 2654435761UL) ^ (uintptr_t)line) % (size_t)ITEM_SIZE);
+    int hash = (int)(((uintptr_t)(cstr_size(1, file) * 2654435761UL) ^ (uintptr_t)line) % (size_t)ITEM_SIZE);
     if (arr[hash]) return (code_fragment_t*)arr[hash];
     return NULL;
 }
@@ -287,7 +294,7 @@ FORCE_INLINE code_fragment_t* find(const char* file, const int line) {
 FORCE_INLINE void parse(const char* file, const int line) {
 
     code_fragment_t* frag = NULL;
-    int hash = (int)(((uintptr_t)(strlen(file) * 2654435761UL) ^ (uintptr_t)line) % (unsigned int)ITEM_SIZE);
+    size_t hash = (int)(((uintptr_t)(cstr_size(1, file) * 2654435761UL) ^ (uintptr_t)line) % (size_t)ITEM_SIZE);
     if (arr[hash] == NULL) return;
     
     frag = (code_fragment_t*)arr[hash];
@@ -316,51 +323,37 @@ FORCE_INLINE void print(const char* file, const int line) {
 void init_logger_t() {
 
     if (ITEM_SIZE < ALLOC_THRESHOLD && arr == NULL) {
-
         if (!arr) arr = aligned_alloc(alignof(code_fragment_t), ITEM_SIZE * sizeof(code_fragment_t*));
         if (!arr) {
-
             printf(ANSI_RED "Failed to allocate memory for arr!\n");
             return;
-
         }
         else {
-
             table = aligned_alloc(alignof(code_fragment_t), ITEM_SIZE * sizeof(code_fragment_t**));
             if (!table) printf(ANSI_RED "Failed to allocate memory for table!\n");
-
         }
     }
     else {
-
         int res = 0;
         if (!arr) {
-
             arr = mmap(arr, ITEM_SIZE * sizeof(code_fragment_t*), PROT_WRITE | PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
             if (arr == MAP_FAILED) {
                 printf(ANSI_RED "Failed to allocate memory to logger's arr!\n");
             }
             else res = madvise(arr, ITEM_SIZE * sizeof(code_fragment_t*), MADV_SEQUENTIAL | MADV_MERGEABLE);
-
         }
-
         if (res == -1) {
-
             printf(ANSI_RED "Failed to modify memory region space for logger's arr!\n");
             return;
-
         }
 
         table = mmap(NULL, ITEM_SIZE * sizeof(code_fragment_t**), PROT_WRITE | PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
         if (table == MAP_FAILED) {
-
             DBG(ANSI_YELLOW "Failed to allocate memory for table!\n" ANSI_RESET, NULL);
-
         }
         else res = madvise(table, ITEM_SIZE * sizeof(code_fragment_t**), MADV_SEQUENTIAL | MADV_MERGEABLE);
 
         if (res == -1) {
-
             DBG(ANSI_YELLOW "Failed to modify memory region space for logger's table!\n" ANSI_RESET, NULL);
             res = munmap(table, ITEM_SIZE * sizeof(code_fragment_t**));
             if (res == -1) {
@@ -368,12 +361,9 @@ void init_logger_t() {
                 DBG(ANSI_RED "Error in init_logger_t failed to unmap table!\n\t returning...\n", NULL);
                 res = munmap(arr, ITEM_SIZE * sizeof(code_fragment_t*));
                 if (res == -1) {
-
                     DBG(ANSI_RED "Error in init_logger_t failed to unmap arr!\n\t returning...\n", NULL);
                     return;
-
                 }
-
                 return;
             }
         }
@@ -410,21 +400,8 @@ void clean_logger() {
     for (size_t i = 0; i < ITEM_SIZE; i++) {
         if (arr[i] != NULL) {
             code_fragment_t* frag = (code_fragment_t*)arr[i];
-            if (frag->desc) {
-
-                memset(frag->desc, 0, sizeof(char));
-                free(frag->desc);
-
-            }
-            else {
-
-                DBG(ANSI_YELLOW "Warning in clean_logger function:\n\t variable frag->desc is NULL\n" ANSI_RESET, NULL);
-
-            }
-
-            memset(arr[i], 0, sizeof(code_fragment_t));
-            free(arr[i]);
-
+            cstr_size(1, frag->desc) < ALLOC_THRESHOLD ? reset_and_free_cstr(1, frag->desc) : unmap_cstr(1, frag->desc);
+            ITEM_SIZE < ALLOC_THRESHOLD ? reset_and_free_cstr(1, arr[i]) : unmap_cstr(1, arr[i]);
         }
     }
 

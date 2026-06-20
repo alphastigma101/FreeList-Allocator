@@ -62,7 +62,6 @@
 typedef struct code_fragment_metadata_t {
     uint8_t written : 1;
     uint8_t comma_added : 1;
-    size_t file_pos;
 } code_fragment_metadata_t;
 
 typedef struct code_fragment_t {
