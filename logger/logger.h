@@ -15,7 +15,7 @@
 /* Place where the logs will be stored at */
 /* Files are formatted as .json files */
 #ifndef DIRECTORY
-    #define DIRECTORY "../logs/"
+    #define DIRECTORY "./logs/"
 #endif 
 
 /* Change the type of file extension. Default is .json */
@@ -27,18 +27,6 @@
 #ifndef PRINT_DEBUGGING 
     #define PRINT_DEBUGGING 0
 #endif
-
-/* The max length of the message to store in logger */
-#ifndef MESSAGE_LEN // TODO: Rename this to buffer instead
-    #define MESSAGE_LEN 512 // NOT NEEDED ANYMORE
-#endif
-
-#define GET_LOCAL_TIME(buf) \
-    do { \
-        struct timespec ts; \
-        timespec_get(&ts, TIME_UTC); \
-        strftime(buf, sizeof(buf), "%a %b %e %T %Y", localtime(&ts.tv_sec)); \
-    } while(0)
 
 /* Include the logger or printer variable into the translation unit files - 0 is include printer 1 is include logger */
 #ifndef LOGGING 
@@ -77,23 +65,18 @@ typedef struct code_fragment_t {
 
 
 typedef struct logger_t {
-
     void               (*add)(int priority, const char* file, int line, const char* desc, ...);
     void               (*clean)(const char* file, const int line); // key is date and time
     //#if TESTING == 1
-        int               (*initiate_write)(); // This will iterate through keys and entries ad add the {} at the correct spots
+        int               (*initiate_write)(); 
     //#endif
-    void               (*parse)(const char* file, const int line);
     code_fragment_t*   (*find)(const char* file, const int line);
 
 } logger_t;
 
 typedef struct printer_t {
-
     void                    (*add)(int priority, const char* file, int line, const char* desc, ...);
-    code_fragment_t*        (*find)(const char* file, const int line);
     void                    (*print)(const char* file, const int line);
-
 } printer_t;
 
 
@@ -104,7 +87,6 @@ typedef struct printer_t {
 #endif
 
 extern void init_logger_t();
-extern void clean_logger();
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Print Debugging Macros

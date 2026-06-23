@@ -3,12 +3,125 @@
 #include <assert.h> 
 #include <stddef.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
 
 #define TEST_PASS    ANSI_BOLD ANSI_GREEN  "  [✔] " ANSI_RESET
 #define TEST_FAIL    ANSI_BOLD ANSI_RED    "  [✘] " ANSI_RESET
 #define TEST_INFO    ANSI_BOLD ANSI_CYAN   "  [~] " ANSI_RESET
 #define TEST_HEADER  ANSI_BOLD ANSI_MAGENTA
 #define SEPARATOR    ANSI_CYAN "  ────────────────────────────────────────────\n" ANSI_RESET
+
+const char test_one[] =
+    "{\n"
+    "\t\"add.c\":\n"
+    "\t[\n"
+    "\t\t0,\n"
+    "\t\t3,\n"
+    "\t\t\"Added values of: [2] + [3] Result of a + b is 5\",\n"
+    "\t\t\"Added values of: [6] + [7] Result of a + b is 13\",\n"
+    "\t\t\"Added values of: [9] + [10] Result of a + b is 19\",\n"
+    "\t\t\"Added values of: [20] + [2] Result of a + b is 22\",\n"
+    "\t\t16\n"
+    "\t]\n"
+    "}";
+
+const char test_two[] =
+    "{\n"
+    "\t\"add.c\":\n"
+    "\t[\n"
+    "\t\t0,\n"
+    "\t\t3,\n"
+    "\t\t\"Added values of: [2] + [3] Result of a + b is 5\",\n"
+    "\t\t\"Added values of: [6] + [7] Result of a + b is 13\",\n"
+    "\t\t\"Added values of: [9] + [10] Result of a + b is 19\",\n"
+    "\t\t\"Added values of: [20] + [2] Result of a + b is 22\",\n"
+    "\t\t16\n"
+    "\t],\n"
+    "\t\"subtract.c\":\n"
+    "\t[\n"
+    "\t\t0,\n"
+    "\t\t0,\n"
+    "\t\t\"Minus values of: [2] - [3] Result of a - b is -1\",\n"
+    "\t\t33\n"
+    "\t]\n"
+    "}";
+
+const char test_three[] =
+    "{\n"
+    "\t\"add.c\":\n"
+    "\t[\n"
+    "\t\t0,\n"
+    "\t\t3,\n"
+    "\t\t\"Added values of: [2] + [3] Result of a + b is 5\",\n"
+    "\t\t\"Added values of: [6] + [7] Result of a + b is 13\",\n"
+    "\t\t\"Added values of: [9] + [10] Result of a + b is 19\",\n"
+    "\t\t\"Added values of: [20] + [2] Result of a + b is 22\",\n"
+    "\t\t16\n"
+    "\t],\n"
+    "\t\"subtract.c\":\n"
+    "\t[\n"
+    "\t\t0,\n"
+    "\t\t0,\n"
+    "\t\t\"Minus values of: [2] - [3] Result of a - b is -1\",\n"
+    "\t\t33\n"
+    "\t],\n"
+    "\t\"multiplication.c\":\n"
+    "\t[\n"
+    "\t\t0,\n"
+    "\t\t3,\n"
+    "\t\t\"Multiple values of: [2] - [3] Result of a * b is 6\",\n"
+    "\t\t\"Multiple values of: [6] - [7] Result of a * b is 42\",\n"
+    "\t\t\"Multiple values of: [9] - [10] Result of a * b is 90\",\n"
+    "\t\t\"Multiple values of: [20] - [2] Result of a * b is 40\",\n"
+    "\t\t50\n"
+    "\t]\n"
+    "}";
+
+const char test_four[] =
+    "{\n"
+    "\t\"add.c\":\n"
+    "\t[\n"
+    "\t\t0,\n"
+    "\t\t3,\n"
+    "\t\t\"Added values of: [2] + [3] Result of a + b is 5\",\n"
+    "\t\t\"Added values of: [6] + [7] Result of a + b is 13\",\n"
+    "\t\t\"Added values of: [9] + [10] Result of a + b is 19\",\n"
+    "\t\t\"Added values of: [20] + [2] Result of a + b is 22\",\n"
+    "\t\t16\n"
+    "\t],\n"
+    "\t\"subtract.c\":\n"
+    "\t[\n"
+    "\t\t0,\n"
+    "\t\t0,\n"
+    "\t\t\"Minus values of: [2] - [3] Result of a - b is -1\",\n"
+    "\t\t33\n"
+    "\t],\n"
+    "\t\"multiplication.c\":\n"
+    "\t[\n"
+    "\t\t0,\n"
+    "\t\t3,\n"
+    "\t\t\"Multiple values of: [2] - [3] Result of a * b is 6\",\n"
+    "\t\t\"Multiple values of: [6] - [7] Result of a * b is 42\",\n"
+    "\t\t\"Multiple values of: [9] - [10] Result of a * b is 90\",\n"
+    "\t\t\"Multiple values of: [20] - [2] Result of a * b is 40\",\n"
+    "\t\t50\n"
+    "\t],\n"
+    "\t\"division.c\":\n"
+    "\t[\n"
+    "\t\t0,\n"
+    "\t\t3,\n"
+    "\t\t\"Division values of: [2] - [3] Result of a / b is 0\",\n"
+    "\t\t\"Division values of: [6] - [7] Result of a / b is 0\",\n"
+    "\t\t\"Division values of: [9] - [10] Result of a / b is 0\",\n"
+    "\t\t\"Division values of: [20] - [2] Result of a / b is 10\",\n"
+    "\t\t68\n"
+    "\t]\n"
+    "}";
+	
+
+
 
 static int add_line = 0;
 static void add(int a, int b) {
@@ -142,8 +255,8 @@ int main(void) {
     #else
 
         init_logger_t();
-        //code_fragment_t* frag;
-
+        int line = 0;
+        
         {
             printf(SEPARATOR);
             printf(TEST_INFO "1. Init start for addition and write to file\n");
@@ -153,10 +266,54 @@ int main(void) {
             add(9, 10);
             add(20, 2);
             logger.initiate_write();
+            
+            FILE* fp = NULL;
+            FILE* cmp = NULL;
+            
+            const char* file = buffer.get_dir_t_cstr();
+            //char* test_one_file = write_long_cstr(0x0, 2, "../snapshots", "test_one.json");
+            const size_t size = cstr_size(1, test_one);
+            
+            fp = fopen(file, "r");
+            cmp = fopen("./snapshots/test_one.json", "r");
+            //fwrite(test_one, 1, size,cmp);
+            //fflush(cmp);
+            //rewind(cmp); 
+            
+            for (size_t i = 0; i < size; i++) {
+                const int a = fgetc(fp);
+                const int b = fgetc(cmp);
+                
+                if (a != b) {
+                    printf("\n"
+                        ANSI_RED "  ╔══════════════════════════════════════════════════╗\n"
+                        "  ║" ANSI_RESET ANSI_BOLD "          ✗  ASSERTION FAILURE — TEST ONE          " ANSI_RESET ANSI_RED "║\n"
+                        "  ╚══════════════════════════════════════════════════╝\n" ANSI_RESET
+                        "\n"
+                        "   " ANSI_CYAN "📍 Location" ANSI_RESET "  →  line " ANSI_BOLD "%d" ANSI_RESET "\n"
+                        "\n"
+                        "   " ANSI_GREEN "✓ Expected" ANSI_RESET "   →  " ANSI_GREEN "'%c'" ANSI_RESET "  (0x%02x)\n"
+                        "   " ANSI_RED   "✗ Got     " ANSI_RESET "   →  " ANSI_RED   "'%c'" ANSI_RESET "  (0x%02x)\n"
+                        "\n"
+                        ANSI_YELLOW "  ──────────────────────────────────────────────────\n" ANSI_RESET
+                        "   " ANSI_YELLOW "⚠  Mismatch detected — halting execution" ANSI_RESET "\n\n",
+                        line,
+                        test_one[i], (unsigned char)test_one[i],
+                        a, (unsigned char)a
+                    );
+                    exit(-1);
+                }
+                line = line + 1;
+            }
 
             printf(SEPARATOR);
             printf(TEST_HEADER "  RESULT: " ANSI_GREEN "PASSED ✔\n" ANSI_RESET);
             printf(TEST_HEADER "  ══════════════════════════════════════════════\n\n" ANSI_RESET);
+            
+            //memset(test_one_file, 0, cstr_size(1, file));
+            //free(test_one_file);
+            fclose(fp);
+            fclose(cmp);
 
         }
 
@@ -167,9 +324,54 @@ int main(void) {
             substract(2, 3);
             logger.initiate_write();
 
+            FILE* fp = NULL;
+            FILE* cmp = NULL;
+
+            const char* file = buffer.get_dir_t_cstr();
+            //char* test_one_file = write_long_cstr(0x0, 2, "../snapshots", "test_one.json");
+            const size_t size = cstr_size(1, test_two);
+            
+            fp = fopen(file, "r");
+            cmp = fopen("./snapshots/test_two.json", "r");
+    
+            //fwrite(test_one, 1, size,cmp);
+            //fflush(cmp);
+            //rewind(cmp); 
+            
+            for (size_t i = 0; i < size; i++) {
+                const int a = fgetc(fp);
+                const int b = fgetc(cmp);
+                
+                if (a != b) {
+                    printf("\n"
+                        ANSI_RED "  ╔══════════════════════════════════════════════════╗\n"
+                        "  ║" ANSI_RESET ANSI_BOLD "          ✗  ASSERTION FAILURE — TEST ONE          " ANSI_RESET ANSI_RED "║\n"
+                        "  ╚══════════════════════════════════════════════════╝\n" ANSI_RESET
+                        "\n"
+                        "   " ANSI_CYAN "📍 Location" ANSI_RESET "  →  line " ANSI_BOLD "%d" ANSI_RESET "\n"
+                        "\n"
+                        "   " ANSI_GREEN "✓ Expected" ANSI_RESET "   →  " ANSI_GREEN "'%c'" ANSI_RESET "  (0x%02x)\n"
+                        "   " ANSI_RED   "✗ Got     " ANSI_RESET "   →  " ANSI_RED   "'%c'" ANSI_RESET "  (0x%02x)\n"
+                        "\n"
+                        ANSI_YELLOW "  ──────────────────────────────────────────────────\n" ANSI_RESET
+                        "   " ANSI_YELLOW "⚠  Mismatch detected — halting execution" ANSI_RESET "\n\n",
+                        line,
+                        test_one[i], (unsigned char)test_one[i],
+                        a, (unsigned char)a
+                    );
+                    exit(-1);
+                }
+                line = line + 1;
+            }
+
             printf(SEPARATOR);
             printf(TEST_HEADER "  RESULT: " ANSI_GREEN "PASSED ✔\n" ANSI_RESET);
             printf(TEST_HEADER "  ══════════════════════════════════════════════\n\n" ANSI_RESET);
+
+            //memset(test_one_file, 0, cstr_size(1, file));
+            //free(test_one_file);
+            fclose(fp);
+            fclose(cmp);
 
         }
 
@@ -182,10 +384,54 @@ int main(void) {
             multiplication(9, 10);
             multiplication(20, 2);
             logger.initiate_write();
+            FILE* fp = NULL;
+            FILE* cmp = NULL;
+            
+            const char* file = buffer.get_dir_t_cstr();
+            //char* test_one_file = write_long_cstr(0x0, 2, "../snapshots", "test_one.json");
+            const size_t size = cstr_size(1, test_three);
+            
+            fp = fopen(file, "r");
+            cmp = fopen("./snapshots/test_three.json", "r");
+    
+            //fwrite(test_one, 1, size,cmp);
+            //fflush(cmp);
+            //rewind(cmp); 
+            
+            for (size_t i = 0; i < size; i++) {
+                const int a = fgetc(fp);
+                const int b = fgetc(cmp);
+                
+                if (a != b) {
+                    printf("\n"
+                        ANSI_RED "  ╔══════════════════════════════════════════════════╗\n"
+                        "  ║" ANSI_RESET ANSI_BOLD "          ✗  ASSERTION FAILURE — TEST ONE          " ANSI_RESET ANSI_RED "║\n"
+                        "  ╚══════════════════════════════════════════════════╝\n" ANSI_RESET
+                        "\n"
+                        "   " ANSI_CYAN "📍 Location" ANSI_RESET "  →  line " ANSI_BOLD "%d" ANSI_RESET "\n"
+                        "\n"
+                        "   " ANSI_GREEN "✓ Expected" ANSI_RESET "   →  " ANSI_GREEN "'%c'" ANSI_RESET "  (0x%02x)\n"
+                        "   " ANSI_RED   "✗ Got     " ANSI_RESET "   →  " ANSI_RED   "'%c'" ANSI_RESET "  (0x%02x)\n"
+                        "\n"
+                        ANSI_YELLOW "  ──────────────────────────────────────────────────\n" ANSI_RESET
+                        "   " ANSI_YELLOW "⚠  Mismatch detected — halting execution" ANSI_RESET "\n\n",
+                        line,
+                        test_one[i], (unsigned char)test_one[i],
+                        a, (unsigned char)a
+                    );
+                    exit(-1);
+                }
+                line = line + 1;
+            }
 
             printf(SEPARATOR);
             printf(TEST_HEADER "  RESULT: " ANSI_GREEN "PASSED ✔\n" ANSI_RESET);
             printf(TEST_HEADER "  ══════════════════════════════════════════════\n\n" ANSI_RESET);
+            
+            //memset(test_one_file, 0, cstr_size(1, file));
+            //free(test_one_file);
+            fclose(fp);
+            fclose(cmp);
 
         }
 
@@ -199,10 +445,54 @@ int main(void) {
             division(20, 2);
             logger.initiate_write();
 
+            FILE* fp = NULL;
+            FILE* cmp = NULL;
+            
+            const char* file = buffer.get_dir_t_cstr();
+            //char* test_one_file = write_long_cstr(0x0, 2, "../snapshots", "test_one.json");
+            const size_t size = cstr_size(1, test_four);
+            
+            fp = fopen(file, "r");
+            cmp = fopen("./snapshots/test_four.json", "r");
+    
+            //fwrite(test_one, 1, size,cmp);
+            //fflush(cmp);
+            //rewind(cmp); 
+            
+            for (size_t i = 0; i < size; i++) {
+                const int a = fgetc(fp);
+                const int b = fgetc(cmp);
+                
+                if (a != b) {
+                    printf("\n"
+                        ANSI_RED "  ╔══════════════════════════════════════════════════╗\n"
+                        "  ║" ANSI_RESET ANSI_BOLD "          ✗  ASSERTION FAILURE — TEST ONE          " ANSI_RESET ANSI_RED "║\n"
+                        "  ╚══════════════════════════════════════════════════╝\n" ANSI_RESET
+                        "\n"
+                        "   " ANSI_CYAN "📍 Location" ANSI_RESET "  →  line " ANSI_BOLD "%d" ANSI_RESET "\n"
+                        "\n"
+                        "   " ANSI_GREEN "✓ Expected" ANSI_RESET "   →  " ANSI_GREEN "'%c'" ANSI_RESET "  (0x%02x)\n"
+                        "   " ANSI_RED   "✗ Got     " ANSI_RESET "   →  " ANSI_RED   "'%c'" ANSI_RESET "  (0x%02x)\n"
+                        "\n"
+                        ANSI_YELLOW "  ──────────────────────────────────────────────────\n" ANSI_RESET
+                        "   " ANSI_YELLOW "⚠  Mismatch detected — halting execution" ANSI_RESET "\n\n",
+                        line,
+                        test_one[i], (unsigned char)test_one[i],
+                        a, (unsigned char)a
+                    );
+                    exit(-1);
+                }
+                line = line + 1;
+            }
+
             printf(SEPARATOR);
             printf(TEST_HEADER "  RESULT: " ANSI_GREEN "PASSED ✔\n" ANSI_RESET);
             printf(TEST_HEADER "  ══════════════════════════════════════════════\n\n" ANSI_RESET);
-
+            
+            //memset(test_one_file, 0, cstr_size(1, file));
+            //free(test_one_file);
+            fclose(fp);
+            fclose(cmp);
         }
 
         printf("\n");
@@ -212,8 +502,6 @@ int main(void) {
 
     
     #endif
-
-    clean_logger();
 
     return 0;
 }
