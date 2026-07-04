@@ -51,7 +51,6 @@ inline char* append_to_cstr(char* cstrt, char* cstrs, const uint8_t mode) {
     char* res = NULL;
     if (mode == 0x0) {
         const size_t size = cstr_size(1, cstrt) +  cstr_size(1, cstrs);
-        cstrt[cstr_size(1, cstrt) - 1] = ' ';
         res = strcat(cstrt, cstrs);
         res[size - 1] = '\0'; 
         return res;
@@ -108,7 +107,7 @@ FORCE_INLINE int_fast8_t create_buffer_t_dir(const size_t size) {
 }
 
 [[gnu::hot]]
-FORCE_INLINE  int_fast8_t create_buffer_t_msg(const size_t size) {
+FORCE_INLINE int_fast8_t create_buffer_t_msg(const size_t size) {
     const size_t new_size = msg.size + size;
     if (msg.str == NULL) {
         if (size < ALLOC_THRESHOLD) {
@@ -225,6 +224,9 @@ FORCE_INLINE int_fast8_t buffer_t_resize(const size_t size, uint8_t mode) {
     }
     return 0x05;
 }
+
+[[gnu::hot]]
+inline char* create_cstr(size_t size) { return size < ALLOC_THRESHOLD ? calloc(size, 1) : mmap(NULL, size, PROT_WRITE | PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0); }
 
 [[gnu::hot]]
 inline int cstr_size(const int length, ...) { 

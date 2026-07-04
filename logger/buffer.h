@@ -15,11 +15,6 @@
     #define ALLOC_THRESHOLD 50
 #endif
 
-/* Size of the logger */
-#ifndef ITEM_SIZE 
-    #define ITEM_SIZE 500
-#endif 
-
 
 typedef struct buffer_t {
     char* (*get_msg_t_cstr)();
@@ -30,6 +25,7 @@ extern buffer_t buffer;
 extern void init_buffer_t();
 extern void reset_buffer(const uint8_t mode);
 extern char* append_to_cstr(char* cstrt, char* cstrs, uint8_t mode);
+extern char* create_cstr(size_t size);
 extern int cstr_size(const int length, ...); 
 extern int_fast8_t check_or_write_cstr(const uint8_t mode, const size_t c1, const size_t c2, const int length, ...);
 extern char* write_long_cstr(const uint8_t mode, const int length, ...);

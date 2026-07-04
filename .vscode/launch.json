@@ -6,9 +6,9 @@
             "name": "(lldb) C/C++ Launch",
             "type": "lldb",
             "request": "launch",
-            "program": "${workspaceFolder}/test_logger",
+            "program": "${workspaceFolder}/test_allocator",
             "args": [],
-            "cwd": "${fileDirname}",
+            //"cwd": "${fileDirname}",
         },
         {
             // Works with gcc and possibly g++

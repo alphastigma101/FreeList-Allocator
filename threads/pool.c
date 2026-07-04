@@ -23,13 +23,6 @@
 #include <errno.h>
 #include <sys/mman.h>
 
-#if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__)
-    // ASAN/TSAN need significantly more stack space for instrumentation
-    #define ASAN_STACK_MULTIPLIER 16
-#else
-    #define ASAN_STACK_MULTIPLIER 1
-#endif
-
 /* Abbreviated as stack size and is used in create_attrs and clean_threads */
 size_t __ss = {0};
 
@@ -67,10 +60,8 @@ void* shared_address(void *addr, size_t len, int prot, int flags, int fildes, ui
  * @return Pointer to mapped region, or MAP_FAILED on error
 */
 void* private_address(void *addr, size_t len, int prot, int flags, int fildes, uint8_t off) {
-    (void)fildes;  // Unused for anonymous mappings
-    (void)off;     // Unused for anonymous mappings
     
-    void* result = mmap(addr, len, prot, flags | MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    void* result = mmap(addr, len, prot, flags | MAP_PRIVATE | MAP_ANONYMOUS, fildes, off);
     
     if (result == MAP_FAILED) {
         fprintf(stderr, "private_address: mmap failed: %s\n", strerror(errno));

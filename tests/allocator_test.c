@@ -40,6 +40,30 @@ typedef struct FORCE_COMPILER_ALIGNED(DEFAULT_ALIGNMENT) bucket_t {
 
 int main(void) {
 
+    printf("\n"
+        "  ╔══════════════════════════════════════════════════╗\n"
+        "  ║           BUILD CONFIGURATION VALUES             ║\n"
+        "  ╚══════════════════════════════════════════════════╝\n"
+        "\n"
+        "   " ANSI_CYAN "ASAN_STACK_MULTIPLIER" ANSI_RESET "  →  " ANSI_GREEN "%d\n" ANSI_RESET
+        "   " ANSI_CYAN "MUTEX_ATTR          "  ANSI_RESET "  →  " ANSI_GREEN "%d\n" ANSI_RESET
+        "   " ANSI_CYAN "THREAD_STATE        "  ANSI_RESET "  →  " ANSI_GREEN "%d\n" ANSI_RESET
+        "   " ANSI_CYAN "USTP                "  ANSI_RESET "  →  " ANSI_GREEN "%d\n" ANSI_RESET
+        "   " ANSI_CYAN "INHERITSCHED        "  ANSI_RESET "  →  " ANSI_GREEN "%d\n" ANSI_RESET
+        "   " ANSI_CYAN "LOGGING             "  ANSI_RESET "  →  " ANSI_GREEN "%d\n" ANSI_RESET
+        "   " ANSI_CYAN "ITEM_SIZE           "  ANSI_RESET "  →  " ANSI_GREEN "%d\n" ANSI_RESET
+        "   " ANSI_CYAN "CLEANER_TIME        "  ANSI_RESET "  →  " ANSI_GREEN "%d\n" ANSI_RESET
+        "\n"
+        ANSI_YELLOW "  ══════════════════════════════════════════════════\n\n" ANSI_RESET,
+        ASAN_STACK_MULTIPLIER,
+        MUTEX_ATTR,
+        THREAD_STATE,
+        USTP,
+        INHERITSCHED,
+        LOGGING,
+        ITEM_SIZE,
+        CLEANER_TIME
+    );
     printf("\n");
     printf(TEST_HEADER "  ══════════════════════════════════════════════\n" ANSI_RESET);
     printf(TEST_HEADER "  CUSTOM ALLOCATOR TEST SUITE                   \n" ANSI_RESET);

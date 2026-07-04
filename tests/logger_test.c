@@ -130,7 +130,7 @@ static void add(int a, int b) {
 
     #if LOGGING == 0
 
-        printer.add(0, "add.c", add_line, 4, "Minus values of: [%d] - [%d] Result of a + b is %d", a, b, a + b);
+        printer.add(0, "add.c", add_line, "Minus values of: [%d] - [%d] Result of a + b is %d", a, b, a + b);
         //printer.print("subtract.c", sub_line);
 
     #else 
@@ -256,6 +256,8 @@ int main(void) {
 
         init_logger_t();
         int line = 0;
+        printf("ITEM_SIZE Value is: %d\n", ITEM_SIZE);
+        printf("CLEANER_TIME Value is: %d\n", CLEANER_TIME);
         
         {
             printf(SEPARATOR);
@@ -345,7 +347,7 @@ int main(void) {
                 if (a != b) {
                     printf("\n"
                         ANSI_RED "  ╔══════════════════════════════════════════════════╗\n"
-                        "  ║" ANSI_RESET ANSI_BOLD "          ✗  ASSERTION FAILURE — TEST ONE          " ANSI_RESET ANSI_RED "║\n"
+                        "  ║" ANSI_RESET ANSI_BOLD "          ✗  ASSERTION FAILURE — TEST TWO          " ANSI_RESET ANSI_RED "║\n"
                         "  ╚══════════════════════════════════════════════════╝\n" ANSI_RESET
                         "\n"
                         "   " ANSI_CYAN "📍 Location" ANSI_RESET "  →  line " ANSI_BOLD "%d" ANSI_RESET "\n"
@@ -356,7 +358,7 @@ int main(void) {
                         ANSI_YELLOW "  ──────────────────────────────────────────────────\n" ANSI_RESET
                         "   " ANSI_YELLOW "⚠  Mismatch detected — halting execution" ANSI_RESET "\n\n",
                         line,
-                        test_one[i], (unsigned char)test_one[i],
+                        test_two[i], (unsigned char)test_two[i],
                         a, (unsigned char)a
                     );
                     exit(-1);

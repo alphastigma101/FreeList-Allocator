@@ -12,6 +12,11 @@
     #define CLEANER_TIME 1800000
 #endif
 
+/* Size of the logger */
+#ifndef ITEM_SIZE 
+    #define ITEM_SIZE 500
+#endif 
+
 /* Place where the logs will be stored at */
 /* Files are formatted as .json files */
 #ifndef DIRECTORY
@@ -23,19 +28,14 @@
     #define LOGGER_FILE_TYPE ".json"
 #endif
 
-// TODO: NOT NEEDED ANYMORE! REMOVE THIS FROM ALL TRANSLATION UNIT FILES
-#ifndef PRINT_DEBUGGING 
-    #define PRINT_DEBUGGING 0
-#endif
-
 /* Include the logger or printer variable into the translation unit files - 0 is include printer 1 is include logger */
 #ifndef LOGGING 
     #define LOGGING -1
 #endif
 
-// TODO: NOT NEEDED ANYMORE! REMOVE THIS FROM ALL TRANSLATION UNIT FILES
-#ifndef LOGLEVEL
-    #define LOGLEVEL 5
+/* the ability to control the mode to write to file. entries can be either sorted or not. default is "unsorted"*/
+#ifndef WRITE_MODE
+    #define WRITE_MODE "sorted"
 #endif
 
 /* The color print debugging */
@@ -66,17 +66,19 @@ typedef struct code_fragment_t {
 
 typedef struct logger_t {
     void               (*add)(int priority, const char* file, int line, const char* desc, ...);
-    void               (*clean)(const char* file, const int line); // key is date and time
-    //#if TESTING == 1
+    void               (*remove_entry)(const char* file, const int line);
+    #if TESTING == 1
         int               (*initiate_write)(); 
-    //#endif
-    code_fragment_t*   (*find)(const char* file, const int line);
+    #endif
 
 } logger_t;
 
 typedef struct printer_t {
     void                    (*add)(int priority, const char* file, int line, const char* desc, ...);
     void                    (*print)(const char* file, const int line);
+    #if TESTING == 1
+        code_fragment_t*   (*find)(const char* file, const int line);
+    #endif
 } printer_t;
 
 

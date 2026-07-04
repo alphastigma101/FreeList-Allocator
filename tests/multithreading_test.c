@@ -77,8 +77,7 @@ static void* traversal(args_t* args) {
     return NULL;
 }
 
-void* thread_arguments(void* arg) {
-    args_t* args = (args_t*)arg;
+void* thread_arguments(args_t* args) {
     switch (args->size) {
         case 1:
             addition(args);
@@ -178,9 +177,9 @@ int main(void) {
         printf(TEST_HEADER "  STRING TRAVERSAL TEST  ·  Thread Pool          \n" ANSI_RESET);
         printf(TEST_HEADER "  ══════════════════════════════════════════════\n" ANSI_RESET);
 
-        char* one = shared_address(NULL, sizeof(char), PROT_WRITE | PROT_READ, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+        char* one = shared_address(NULL, 1, PROT_WRITE | PROT_READ, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
         one = "This is a short string";
-        char* two = shared_address(NULL, sizeof(char), PROT_WRITE | PROT_READ, MAP_SHARED | MAP_ANONYMOUS, -1, 0); 
+        char* two = shared_address(NULL, 1, PROT_WRITE | PROT_READ, MAP_SHARED | MAP_ANONYMOUS, -1, 0); 
         two = "This is a very very very very long string"; 
 
         printf(TEST_INFO "Short string : " ANSI_YELLOW "\"%s\"\n" ANSI_RESET, one);
@@ -241,14 +240,14 @@ int main(void) {
         for (int i = 1; i < 3; i++) {
             join_thread(threads[i], NULL);
         }
-        munmap_address(one, sizeof(char));
-        munmap_address(two, sizeof(char));
+        //if (one) munmap_address(one, 1);
+        //if (two) munmap_address(two, 1);
     } 
 
     // User defined data structures / Objects 
     // Create a queue, linked lists, binary search tree, and a couple other data structures 
     // that will really test to see if multi-threading is working or not 
-    { 
+    /*{ 
         
         queue_t* q = (void*)0;
         QUEUE_INIT(q);
@@ -290,7 +289,7 @@ int main(void) {
     {
         // Singular thread testing 
 
-    }
+    }*/
 
     for (int i = 0; i <  8; i++ ) clean_threads(threads[i]);
 

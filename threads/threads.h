@@ -1,5 +1,3 @@
-#pragma once
-#include <sys/types.h>
 #ifndef _THREADS_H
 #define _THREADS_H
 #define _GNU_SOURCE 1
@@ -11,13 +9,12 @@
 #include <unistd.h> 
 #include <stdint.h>
 #include <stddef.h>
-#include <sys/mman.h>
 #include "../logger/logger.h"
 
 
 /* increase the space for ubsan/asan instrumentations */
 #ifndef ASAN_STACK_MULTIPLIER
-    #define ASAN_STACK_MULTIPLIER 16
+    #define ASAN_STACK_MULTIPLIER 1
 #endif 
 /* INHERITSCHED — Thread scheduling inheritance 0 PTHREAD_INHERIT_SCHED 1 PTHREAD_EXPLICIT_SCHED */
 #ifndef INHERITSCHED
@@ -115,7 +112,7 @@ typedef struct threads_t {
 extern threads_t init_threads_t();
 extern void create_thread(threads_t tp, const uint8_t mode, void* func);
 extern void join_thread(threads_t tp, const void** rtn);
-extern void* thread_arguments(void* args);
+extern void* thread_arguments(args_t* args);
 extern void debug_threads(const threads_t tp);
 extern void clean_threads(threads_t t);
 
