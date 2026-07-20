@@ -219,11 +219,63 @@ arena/arena.c.s:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_allocator.dir/build.make CMakeFiles/test_allocator.dir/arena/arena.c.s
 .PHONY : arena/arena.c.s
 
+bitmap/bitmap.o: bitmap/bitmap.c.o
+.PHONY : bitmap/bitmap.o
+
+# target to build an object file
+bitmap/bitmap.c.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_arena.dir/build.make CMakeFiles/test_arena.dir/bitmap/bitmap.c.o
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_allocator.dir/build.make CMakeFiles/test_allocator.dir/bitmap/bitmap.c.o
+.PHONY : bitmap/bitmap.c.o
+
+bitmap/bitmap.i: bitmap/bitmap.c.i
+.PHONY : bitmap/bitmap.i
+
+# target to preprocess a source file
+bitmap/bitmap.c.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_arena.dir/build.make CMakeFiles/test_arena.dir/bitmap/bitmap.c.i
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_allocator.dir/build.make CMakeFiles/test_allocator.dir/bitmap/bitmap.c.i
+.PHONY : bitmap/bitmap.c.i
+
+bitmap/bitmap.s: bitmap/bitmap.c.s
+.PHONY : bitmap/bitmap.s
+
+# target to generate assembly for a file
+bitmap/bitmap.c.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_arena.dir/build.make CMakeFiles/test_arena.dir/bitmap/bitmap.c.s
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_allocator.dir/build.make CMakeFiles/test_allocator.dir/bitmap/bitmap.c.s
+.PHONY : bitmap/bitmap.c.s
+
+hash_table/hash_table.o: hash_table/hash_table.c.o
+.PHONY : hash_table/hash_table.o
+
+# target to build an object file
+hash_table/hash_table.c.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_allocator.dir/build.make CMakeFiles/test_allocator.dir/hash_table/hash_table.c.o
+.PHONY : hash_table/hash_table.c.o
+
+hash_table/hash_table.i: hash_table/hash_table.c.i
+.PHONY : hash_table/hash_table.i
+
+# target to preprocess a source file
+hash_table/hash_table.c.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_allocator.dir/build.make CMakeFiles/test_allocator.dir/hash_table/hash_table.c.i
+.PHONY : hash_table/hash_table.c.i
+
+hash_table/hash_table.s: hash_table/hash_table.c.s
+.PHONY : hash_table/hash_table.s
+
+# target to generate assembly for a file
+hash_table/hash_table.c.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_allocator.dir/build.make CMakeFiles/test_allocator.dir/hash_table/hash_table.c.s
+.PHONY : hash_table/hash_table.c.s
+
 logger/buffer.o: logger/buffer.c.o
 .PHONY : logger/buffer.o
 
 # target to build an object file
 logger/buffer.c.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_arena.dir/build.make CMakeFiles/test_arena.dir/logger/buffer.c.o
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_allocator.dir/build.make CMakeFiles/test_allocator.dir/logger/buffer.c.o
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_logger.dir/build.make CMakeFiles/test_logger.dir/logger/buffer.c.o
 .PHONY : logger/buffer.c.o
@@ -233,6 +285,7 @@ logger/buffer.i: logger/buffer.c.i
 
 # target to preprocess a source file
 logger/buffer.c.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_arena.dir/build.make CMakeFiles/test_arena.dir/logger/buffer.c.i
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_allocator.dir/build.make CMakeFiles/test_allocator.dir/logger/buffer.c.i
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_logger.dir/build.make CMakeFiles/test_logger.dir/logger/buffer.c.i
 .PHONY : logger/buffer.c.i
@@ -242,6 +295,7 @@ logger/buffer.s: logger/buffer.c.s
 
 # target to generate assembly for a file
 logger/buffer.c.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_arena.dir/build.make CMakeFiles/test_arena.dir/logger/buffer.c.s
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_allocator.dir/build.make CMakeFiles/test_allocator.dir/logger/buffer.c.s
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_logger.dir/build.make CMakeFiles/test_logger.dir/logger/buffer.c.s
 .PHONY : logger/buffer.c.s
@@ -369,35 +423,35 @@ tests/multithreading_test.c.s:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_threads.dir/build.make CMakeFiles/test_threads.dir/tests/multithreading_test.c.s
 .PHONY : tests/multithreading_test.c.s
 
-threads/pool.o: threads/pool.c.o
-.PHONY : threads/pool.o
+threads/threads.o: threads/threads.c.o
+.PHONY : threads/threads.o
 
 # target to build an object file
-threads/pool.c.o:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_arena.dir/build.make CMakeFiles/test_arena.dir/threads/pool.c.o
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_allocator.dir/build.make CMakeFiles/test_allocator.dir/threads/pool.c.o
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_threads.dir/build.make CMakeFiles/test_threads.dir/threads/pool.c.o
-.PHONY : threads/pool.c.o
+threads/threads.c.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_arena.dir/build.make CMakeFiles/test_arena.dir/threads/threads.c.o
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_allocator.dir/build.make CMakeFiles/test_allocator.dir/threads/threads.c.o
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_threads.dir/build.make CMakeFiles/test_threads.dir/threads/threads.c.o
+.PHONY : threads/threads.c.o
 
-threads/pool.i: threads/pool.c.i
-.PHONY : threads/pool.i
+threads/threads.i: threads/threads.c.i
+.PHONY : threads/threads.i
 
 # target to preprocess a source file
-threads/pool.c.i:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_arena.dir/build.make CMakeFiles/test_arena.dir/threads/pool.c.i
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_allocator.dir/build.make CMakeFiles/test_allocator.dir/threads/pool.c.i
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_threads.dir/build.make CMakeFiles/test_threads.dir/threads/pool.c.i
-.PHONY : threads/pool.c.i
+threads/threads.c.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_arena.dir/build.make CMakeFiles/test_arena.dir/threads/threads.c.i
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_allocator.dir/build.make CMakeFiles/test_allocator.dir/threads/threads.c.i
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_threads.dir/build.make CMakeFiles/test_threads.dir/threads/threads.c.i
+.PHONY : threads/threads.c.i
 
-threads/pool.s: threads/pool.c.s
-.PHONY : threads/pool.s
+threads/threads.s: threads/threads.c.s
+.PHONY : threads/threads.s
 
 # target to generate assembly for a file
-threads/pool.c.s:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_arena.dir/build.make CMakeFiles/test_arena.dir/threads/pool.c.s
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_allocator.dir/build.make CMakeFiles/test_allocator.dir/threads/pool.c.s
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_threads.dir/build.make CMakeFiles/test_threads.dir/threads/pool.c.s
-.PHONY : threads/pool.c.s
+threads/threads.c.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_arena.dir/build.make CMakeFiles/test_arena.dir/threads/threads.c.s
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_allocator.dir/build.make CMakeFiles/test_allocator.dir/threads/threads.c.s
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_threads.dir/build.make CMakeFiles/test_threads.dir/threads/threads.c.s
+.PHONY : threads/threads.c.s
 
 # Help Target
 help:
@@ -417,6 +471,12 @@ help:
 	@echo "... arena/arena.o"
 	@echo "... arena/arena.i"
 	@echo "... arena/arena.s"
+	@echo "... bitmap/bitmap.o"
+	@echo "... bitmap/bitmap.i"
+	@echo "... bitmap/bitmap.s"
+	@echo "... hash_table/hash_table.o"
+	@echo "... hash_table/hash_table.i"
+	@echo "... hash_table/hash_table.s"
 	@echo "... logger/buffer.o"
 	@echo "... logger/buffer.i"
 	@echo "... logger/buffer.s"
@@ -435,9 +495,9 @@ help:
 	@echo "... tests/multithreading_test.o"
 	@echo "... tests/multithreading_test.i"
 	@echo "... tests/multithreading_test.s"
-	@echo "... threads/pool.o"
-	@echo "... threads/pool.i"
-	@echo "... threads/pool.s"
+	@echo "... threads/threads.o"
+	@echo "... threads/threads.i"
+	@echo "... threads/threads.s"
 .PHONY : help
 
 

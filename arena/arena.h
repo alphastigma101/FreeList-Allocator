@@ -1,18 +1,18 @@
 #ifndef _ARENA_H_
 #define _ARENA_H_
 #include "../threads/threads.h"
+#include "../bitmap/bitmap.h"
 
 #define ARENA_SIZE 4096
 
 typedef struct arena_t {
 
-    uint8_t             flag;
-    uint8_t             _pad[7];
-    struct              arena_t* next;  
-    uint8_t*            chunk; 
-    size_t              size;
-    size_t              curr;
-    size_t              prev;
+    unsigned char       flag;
+    unsigned char       _pad[7];
+    struct              arena_t* next; 
+    unsigned char*      chunk; 
+    unsigned int        curr;
+    unsigned int        prev;
     void*               res;
     
 } arena_t;

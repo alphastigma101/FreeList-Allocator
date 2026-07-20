@@ -59,7 +59,6 @@ typedef struct code_fragment_t {
     int occurances;
     char* desc;
     char* file;
-    code_fragment_metadata_t meta;
 
 } code_fragment_t;
 

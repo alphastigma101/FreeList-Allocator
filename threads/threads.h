@@ -11,10 +11,13 @@
 #include <stddef.h>
 #include "../logger/logger.h"
 
-
 /* increase the space for ubsan/asan instrumentations */
 #ifndef ASAN_STACK_MULTIPLIER
-    #define ASAN_STACK_MULTIPLIER 1
+    #if __SANITIZE_THREAD__ == 1
+        #define ASAN_STACK_MULTIPLIER 16
+    #else 
+        #define ASAN_STACK_MULTIPLIER 1
+    #endif
 #endif 
 /* INHERITSCHED — Thread scheduling inheritance 0 PTHREAD_INHERIT_SCHED 1 PTHREAD_EXPLICIT_SCHED */
 #ifndef INHERITSCHED
@@ -58,67 +61,58 @@
 #define FORCE_INLINE __attribute__((always_inline)) static inline
 
 typedef struct args_t {
-
     void**                     arr; 
     char*                      visit;
-    size_t                     size;
-    
+    unsigned int               size;
 } args_t;
 
 
 typedef struct FORCE_PACK atomic_t {
-
     atomic_char                    ac;
     atomic_flag                    af;
     atomic_int                     ai;
     atomic_uintptr_t               aut; 
-    
-
 } atomic_t;
 
 
 typedef struct attr_t {
-
     pthread_mutexattr_t            mutex_attr;
     uint8_t                        _pad[4];
     void**                         stackaddr; 
     pthread_attr_t                 thread_attr;
-
-
 } attr_t;
 
 typedef struct lock_t {
-
     pthread_spinlock_t             spin;
-    uint8_t                        type;
-    uint8_t                        _pad[4];
+    unsigned char                  type;
+    unsigned char                  _pad[4];
     pthread_mutex_t                mutex;
-
 } lock_t;
 
 typedef struct threads_t {
-
-    uint8_t                        flag;
-    uint8_t                        _pad[7];
-    pthread_t                      thread_id; 
-    atomic_t                       atomics;
-    uint8_t                        __pad[2];                                     
+    unsigned char                  flag;
+    unsigned char                  _pad[7];
+    pthread_t                      thread_id;
+    struct function_t*             routine; 
+    unsigned char                  __pad[2];                                     
     args_t                         args;
     lock_t                         lock;
     attr_t                         attr; 
-
 } threads_t;
 
+extern threads_t routine_metadata(const unsigned char mode, threads_t t, const int length, ...);
 extern threads_t init_threads_t();
-extern void create_thread(threads_t tp, const uint8_t mode, void* func);
+extern void create_thread(threads_t* tp, const unsigned char mode, void* func);
 extern void join_thread(threads_t tp, const void** rtn);
-extern void* thread_arguments(args_t* args);
+extern threads_t find_thread(threads_t tp);
+extern threads_t* create_thread_pool(const unsigned int size);
 extern void debug_threads(const threads_t tp);
 extern void clean_threads(threads_t t);
 
 // mmap helpers
-extern void* shared_address(void *addr, size_t len, int prot, int flags, int fildes, uint8_t off);
-extern void* private_address(void *addr, size_t len, int prot, int flags, int fildes, uint8_t off);
-extern void munmap_address(void* addr, size_t len);
+extern void* shared_address(void *addr, unsigned int len, int prot, int flags, int fildes, unsigned char off);
+extern void* private_address(void *addr, unsigned int len, int prot, int flags, int fildes, unsigned char off);
+extern void* remap_address(void* addr, unsigned int old_len, unsigned int new_len);
+extern void munmap_address(void* addr, unsigned int len);
 
 #endif

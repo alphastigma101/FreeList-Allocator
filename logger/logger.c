@@ -162,8 +162,6 @@ static void add(int priority, const char* file, int line, const char* desc, ...)
             DBG(ANSI_RED "Error in add function. Failed to allocate memory for frag->desc!\n" ANSI_RESET, NULL);
             return;
         }
-        arr[hash]->meta.written = 0x0;
-        arr[hash]->meta.comma_added = 0x0; 
         arr[hash]->priority = priority;
         arr[hash]->file     = (char*)file;
         ARR_RUNTIME_SIZE++;

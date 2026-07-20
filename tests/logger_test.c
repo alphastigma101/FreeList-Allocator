@@ -252,6 +252,29 @@ int main(void) {
             printf(TEST_HEADER "  ══════════════════════════════════════════════\n\n" ANSI_RESET);  
 
         }
+        {
+            printf(SEPARATOR);
+            printf(TEST_INFO "4. Update the same memory addresses of code fragments mulitplication/division\n");
+
+            multiplication(2, 3);
+            multiplication(2, 3);
+            multiplication(2, 3);
+
+            frag = printer.find("mulitplication.c", multiple_line);
+            assert(frag->occurances == 3);  
+            
+            division(2, 3);
+            division(2, 3);
+            division(2, 3);
+            division(2, 3);
+
+            frag = printer.find("division.c", division_line);
+            assert(frag->occurances == 4); 
+            
+            printf(SEPARATOR);
+            printf(TEST_HEADER "  RESULT: " ANSI_GREEN "PASSED ✔\n" ANSI_RESET);
+            printf(TEST_HEADER "  ══════════════════════════════════════════════\n\n" ANSI_RESET); 
+        }
     #else
 
         init_logger_t();

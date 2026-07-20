@@ -9,7 +9,7 @@
 #include <sys/types.h>
 #include <unistd.h>
 #include "../threads/threads.h" // Production
-#include "../DataStructures/C/structures.h" // Development
+//#include "../DataStructures/C/structures.h" // Development
 
 
 #define ANSI_RESET   "\033[0m"
@@ -120,13 +120,13 @@ int main(void) {
         }
         printf(TEST_INFO "Allocated shared int @ %p\n", (void*)i);
         *i = 0;
-        
+        //threads[0] = coroutine_metadata(0x01, threads[0], 3, 1, i, threads[0].lock.mutex);
         threads[0].args.size = 1;
         threads[0].args.arr = malloc(2 * sizeof(void*)); 
         threads[0].args.arr[0] = i;
         threads[0].args.arr[1] = &threads[0].lock.mutex;
 
-        create_thread(threads[0], 0x01, thread_arguments);
+        create_thread(&threads[0], 0x01, thread_arguments);
         
         printf(TEST_INFO "Thread spawned — shared address mapped @ %p\n", i);
 
@@ -192,7 +192,7 @@ int main(void) {
         threads[1].args.arr[0] = (void*)&one;
         threads[1].args.arr[1] = (void*)&mode_1;
         threads[1].args.arr[2] = (void*)&threads[1].lock.mutex;
-        create_thread(threads[1], 0x01, thread_arguments);
+        create_thread(&threads[1], 0x01, thread_arguments);
 
         const uint8_t mode_2 = 0x02;
         threads[2].args.size = 3;
@@ -200,7 +200,7 @@ int main(void) {
         threads[2].args.arr[0] = (void*)&two;
         threads[2].args.arr[1] = (void*)&mode_2;
         threads[2].args.arr[2] = (void*)&threads[2].lock.mutex;
-        create_thread(threads[2], 0x01, thread_arguments);
+        create_thread(&threads[2], 0x01, thread_arguments);
         
         printf(SEPARATOR);
         printf(TEST_INFO "Entering traversal loop — monitoring both threads...\n");

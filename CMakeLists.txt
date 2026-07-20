@@ -11,7 +11,7 @@ option(ITEM_SIZE 500)
 option(CLEANER_TIME 1800000)
 option(TESTING 0)
 option(LOGGING 0)
-option(ASAN_STACK_MULTIPLIER 16)
+#option(ASAN_STACK_MULTIPLIER 16)
 #add_compile_options(clang++)
 
 # Advance options go before the project
@@ -55,29 +55,36 @@ if (CMAKE_BUILD_TYPE STREQUAL "Testing")
     target_sources(test_arena
         PRIVATE
             arena/arena.c
-            threads/pool.c
+            bitmap/bitmap.c
+            threads/threads.c
+            logger/buffer.c
             tests/arena_test.c
         PUBLIC
             FILE_SET arenaHeaders
             TYPE HEADERS
             BASE_DIRS
                 arena
+                bitmap
                 threads
+                logger
                 tests
             FILES
+                logger/logger.h
                 arena/arena.h
                 threads/threads.h
+                bitmap/bitmap.h
     )
 
     add_executable(test_allocator)
-    if (DEFINED __SANITIZE_THREAD__ STREQUAL "1")
+    if (DEFINED __SANITIZE_THREAD__ AND  __SANITIZE_THREAD__ STREQUAL "1")
         target_link_options(test_allocator PRIVATE -fsanitize=thread,undefined -pthread)
+        target_compile_options(test_allocator PRIVATE -fsanitize=thread,undefined)
     else()
         target_link_options(test_allocator PRIVATE -fsanitize=address,undefined,leak -pthread)
     endif()
     target_compile_definitions(test_allocator 
         PRIVATE 
-            ASAN_STACK_MULTIPLIER=${ASAN_STACK_MULTIPLIER}
+            #ASAN_STACK_MULTIPLIER=${ASAN_STACK_MULTIPLIER}
             MUTEX_ATTR=${MUTEX_ATTR} 
             THREAD_STATE=${THREAD_STATE} 
             USTP=${USTP} 
@@ -91,7 +98,9 @@ if (CMAKE_BUILD_TYPE STREQUAL "Testing")
         PRIVATE
             allocator/allocator.c
             arena/arena.c
-            threads/pool.c
+            bitmap/bitmap.c
+            hash_table/hash_table.c
+            threads/threads.c
             logger/logger.c
             logger/buffer.c
             tests/allocator_test.c
@@ -100,14 +109,18 @@ if (CMAKE_BUILD_TYPE STREQUAL "Testing")
             TYPE HEADERS
             BASE_DIRS
                 allocator
+                bitmap
+                hash_table
                 logger
                 threads 
                 arena
                 tests 
             FILES
-                logger/logger.h
-                logger/buffer.h
                 arena/arena.h
+                bitmap/bitmap.h
+                hash_table/hash_table.h
+                logger/buffer.h
+                logger/logger.h
                 threads/threads.h
     )
 
@@ -136,7 +149,7 @@ if (CMAKE_BUILD_TYPE STREQUAL "Testing")
     )
 
     add_executable(test_threads)
-    if (DEFINED __SANITIZE_THREAD__ STREQUAL "1")
+    if (DEFINED __SANITIZE_THREAD__ AND  __SANITIZE_THREAD__ STREQUAL "1")
         target_link_options(test_threads PRIVATE -fsanitize=thread,undefined -pthread)
     else()
         target_link_options(test_threads PRIVATE -fsanitize=address,undefined,leak -pthread)
@@ -152,7 +165,7 @@ if (CMAKE_BUILD_TYPE STREQUAL "Testing")
 
     target_sources(test_threads
         PRIVATE
-            threads/pool.c
+            threads/threads.c
             tests/multithreading_test.c
         PUBLIC
             FILE_SET poolHeaders

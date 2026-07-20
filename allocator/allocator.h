@@ -17,7 +17,6 @@
 #define _ALLOCATOR_H_
 #include "../arena/arena.h"
 #include <limits.h>
-#include <stdalign.h>
 
 #define SMALL_BIT_START 0
 #define SMALL_BIT_END 64
@@ -53,20 +52,16 @@ typedef struct allocator_t {
     void*               (*allocate)(size_t);
     void                (*deallocate)(void*);
     arena_t*            arena;
-    threads_t*          pool;  
-    uint8_t*            bits;
-    size_t              n_bytes;
+    threads_t*          pool;  /* internal allocator threads */
     struct bucket {
         struct bucket_t*       small;
         struct bucket_t*       medium;
-        #if MODERN_ARCH == 1
-            struct bucket_t*   large;
-        #endif
+        struct bucket_t*       large;
     } bucket;
+    bitmap_t            bitmap;
 } allocator_t;
 
 extern allocator_t allocator;
-extern void clear_allocator(); // TODO: This should be static and not external
 extern void init_allocator_t();
 
 

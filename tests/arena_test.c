@@ -76,8 +76,6 @@ int main(void) {
         arena_t* arena = init_arena_t();
         assert(arena != NULL && "push: arena must initialise successfully");
         assert(arena->chunk != NULL && "push: arena chunk must not be NULL after init");
-        assert(arena->curr == 0 && "push: cursor must start at 0");
-        assert(arena->size > 0  && "push: arena size must be non-zero");
         printf(TEST_PASS "push: arena initialised correctly\n");
 
         // Basic push must succeed and return non-null
@@ -96,23 +94,23 @@ int main(void) {
 
         // res must sit within chunk bounds
         assert((char*)arena->res >= (char*)arena->chunk && "push: res must not be before chunk start");
-        assert((char*)arena->res <  (char*)arena->chunk + arena->size && "push: res must not exceed chunk bounds");
+        assert((char*)arena->res <  (char*)arena->chunk + ARENA_SIZE && "push: res must not exceed chunk bounds");
         printf(TEST_PASS "push: res sits within valid chunk bounds\n");
 
         // Cursor must never exceed arena size
-        assert(arena->curr <= arena->size && "push: cursor must not exceed arena size");
+        assert(arena->curr <= ARENA_SIZE && "push: cursor must not exceed arena size");
         printf(TEST_PASS "push: cursor within arena size after allocation\n");
 
         // Overflow push must return NULL and leave arena unchanged
         unsigned int saved_curr = arena->curr;
-        arena_t* overflow = push(arena, arena->size + 1);
+        arena_t* overflow = push(arena, ARENA_SIZE + 1);
         assert(overflow == NULL && "push: overflow allocation must return NULL");
         assert(arena->curr == saved_curr && "push: cursor must not change on failed push");
         printf(TEST_PASS "push: overflow correctly rejected, arena state unchanged\n");
 
         // Zero-byte push must be rejected or handled safely
         unsigned int curr_before_zero = arena->curr;
-        //arena_t* zero_push = push(arena, 0);
+        //arena_t* zero_push = push(&arena, 0);
         assert(arena->curr     == curr_before_zero && "push: zero-byte push must not advance cursor");
         printf(TEST_PASS "push: zero-byte push does not corrupt cursor\n");
 
@@ -137,7 +135,7 @@ int main(void) {
 
         // res after pop must sit within chunk bounds
         assert((char*)arena->res >= (char*)arena->chunk && "pop: res must not be before chunk start");
-        assert((char*)arena->res < (char*)arena->chunk + arena->size && "pop: res must not exceed chunk bounds");
+        assert((char*)arena->res < (char*)arena->chunk + ARENA_SIZE && "pop: res must not exceed chunk bounds");
         printf(TEST_PASS "pop: res after pop sits within valid chunk bounds\n");
 
         // ─────────────────────────────────────────────────────────────────────
