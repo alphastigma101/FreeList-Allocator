@@ -442,34 +442,40 @@ FORCE_INLINE bucket_t* find_slot(void* ptr) {
     for (unsigned int i = 0; i < BUCKET_SMALL_CAP; i++) {
         bucket_t* b = &allocator.bucket.small[i];
         if (b->arena && p >= (uintptr_t)b->arena->chunk && p < (uintptr_t)b->arena->chunk + ARENA_SIZE) {
-            if (b->flag == 0x01 && b->arena->flag == 0x01) {
-                b->flag = 0x0;
-                b->arena->flag = 0x0;
-                allocator.bitmap = allocator.bitmap.bitmap_clear(allocator.bitmap, i, 0, BUCKET_SMALL_CAP - 1);
+            unsigned int offset = (unsigned int)(p - (uintptr_t)b->arena->chunk);
+            if (get_entry_t_by_offset(&b->table, i, offset, 0x01)) {
+                if (b->flag == 0x01 && b->arena->flag == 0x01) {
+                    b->flag = 0x0; b->arena->flag = 0x0;
+                    allocator.bitmap = allocator.bitmap.bitmap_clear(allocator.bitmap, i, 0, BUCKET_SMALL_CAP - 1);
+                }
+                return b;
             }
-            return b;
         }
     }
     for (unsigned int i = 0; i < BUCKET_MEDIUM_CAP; i++) {
         bucket_t* b = &allocator.bucket.medium[i];
         if (b->arena && p >= (uintptr_t)b->arena->chunk && p < (uintptr_t)b->arena->chunk + ARENA_SIZE) {
-            if (b->flag == 0x01 && b->arena->flag == 0x01) {
-                b->flag = 0x0;
-                b->arena->flag = 0x0;
-                allocator.bitmap = allocator.bitmap.bitmap_clear(allocator.bitmap, i, 0, BUCKET_MEDIUM_CAP - 1);
+            unsigned int offset = (unsigned int)(p - (uintptr_t)b->arena->chunk);
+            if (get_entry_t_by_offset(&b->table, i, offset, 0x01)) {
+                if (b->flag == 0x01 && b->arena->flag == 0x01) {
+                    b->flag = 0x0; b->arena->flag = 0x0;
+                    allocator.bitmap = allocator.bitmap.bitmap_clear(allocator.bitmap, i, 0, BUCKET_MEDIUM_CAP - 1);
+                }
+                return b;
             }
-            return b;
         }
     }
     for (unsigned int i = 0; i < BUCKET_LARGE_CAP; i++) {
         bucket_t* b = &allocator.bucket.large[i];
         if (b->arena && p >= (uintptr_t)b->arena->chunk && p < (uintptr_t)b->arena->chunk + ARENA_SIZE) {
-            if (b->flag == 0x01 && b->arena->flag == 0x01) {
-                b->flag = 0x0;
-                b->arena->flag = 0x0;
-                allocator.bitmap = allocator.bitmap.bitmap_clear(allocator.bitmap, i, 0, BUCKET_LARGE_CAP - 1);
+            unsigned int offset = (unsigned int)(p - (uintptr_t)b->arena->chunk);
+            if (get_entry_t_by_offset(&b->table, i, offset, 0x01)) {
+                if (b->flag == 0x01 && b->arena->flag == 0x01) {
+                    b->flag = 0x0; b->arena->flag = 0x0;
+                    allocator.bitmap = allocator.bitmap.bitmap_clear(allocator.bitmap, i, 0, BUCKET_LARGE_CAP - 1);
+                }
+                return b;
             }
-            return b;
         }
     }
     return NULL;
@@ -510,10 +516,7 @@ FORCE_INLINE size_t find_bucket_size(const bucket_t* slot) {
     * @param b: A specific bucket that will now have been updated 
 */
 FORCE_INLINE void push_to_bucket(bucket_t* slot, size_t offset) {
-    if (offset != 0 && offset != 1) {
-
-        update(&slot->table, find_bucket_index(slot), offset, 0, 0x0);
-    }
+    update(&slot->table, find_bucket_index(slot), offset, 0, 0x0);
     return;
 }
 
@@ -562,13 +565,13 @@ FORCE_INLINE void bucket_t_dctor() {
     }
     munmap_address(allocator.bucket.small, BUCKET_SMALL_CAP * sizeof(bucket_t));
     while (medium < BUCKET_MEDIUM_CAP) {
-        arena_t* arena = allocator.bucket.medium[medium].arena;
+        //arena_t* arena = allocator.bucket.medium[medium].arena;
         bucket_t slot = allocator.bucket.medium[medium];
         if (slot.table.entries) clean(&slot.table);
-        if (arena) {
+        /*if (arena != NULL) {
             if (arena->chunk) munmap_address(arena->chunk, ARENA_SIZE + 1);
             munmap_address(arena, sizeof(arena_t));
-        }
+        }*/
         medium = medium + 1;
     }
     munmap_address(allocator.bucket.medium, BUCKET_MEDIUM_CAP * sizeof(bucket_t));
@@ -595,7 +598,6 @@ FORCE_INLINE void bucket_t_dctor() {
 FORCE_INLINE void __rewind(bucket_t* slot) {
     int idx = find_bucket_index(slot);
     byte_entries_t* bnode = slot->table.entries[idx];
-
     while (bnode && bnode->offset->inuse == 0x0) {
         byte_entries_t* next = bnode->next;
         unsigned int offset = bnode->offset->offset;
@@ -847,8 +849,7 @@ void* allocate(size_t bytes) {
     bucket_t* slot = NULL;
     if (bytes <= BUCKET_LARGE_CAP) slot = find_free_slot(bytes);
     else {
-        // coalesing feature will go here. We will need a new user defined type
-        // we will need to find out the size, get the lcd i.e the amount of times we divide it until it gets into a bucket range
+        // coalesing feature will go here...
     }
     if (slot) {
         if (!slot->arena) {
@@ -858,45 +859,36 @@ void* allocate(size_t bytes) {
         if (slot->flag != 0x01) {
             if (bytes <= BUCKET_SMALL_CAP) {
                 end = BUCKET_SMALL_CAP;
-                address = pop_from_bucket(slot, bytes);             
-                if (address) {
-                    memset(address, 0, bytes);
-                    return address;
-                }
+                address = pop_from_bucket(slot, bytes);
+                if (address) { memset(address, 0, bytes); return address; }
                 idx = allocator.bitmap.bitmap_test(allocator.bitmap, 0, BUCKET_SMALL_CAP);
             }
             if (bytes <= BUCKET_MEDIUM_CAP && bytes >= BUCKET_SMALL_CAP) {
                 end = BUCKET_MEDIUM_CAP;
-                address = pop_from_bucket(slot, bytes); 
-                if (address) {
-                    memset(address, 0, bytes);
-                    return address;
-                }
+                address = pop_from_bucket(slot, bytes);
+                if (address) { memset(address, 0, bytes); return address; }
                 idx = allocator.bitmap.bitmap_test(allocator.bitmap, 0, BUCKET_MEDIUM_CAP);
             }
             else if (bytes <= BUCKET_LARGE_CAP && bytes >= BUCKET_MEDIUM_CAP) {
                 end = BUCKET_LARGE_CAP;
                 address = pop_from_bucket(slot, bytes);
-                if (address) {
-                    memset(address, 0, bytes);
-                    return address;
-                }
+                if (address) { memset(address, 0, bytes); return address; }
                 idx = allocator.bitmap.bitmap_test(allocator.bitmap, 0, BUCKET_LARGE_CAP);
             }
 
-            if (allocator.arena->flag != 0x01 && idx != -1) {
-                allocator.arena = push(allocator.arena, bytes);
-                if (allocator.arena->flag == 0x01) {
+            if (slot->arena->flag != 0x01 && idx != -1) {
+                slot->arena = push(slot->arena, bytes);
+                if (slot->arena->flag == 0x01) {
                     slot->flag = 0x01;
                     allocator.bitmap = allocator.bitmap.bitmap_set(allocator.bitmap, idx, 0, end);
-                    arena_t* full = allocator.arena;
-                    allocator.arena = NULL;
-                    alloc_init();
-                    allocator.arena->next = full;
+                    arena_t* full = slot->arena;
+                    arena_t* fresh = init_arena_t();
+                    fresh->next = full;
+                    allocator.arena = fresh;
                     return allocate(bytes);
                 }
-                address = allocator.arena->res;
-                size_t offset = (uintptr_t)slot->arena->res - (uintptr_t)allocator.arena->chunk;
+                address = slot->arena->res;
+                size_t offset = (uintptr_t)slot->arena->res - (uintptr_t)slot->arena->chunk;
                 set(&slot->table, idx, offset, bytes, 0x01, address);
                 memset(address, 0, bytes);
                 return address;
@@ -940,6 +932,7 @@ FORCE_INLINE void deallocate(void* ptr) {
     size_t offset = (size_t)((uintptr_t)ptr - (uintptr_t)slot->arena->chunk);
     const int index = find_bucket_index(slot);
     offset_entries_t* offset_entry = get_entry_t_by_offset(&slot->table, index, offset, 0x01);
+    
     if (offset_entry) {
         const unsigned int bytes = offset_entry->bytes->bytes;
         push_to_bucket(slot, offset);

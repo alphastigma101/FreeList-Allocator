@@ -232,6 +232,7 @@ TEST(CleanSuite, Small) {
     EXPECT_EQ(allocator.bucket.small[1].arena->curr, 1);
 
     clean_small_buckets(indexes[1], indexes[2]);
+    fprintf(stderr, "[CHECK] small[2].arena=%p curr=%u\n", (void*)allocator.bucket.small[2].arena, allocator.bucket.small[2].arena->curr);
     if (allocator.bucket.small[2].arena->curr != 1) {
         debug_entry_table_full( &allocator.bucket.small[1].table, 2);
     }
