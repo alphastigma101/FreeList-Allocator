@@ -2,11 +2,11 @@
 #define __BITMAP_H__
 
 typedef struct bitmap_t {
-    unsigned char* bits;
-    unsigned int   n_bytes; /* the size of the bit table */
     struct bitmap_t (*bitmap_clear)(struct bitmap_t bitmap, int idx, int start, int end);
     struct bitmap_t (*bitmap_set)(struct bitmap_t bitmap, int idx, int start, int end);
     int (*bitmap_test)(struct bitmap_t bitmap, int start, int end);
+    unsigned char* bits;
+    unsigned int   n_bytes; /* the size of the bit table */
 } bitmap_t;
 
 

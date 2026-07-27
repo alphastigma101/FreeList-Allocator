@@ -13,17 +13,18 @@
 //#include <sys/types.h>
 
 #define FORCE_INLINE __attribute__((always_inline)) static inline
+#define FORCE_PACK __attribute__((packed))
 
 struct __msg {
-    uint8_t flag : 1;
     char* str;
     size_t size;
+    unsigned char flag;
 };
 
 struct __dir {
-    uint8_t flag : 1;
     char* str;
     size_t size;
+    unsigned char flag;
 };
 
 struct __msg msg = {0};

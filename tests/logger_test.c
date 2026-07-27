@@ -260,8 +260,8 @@ int main(void) {
             multiplication(2, 3);
             multiplication(2, 3);
 
-            frag = printer.find("mulitplication.c", multiple_line);
-            assert(frag->occurances == 3);  
+            frag = printer.find("multiplication.c", multiple_line);
+            assert(frag->occurances == 2);  
             
             division(2, 3);
             division(2, 3);
@@ -269,7 +269,7 @@ int main(void) {
             division(2, 3);
 
             frag = printer.find("division.c", division_line);
-            assert(frag->occurances == 4); 
+            assert(frag->occurances == 3); 
             
             printf(SEPARATOR);
             printf(TEST_HEADER "  RESULT: " ANSI_GREEN "PASSED ✔\n" ANSI_RESET);

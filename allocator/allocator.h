@@ -16,16 +16,6 @@
 #ifndef _ALLOCATOR_H_
 #define _ALLOCATOR_H_
 #include "../arena/arena.h"
-#include <limits.h>
-
-#define SMALL_BIT_START 0
-#define SMALL_BIT_END 64
-
-#define MEDIUM_BIT_START 64
-#define MEDIUM_BIT_END 192
-
-#define LARGE_BIT_START 192
-#define LARGE_BIT_END 448
 
 #define BUCKET_SMALL_CAP 64U
 #define BUCKET_MEDIUM_CAP 128U
@@ -49,16 +39,16 @@
    * @note: Buckets will store bytes based on size  
 */
 typedef struct allocator_t {
-    void*               (*allocate)(size_t);
-    void                (*deallocate)(void*);
-    arena_t*            arena;
-    threads_t*          pool;  /* internal allocator threads */
+    bitmap_t            bitmap;
     struct bucket {
         struct bucket_t*       small;
         struct bucket_t*       medium;
         struct bucket_t*       large;
     } bucket;
-    bitmap_t            bitmap;
+    void*               (*allocate)(size_t);
+    void                (*deallocate)(void*);
+    arena_t*            arena;
+    threads_t*          pool;  /* internal allocator threads */
 } allocator_t;
 
 extern allocator_t allocator;

@@ -49,14 +49,14 @@ arena_t* init_arena_t() {
         return NULL;
     }
     memset(arena, 0, sizeof(arena_t));
-    arena->chunk = shared_address(arena->chunk, ARENA_SIZE, PROT_WRITE | PROT_READ, MAP_SHARED | MAP_ANONYMOUS , -1, 0);
-    res = madvise(arena->chunk, ARENA_SIZE, MADV_SEQUENTIAL);
+    arena->chunk = shared_address(NULL, ARENA_SIZE + 1, PROT_WRITE | PROT_READ, MAP_SHARED | MAP_ANONYMOUS , -1, 0);
+    res = madvise(arena->chunk, ARENA_SIZE + 1, MADV_SEQUENTIAL);
     if (!arena->chunk || res == -1) {
         printf("ERROR 15 IN ARENA.C, FAILED TO ALLOCATE A CHUNK OF MEMORY!\n");
         free(arena);
         return NULL;
     }
-    memset(arena->chunk, 0, ARENA_SIZE);
+    memset(arena->chunk, 0, ARENA_SIZE + 1);
     arena->curr = 1;
     return arena;
 }
@@ -90,8 +90,8 @@ arena_t* pop(arena_t* arena, size_t offset) {
     if (!arena) return NULL;
     else if (arena->curr == 1) return arena;
     if ((size_t)arena->curr > offset) {
-        arena->prev = arena->curr;
-        arena->curr = offset;
+        arena->curr = arena->prev;
+        arena->prev = offset;
     }
 	if (arena->flag == 0x01) arena->flag = 0x0;
     return arena;
@@ -129,7 +129,12 @@ arena_t* pop(arena_t* arena, size_t offset) {
 }*/
 
 void clear_arena_t(arena_t *arena) {
-    arena->curr = 1;
-    arena->prev = 0;
-    //ARENA_SIZE > ALLOC_THRESHOLD ? unmap_cstr(3, arena->mae.bitmap, arena->mae.table, arena->chunk) : reset_and_free_cstr(3, arena->mae.bitmap, arena->mae.table, arena->chunk);
+    int res = madvise(arena->chunk, ARENA_SIZE + 1, MADV_DONTNEED);
+    if (res == -1) return;
+    else {
+        arena->curr = 1;
+        arena->prev = 0;
+        arena->res = NULL;
+    }
+    return;
 }

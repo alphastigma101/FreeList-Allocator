@@ -1,5 +1,4 @@
 #include "bitmap.h"
-#include "../logger/buffer.h"
 #include <stdalign.h>
 #include <stddef.h>
 #include <stdlib.h>
@@ -30,10 +29,9 @@ FORCE_INLINE bitmap_t bitmap_set(bitmap_t bitmap, int index, int start, int end)
     * @return: Returns 0 if out of bounds, otherwise returns 1
     * @note: As of 3/24/26, bit map values are not being set to either one or zero. This is still a bug that will eventually be fixed.
 */
-
 FORCE_INLINE bitmap_t bitmap_clear(bitmap_t bitmap, int idx, int start, int end) {
     if (idx < start || idx > end) return bitmap;
-    bitmap.bits[idx / 8] |= (1 << (idx % 8));         /* mark FREE: set the bit */
+    bitmap.bits[idx / 8] |= (1 << (idx % 8));
     return bitmap;
 }
 
@@ -45,17 +43,39 @@ FORCE_INLINE bitmap_t bitmap_clear(bitmap_t bitmap, int idx, int start, int end)
     * @return: Returns -1 if not found, otherwise, return a valid index
 */
 FORCE_INLINE int bitmap_test(bitmap_t bitmap, int start, int end) {
-    unsigned long data   = *(unsigned long*)(bitmap.bits + start / 8);   /* FIX: unsigned long, not unsigned int */
-    size_t    range      = end - start;
-    size_t    bit_range  = range;                                        /* FIX: range is already in BITS now */
-    unsigned long range_mask = (bit_range >= sizeof(unsigned long) * 8)
-                         ? ~(unsigned long)0
-                         : ((unsigned long)1 << bit_range) - 1;
+   int word0 = start / 64;
+    int max_word = (bitmap.n_bytes / 8) - 1;
 
-    unsigned long target_bits = data & range_mask;
-    if (target_bits == 0) return -1;
+    unsigned long w0 = (word0 + 0 <= max_word) ? *(unsigned long*)(bitmap.bits + (word0 + 0) * 8) : 0UL;
+    unsigned long w1 = (word0 + 1 <= max_word) ? *(unsigned long*)(bitmap.bits + (word0 + 1) * 8) : 0UL;
+    unsigned long w2 = (word0 + 2 <= max_word) ? *(unsigned long*)(bitmap.bits + (word0 + 2) * 8) : 0UL;
+    unsigned long w3 = (word0 + 3 <= max_word) ? *(unsigned long*)(bitmap.bits + (word0 + 3) * 8) : 0UL;
 
-    return start + (__builtin_ffsl((long)target_bits) - 1);
+    int wlo0 = (word0 + 0) * 64, whi0 = wlo0 + 63;
+    int wlo1 = (word0 + 1) * 64, whi1 = wlo1 + 63;
+    int wlo2 = (word0 + 2) * 64, whi2 = wlo2 + 63;
+    int wlo3 = (word0 + 3) * 64, whi3 = wlo3 + 63;
+
+    int lo0 = (start > wlo0) ? (start - wlo0) : 0, hi0 = (end < whi0) ? (end - wlo0) : 63;
+    int lo1 = (start > wlo1) ? (start - wlo1) : 0, hi1 = (end < whi1) ? (end - wlo1) : 63;
+    int lo2 = (start > wlo2) ? (start - wlo2) : 0, hi2 = (end < whi2) ? (end - wlo2) : 63;
+    int lo3 = (start > wlo3) ? (start - wlo3) : 0, hi3 = (end < whi3) ? (end - wlo3) : 63;
+
+    unsigned long mask0 = (lo0 > hi0) ? 0UL : ((hi0 - lo0 + 1 >= 64) ? ~0UL : (((1UL << (hi0 - lo0 + 1)) - 1) << lo0));
+    unsigned long mask1 = (lo1 > hi1) ? 0UL : ((hi1 - lo1 + 1 >= 64) ? ~0UL : (((1UL << (hi1 - lo1 + 1)) - 1) << lo1));
+    unsigned long mask2 = (lo2 > hi2) ? 0UL : ((hi2 - lo2 + 1 >= 64) ? ~0UL : (((1UL << (hi2 - lo2 + 1)) - 1) << lo2));
+    unsigned long mask3 = (lo3 > hi3) ? 0UL : ((hi3 - lo3 + 1 >= 64) ? ~0UL : (((1UL << (hi3 - lo3 + 1)) - 1) << lo3));
+
+    unsigned long m0 = w0 & mask0, m1 = w1 & mask1, m2 = w2 & mask2, m3 = w3 & mask3;
+
+    unsigned long chosen = (m0 != 0) ? m0 : (m1 != 0) ? m1 : (m2 != 0) ? m2 : m3;
+    int which          = (m0 != 0) ? 0  : (m1 != 0) ? 1  : (m2 != 0) ? 2  : (m3 != 0) ? 3 : -1;
+
+    if (which == -1) return -1;
+
+    int result = (word0 + which) * 64 + __builtin_ctzl(chosen);
+    if (result < start || result > end) return -1;
+    return result;
 }
 
 

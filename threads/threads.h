@@ -76,36 +76,33 @@ typedef struct FORCE_PACK atomic_t {
 
 
 typedef struct attr_t {
-    pthread_mutexattr_t            mutex_attr;
-    uint8_t                        _pad[4];
-    void**                         stackaddr; 
     pthread_attr_t                 thread_attr;
+    void**                         stackaddr; 
+    pthread_mutexattr_t            mutex_attr;
 } attr_t;
 
 typedef struct lock_t {
-    pthread_spinlock_t             spin;
-    unsigned char                  type;
-    unsigned char                  _pad[4];
     pthread_mutex_t                mutex;
+    unsigned char                  type;
 } lock_t;
 
 typedef struct threads_t {
-    unsigned char                  flag;
-    unsigned char                  _pad[7];
-    pthread_t                      thread_id;
-    struct function_t*             routine; 
-    unsigned char                  __pad[2];                                     
-    args_t                         args;
-    lock_t                         lock;
     attr_t                         attr; 
+    lock_t                         lock;
+    args_t                         args;
+    pthread_t                      thread_id;
+    struct function_t*             routine;
+    unsigned char                  flag;                                    
 } threads_t;
 
 extern threads_t routine_metadata(const unsigned char mode, threads_t t, const int length, ...);
+extern void** routine_metadata_arguments(struct function_t* meta);
 extern threads_t init_threads_t();
 extern void create_thread(threads_t* tp, const unsigned char mode, void* func);
 extern void join_thread(threads_t tp, const void** rtn);
-extern threads_t find_thread(threads_t tp);
-extern threads_t* create_thread_pool(const unsigned int size);
+extern threads_t find_thread_t(const threads_t* tp, const unsigned int size);
+extern void create_thread_pool(threads_t* tp, const unsigned int size, const unsigned char mode);
+extern void update_thread_pool(threads_t *tp, const unsigned int size);
 extern void debug_threads(const threads_t tp);
 extern void clean_threads(threads_t t);
 

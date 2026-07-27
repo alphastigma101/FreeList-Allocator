@@ -47,19 +47,12 @@
 #define ANSI_CYAN    "\033[36m"
 #define ANSI_MAGENTA "\033[35m"
 
-typedef struct code_fragment_metadata_t {
-    uint8_t written : 1;
-    uint8_t comma_added : 1;
-} code_fragment_metadata_t;
-
 typedef struct code_fragment_t {
-    
-    int priority : 3;
-    int line;
-    int occurances;
     char* desc;
     char* file;
-
+    int priority;
+    int line;
+    int occurances;
 } code_fragment_t;
 
 

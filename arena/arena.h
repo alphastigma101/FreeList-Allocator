@@ -6,15 +6,12 @@
 #define ARENA_SIZE 4096
 
 typedef struct arena_t {
-
-    unsigned char       flag;
-    unsigned char       _pad[7];
     struct              arena_t* next; 
     unsigned char*      chunk; 
+    void*               res;
     unsigned int        curr;
     unsigned int        prev;
-    void*               res;
-    
+    unsigned char       flag;
 } arena_t;
 
 extern arena_t* init_arena_t();

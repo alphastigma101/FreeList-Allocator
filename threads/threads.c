@@ -19,19 +19,34 @@
 #include <stdarg.h>
 #include <stddef.h>
 #include <stdint.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
 #define __USE_GNU 1
 #include <sys/mman.h>
 
+/*
+#include "threads.h"
+#include <stdalign.h>
+#include <stdarg.h>
+#include <stddef.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
+#include <errno.h>
+#define __USE_GNU 1
+#include <sys/mman.h>
+*/
+
 typedef struct function_t {
-    int size;
     void** args;
+    int size;
 } function_t;
 
+inline void** routine_metadata_arguments(struct function_t* meta) { return meta->args; }
+
 /* Abbreviated as stack size and is used in create_attrs and clean_threads */
+FORCE_INLINE void create_attrs(threads_t* tp, const unsigned char mode);
 size_t __ss = {0};
 
 /**
@@ -96,7 +111,7 @@ void munmap_address(void* addr, unsigned int len) {
         return;
     }
     
-    if (munmap(addr, len) == -1) {
+    if (munmap(addr, len) != 0) {
         fprintf(stderr, "clean_address: munmap failed: %s\n", strerror(errno));
     }
 }
@@ -202,7 +217,32 @@ threads_t init_threads_t() {
     return t;
 }
 
-FORCE_INLINE threads_t* create_attrs(threads_t* tp, const unsigned char mode) {
+[[gnu::hot]]
+inline void create_thread_pool(threads_t* tp, const unsigned int size, const unsigned char mode) {
+    if (mode == 0x0 && sizeof(threads_t) > ALLOC_THRESHOLD && tp) tp = shared_address(NULL, size * sizeof(threads_t), PROT_WRITE | PROT_READ, MAP_SHARED | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+    else if (mode == 0x01 && sizeof(threads_t) > ALLOC_THRESHOLD && tp) tp = private_address(NULL, size * sizeof(threads_t), PROT_WRITE | PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0); 
+    else if (!tp) tp = aligned_alloc(alignof(threads_t), size * sizeof(threads_t));
+    
+    if (!tp) return;
+    else if (sizeof(threads_t) < ALLOC_THRESHOLD) {
+        // are allowed to use madvice or mprotect
+    }
+
+    for (unsigned int i = 0; i < size; i++) create_attrs(&tp[i], mode == 0x0 ? 0x01 : 0x0);
+    return;
+}
+
+inline void update_thread_pool(threads_t *tp, const unsigned int size) {
+    for (unsigned int i = 0; i < size; i++) {
+        if (tp[i].flag == 0x01) {
+            // We are going to need to lock it again, so we can use size - 1 thread variable to accomplish this task
+            join_thread(tp[i], NULL);
+            tp[i].flag = 0x0;
+        }
+    } 
+}
+
+FORCE_INLINE void create_attrs(threads_t* tp, const unsigned char mode) {
     int rc;
     const void* mutex_attr = &tp->attr.mutex_attr;
     const void* thread_attr = &tp->attr.thread_attr;
@@ -211,7 +251,7 @@ FORCE_INLINE threads_t* create_attrs(threads_t* tp, const unsigned char mode) {
         
         unsigned int page_size = (unsigned int)sysconf(_SC_PAGESIZE);
         unsigned int base_size = PTHREAD_STACK_MIN * ASAN_STACK_MULTIPLIER;
-        __ss             = (base_size + page_size - 1) & ~(page_size - 1);
+        __ss                   = (base_size + page_size - 1) & ~(page_size - 1);
 
         rc = pthread_attr_setstacksize(&tp->attr.thread_attr, __ss);
         if (rc) {
@@ -258,8 +298,6 @@ FORCE_INLINE threads_t* create_attrs(threads_t* tp, const unsigned char mode) {
         const void* mutex_attr = &tp->attr.mutex_attr;
         if (mutex_attr) pthread_mutexattr_destroy(&tp->attr.mutex_attr);
     }
-
-    return tp;
 }
 
 /** 
@@ -272,7 +310,7 @@ FORCE_INLINE threads_t* create_attrs(threads_t* tp, const unsigned char mode) {
 */
 void create_thread(threads_t* tp, const unsigned char mode, void* func) {
 
-    tp = create_attrs(tp, mode);
+    create_attrs(tp, mode);
     int rc = pthread_create(&tp->thread_id, &tp->attr.thread_attr, func, &tp->args);
     if (rc) {
         printf("pthread_create failed: %s (errno: %d)\n", strerror(rc), rc);
@@ -288,6 +326,17 @@ void join_thread(threads_t t, const void** rtn) {
     if (state != PTHREAD_CREATE_DETACHED)
         pthread_join(t.thread_id, (void**)rtn); 
     return;
+}
+
+threads_t find_thread_t(const threads_t* tp, const unsigned int size) {
+    threads_t temp;
+    memset(&temp, -1, sizeof(threads_t));
+
+    for (unsigned int i = 0; i < size; i++) {
+        if (tp->flag == 0x0) return tp[i];
+    }
+
+    return temp;
 }
 
 void clean_threads(threads_t t) {

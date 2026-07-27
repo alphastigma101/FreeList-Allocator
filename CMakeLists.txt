@@ -99,7 +99,6 @@ if (CMAKE_BUILD_TYPE STREQUAL "Testing")
             allocator/allocator.c
             arena/arena.c
             bitmap/bitmap.c
-            hash_table/hash_table.c
             threads/threads.c
             logger/logger.c
             logger/buffer.c
@@ -110,7 +109,6 @@ if (CMAKE_BUILD_TYPE STREQUAL "Testing")
             BASE_DIRS
                 allocator
                 bitmap
-                hash_table
                 logger
                 threads 
                 arena
@@ -118,7 +116,6 @@ if (CMAKE_BUILD_TYPE STREQUAL "Testing")
             FILES
                 arena/arena.h
                 bitmap/bitmap.h
-                hash_table/hash_table.h
                 logger/buffer.h
                 logger/logger.h
                 threads/threads.h

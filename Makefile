@@ -246,30 +246,6 @@ bitmap/bitmap.c.s:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_allocator.dir/build.make CMakeFiles/test_allocator.dir/bitmap/bitmap.c.s
 .PHONY : bitmap/bitmap.c.s
 
-hash_table/hash_table.o: hash_table/hash_table.c.o
-.PHONY : hash_table/hash_table.o
-
-# target to build an object file
-hash_table/hash_table.c.o:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_allocator.dir/build.make CMakeFiles/test_allocator.dir/hash_table/hash_table.c.o
-.PHONY : hash_table/hash_table.c.o
-
-hash_table/hash_table.i: hash_table/hash_table.c.i
-.PHONY : hash_table/hash_table.i
-
-# target to preprocess a source file
-hash_table/hash_table.c.i:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_allocator.dir/build.make CMakeFiles/test_allocator.dir/hash_table/hash_table.c.i
-.PHONY : hash_table/hash_table.c.i
-
-hash_table/hash_table.s: hash_table/hash_table.c.s
-.PHONY : hash_table/hash_table.s
-
-# target to generate assembly for a file
-hash_table/hash_table.c.s:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_allocator.dir/build.make CMakeFiles/test_allocator.dir/hash_table/hash_table.c.s
-.PHONY : hash_table/hash_table.c.s
-
 logger/buffer.o: logger/buffer.c.o
 .PHONY : logger/buffer.o
 
@@ -474,9 +450,6 @@ help:
 	@echo "... bitmap/bitmap.o"
 	@echo "... bitmap/bitmap.i"
 	@echo "... bitmap/bitmap.s"
-	@echo "... hash_table/hash_table.o"
-	@echo "... hash_table/hash_table.i"
-	@echo "... hash_table/hash_table.s"
 	@echo "... logger/buffer.o"
 	@echo "... logger/buffer.i"
 	@echo "... logger/buffer.s"

@@ -1,10 +1,10 @@
 #include "allocator.h"
-#include "../hash_table/hash_table.h"
 #include <pthread.h>
-#include <stddef.h>
 #include <stdalign.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdnoreturn.h>
 #include <string.h>
 #include <stdlib.h>
 #include <sys/mman.h>
@@ -12,100 +12,374 @@
 
 /*
 #include "allocator.h"
-#include <stddef.h>
-#include <stdint.h>
+#include <stdalign.h>
 #include <string.h>
 #include <stdlib.h>
 #include <sys/types.h>
 */
+typedef struct byte_entries_t {
+    void* ptr;
+    struct offset_entries_t* offset;
+    struct byte_entries_t* next;
+    unsigned int bytes;
+    unsigned char inuse;
+} byte_entries_t;
 
-typedef struct bucket_t {
-    unsigned char       flag;
-    unsigned char       _pad[7];
-    arena_t*            arena;       
-    memory_address_hash_table_t* maht;
-} bucket_t;
+typedef struct offset_entries_t {
+    void* ptr;
+    struct byte_entries_t* bytes;
+    struct offset_entries_t* next;
+    unsigned int offset;
+    unsigned char inuse;
+} offset_entries_t;
 
-allocator_t allocator = {0};
-FORCE_INLINE threads_t find_available_thread();
+typedef struct entry_table_t {
+    byte_entries_t** entries;
+    unsigned int bucket_count;  /* always a power of two */
+} entry_table_t;
 
-/**
-    * @description: A Free function that copies over the modified bucket to the global variable allocator causing it to sync properly.
-    * @param slot: bucket_t pointer type that needs to be synced with allocator variable
-    * @param mutex: A pointer that can be either null or not.
-    * @return: None.
-*/
-FORCE_INLINE void __sync(bucket_t* slot, pthread_mutex_t* mutex) {
-     if (mutex) {
 
-        int rc;
-        rc = pthread_mutex_lock(mutex);
-        
-        if (rc == 0) {
+/////////////////////////
+// ENTRY TABLE SECTION //
+////////////////////////
 
-            uintptr_t slot_offset = (uintptr_t)slot - (uintptr_t)&allocator;
-            bucket_t* _slot = (bucket_t*)((uintptr_t)&allocator + slot_offset);
-            *_slot = *slot;
-            pthread_mutex_unlock(mutex);
 
-        }
-
-        #if LOGGING == 1
-
-            #if LOGLEVEL == 0  
-
-                // print out the status of rc and the memory address of the thread which should also display
-                // the index of allocator.pool the thread that was used  
-
-            #elif LOGLEVEL > 1
-
-                // TODO: Include the logger variable here and its functions
-
-            #endif
-
-        #endif
-
-        return;
-    }
-
-    uintptr_t slot_offset = (uintptr_t)slot - (uintptr_t)&allocator;
-    bucket_t* _slot = (bucket_t*)((uintptr_t)&allocator + slot_offset);
-    if (_slot == slot) *_slot = *slot;
+FORCE_INLINE void entry_table_init(entry_table_t* table) {
+    table->entries = mmap(NULL, 64 * sizeof(byte_entries_t*), PROT_WRITE | PROT_READ, MAP_SHARED | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+    if (table->entries == MAP_FAILED) return;
+    memset(table->entries, 0, sizeof(byte_entries_t*) * 64);
+    table->bucket_count = 64;
     return;
 }
 
+/**
+    * @description: Resizes the data member field copying over the old data to the new memory block.
+    * @param table: A stack allocated addres variable 
+    * @note: It resizes itself by the multiple of a numerical value that's a power of 2 i.e 64
+    * @return: Nothing
+*/
+FORCE_INLINE void resize_table(entry_table_t* table) {
+    unsigned int new_bucket_count = table->bucket_count * 2;
+    byte_entries_t** new_entries =  shared_address(NULL, new_bucket_count * sizeof(byte_entries_t*), PROT_WRITE | PROT_READ, MAP_SHARED | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+    if (new_entries == MAP_FAILED) return;
+    int res = madvise(new_entries, new_bucket_count * sizeof(byte_entries_t*), MADV_SEQUENTIAL | MADV_MERGEABLE);
+    if (res == -1) {
+        munmap_address(new_entries, sizeof(byte_entries_t*) * new_bucket_count);
+        return;
+    }
+    memcpy(new_entries, table->entries, sizeof(byte_entries_t*) * table->bucket_count);
+    munmap_address(table->entries, sizeof(byte_entries_t*) * table->bucket_count);
+    table->entries = new_entries;
+    table->bucket_count = new_bucket_count;
+}
+
+FORCE_INLINE byte_entries_t* create_byte_entry(const unsigned int bytes, const unsigned char inuse, void* ptr) {
+    byte_entries_t* bnode = aligned_alloc(alignof(byte_entries_t), sizeof(byte_entries_t));
+    if (bnode) {
+        memset(bnode, 0, sizeof(byte_entries_t)); 
+        bnode->ptr = ptr; 
+        bnode->offset = NULL; 
+        bnode->next = NULL; 
+        bnode->bytes = bytes; 
+        bnode->inuse = inuse;
+        return bnode;
+    }
+    return NULL;
+}
+
+FORCE_INLINE offset_entries_t* create_offset_entry(const unsigned int offset, const unsigned char inuse, void* ptr) {
+    offset_entries_t* onode = aligned_alloc(alignof(offset_entries_t), sizeof(offset_entries_t));
+    if (onode) {
+        memset(onode, 0, sizeof(offset_entries_t)); 
+        onode->ptr = ptr; 
+        onode->bytes = NULL; 
+        onode->next = NULL; 
+        onode->offset = offset; 
+        onode->inuse = inuse;
+        return onode;
+    }
+    return NULL;
+}
 
 /**
-    * @description: A free function of O(1) that syncs the arena flag and the bucket flag indicating it is free and ready to be used. 
-    * @param b: bucket_t pointer that needs to be marked. 
-    * @param start: Is a macro value. it can be: SMALL_BIT_START, MEDIUM_BIT_START, or LARGE_BIT_START
-    * @param end: Is a macro value. It can be: SMALL_BIT_END, MEDIUM_BIT_END, or LARGE_BIT_END
-    * @param abs_idx: the absolute index from one of the buckets slot that is used to obtain 'b'. 
-                      It is used to update the bitmap to mark 'b' as free.              
+    * @description: Free function that adds a new bijection pair, and adds the existing entries to the back.
+    * @param table: A stack address variable apart of the bucket_t
+    * @param idx: A variable that has been already pre-computed by the allocator's bitmap functions or a bucket function
+    * @param offset: An offset generated by the arena 
+    * @param bytes: The requested bytes 
+    * @param inuse: Mark the entry as 0x0 not in use or 0x01 as in use 
+    * @return: Return's nothing
 */
-FORCE_INLINE void bucket_mark_free(int abs_idx) {
-    const size_t size = abs_idx;
-    if (size < BUCKET_SMALL_CAP) {
-        allocator.bucket.small[abs_idx].flag = 0x0;
-        allocator.bucket.small[abs_idx].arena->flag = 0x0;
-        allocator.bitmap = allocator.bitmap.bitmap_clear(allocator.bitmap, abs_idx, SMALL_BIT_START, SMALL_BIT_END - 1);
-        return;
-    }
-    else if (size < BUCKET_MEDIUM_CAP && size >= BUCKET_SMALL_CAP) {
+FORCE_INLINE void set(entry_table_t* table, const unsigned int idx, const unsigned int offset, const unsigned int bytes, const unsigned char inuse, void* ptr) {
+    if (!table->entries) entry_table_init(table);
+    else if (idx >= table->bucket_count) resize_table(table);
 
-        allocator.bucket.medium[abs_idx].flag = 0x0;
-        allocator.bucket.medium[abs_idx].arena->flag = 0x0;
-        allocator.bitmap = allocator.bitmap.bitmap_clear(allocator.bitmap, abs_idx, MEDIUM_BIT_START, MEDIUM_BIT_END - 1);
-        return;
+    byte_entries_t* bnode = create_byte_entry(bytes, inuse, ptr);
+    offset_entries_t* onode = create_offset_entry(offset, inuse, ptr);
+    if (!bnode || !onode) { free(bnode); free(onode); return; }
+
+    bnode->offset = onode;
+    onode->bytes = bnode;
+
+    bnode->next = table->entries[idx];
+    table->entries[idx] = bnode;
+}
+
+FORCE_INLINE byte_entries_t* get_entry_t_by_bytes(entry_table_t* table, const int idx, const unsigned int bytes, const unsigned char inuse) {
+    byte_entries_t* n = NULL;
+    if (table->entries) n = table->entries[idx];
+    if (bytes != 0) { 
+        while (__builtin_expect(n != NULL, 1)) {
+            __builtin_prefetch(n->next, 0, 1);
+            unsigned int matches = (n->bytes == bytes) & (n->inuse == inuse);
+            if (matches) return n;
+            n = n->next;
+        }
     }
     else {
-        allocator.bucket.large[abs_idx].flag = 0x0;
-        allocator.bucket.large[abs_idx].arena->flag = 0x0;
-        allocator.bitmap = allocator.bitmap.bitmap_clear(allocator.bitmap, abs_idx, LARGE_BIT_START, LARGE_BIT_END - 1);
+        while (__builtin_expect(n != NULL, 1)) {
+            __builtin_prefetch(n->next, 0, 1);
+            if (n->inuse) return n;
+            n = n->next;
+        }
+    }
+    return NULL;
+}
+
+FORCE_INLINE offset_entries_t* get_entry_t_by_offset(entry_table_t* table, const int idx, const unsigned int offset, const unsigned char inuse) {
+    byte_entries_t* bnode = NULL;
+    if (table->entries) bnode = table->entries[idx];
+    while (__builtin_expect(bnode != NULL, 1)) {
+        __builtin_prefetch(bnode->next, 0, 1);
+        offset_entries_t* onode = bnode->offset;
+        if (onode->offset == offset && onode->inuse == inuse) return onode;
+        bnode = bnode->next;
+    }
+    return NULL;
+}
+
+/**
+    * @description: Free function that updates a bijection nodes
+    * @param table: A stack address variable apart of the bucket_t
+    * @param idx: A variable that has been already pre-computed by the allocator's bitmap functions or a bucket function
+    * @param offset: An offset generated by the arena 
+    * @param bytes: The requested bytes 
+    * @param inuse: Mark the entry as 0x0 not in use or 0x01 as in use 
+    * @return: Return's nothing
+*/
+FORCE_INLINE void update(entry_table_t* table, const int idx, const unsigned int offset, const unsigned int bytes, const unsigned char inuse) {
+    if (!table->entries) return;
+    if ((offset == 0) && (bytes == 0)) return;
+
+    byte_entries_t* bnode = table->entries[idx];
+    while (bnode) {
+        int matches = (offset != 0) ? (bnode->offset->offset == offset) : (bnode->bytes == bytes);
+        if (matches) {
+            bnode->inuse = inuse;
+            bnode->offset->inuse = inuse;
+            break;
+        }
+        bnode = bnode->next;
+    }
+}
+
+/**
+    * @description: Free function that destroys a bijection node
+    * @param table: A stack address allocated variable apart of the bucket_t
+    * @param idx: A variable that has been already pre-computed by the allocator's bitmap functions or a bucket function
+    * @param offset: An offset generated by the arena 
+    * @param bytes: The requested bytes 
+    * @param inuse: Mark the entry as 0x0 not in use or 0x01 as in use 
+    * @return: Return's nothing
+*/
+FORCE_INLINE void destroy(entry_table_t* table, const int idx, const unsigned int offset, const unsigned int bytes) {
+    if (!table->entries) return;
+    if ((offset == 0) && (bytes == 0)) return;
+
+    byte_entries_t* prev = NULL;
+    byte_entries_t* cur = table->entries[idx];
+    byte_entries_t* bn = NULL;
+
+    while (cur) {
+        int matches = (offset != 0) ? (cur->offset->offset == offset) : (cur->bytes == bytes);
+        if (matches) { bn = cur; break; }
+        prev = cur;
+        cur = cur->next;
+    }
+    if (!bn) return;
+
+    if (prev) prev->next = bn->next; else table->entries[idx] = bn->next;
+
+    offset_entries_t* on = bn->offset;
+
+    memset(bn, 0, offsetof(byte_entries_t, next));
+    memset((char*)bn + offsetof(byte_entries_t, next) + sizeof(byte_entries_t*), 0,
+           sizeof(byte_entries_t) - offsetof(byte_entries_t, next) - sizeof(byte_entries_t*));
+    free(bn);
+
+    if (on) {
+        memset(on, 0, offsetof(offset_entries_t, next));
+        memset((char*)on + offsetof(offset_entries_t, next) + sizeof(offset_entries_t*), 0,
+               sizeof(offset_entries_t) - offsetof(offset_entries_t, next) - sizeof(offset_entries_t*));
+        free(on);
+    }
+}
+
+FORCE_INLINE void clean(entry_table_t *table) {
+    if (!table) return;
+    if (table->entries) {
+        for (unsigned int i = 0; i < table->bucket_count; i++) {
+            byte_entries_t* n = table->entries[i];
+            while (n && n->ptr) {
+                byte_entries_t* next = n->next;
+                offset_entries_t* on = n->offset; /* bijected pair -- must free both halves; no separate map does this anymore */
+
+                memset(n, 0, sizeof(byte_entries_t));
+                free(n);
+
+                if (on) {
+                    memset(on, 0, sizeof(offset_entries_t));
+                    free(on);
+                }
+                n = next;
+            }
+        }
+        munmap_address(table->entries, sizeof(byte_entries_t*) * table->bucket_count);
+    }
+    memset(table, 0, sizeof(entry_table_t));
+}
+
+FORCE_INLINE void debug_entry_table_t(const unsigned char mode, entry_table_t* table, const int idx) {
+    if (mode == 0x0) {
+        byte_entries_t* bn = table->entries[idx];
+        while (bn->next != NULL) {
+            if (bn->offset->offset) {
+                printf("Offset value is: %d\n", bn->offset->offset);
+                printf("Inuse Value is: %#0x\n", bn->offset->offset);
+            }
+            bn = bn->next;
+        }
+    }
+    else if (mode == 0x01) {
+        byte_entries_t* n = table->entries[idx];
+        while (n->next != NULL) {
+            printf("Offset value is: %d\n", n->bytes);
+            n = n->next;
+        }
+    }
+}
+// coalescing is when you take freed adjacent memory blocks and combine them together to form a size specific to the user's request
+typedef struct blocks_t {
+    struct blocks_t** chain;
+    struct blocks_t* next;
+    entry_table_t*   table; /* link bucket_t->table to this field */
+    void*            ptr;
+    unsigned int     bytes;
+    unsigned int     offset;
+    unsigned int     size;
+    unsigned char    inuse;
+} blocks_t;
+
+/////////////////////////
+// BLOCK CHAIN SECTION //
+////////////////////////
+
+FORCE_INLINE void init_blocks_t(blocks_t* blocks) {
+    blocks->size = 64;
+    blocks->chain = shared_address(NULL, blocks->size * sizeof(blocks_t*), PROT_WRITE | PROT_READ, MAP_SHARED | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+    if (blocks->chain == MAP_FAILED) return;
+    int res = madvise(blocks->chain, blocks->size * sizeof(blocks_t*), MADV_SEQUENTIAL | MADV_MERGEABLE);
+    if (res == -1) return;
+    memset(blocks->chain, 0, blocks->size * sizeof(blocks_t));
+    return;
+}
+
+FORCE_INLINE blocks_t* create_block_t() {
+    blocks_t* block = aligned_alloc(alignof(blocks_t), sizeof(blocks_t));
+    if (!block) return NULL;
+    memset(block, 0, sizeof(blocks_t));
+    return block;
+}
+
+FORCE_INLINE void resize_blocks(blocks_t* blocks) {
+    const unsigned int new_size = blocks->size * 2;
+    blocks_t** chain = shared_address(NULL, new_size * sizeof(blocks_t*), PROT_WRITE | PROT_READ, MAP_SHARED | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+    if (chain == MAP_FAILED) return;
+    int res = madvise(chain, new_size * sizeof(blocks_t*), MADV_SEQUENTIAL | MADV_MERGEABLE);
+    if (res == -1) return;
+    memcpy(chain, blocks->chain, sizeof(blocks_t) * blocks->size);
+    munmap_address(blocks->chain, sizeof(blocks_t) * blocks->size);
+    blocks->chain = chain;
+    blocks->size = new_size;
+    return;
+}
+
+// We need to merge the arena's offsets together and add the bytes together to get the specific fit 
+// But when we do merge the offsets together, we also need to merge the pointers together i.e using the OR logic gate
+// We also have to be careful of not overflowing, hence the leftover. If we do overflow then we need to get the leftover bytes
+// and add the offset to the bnode->ptr
+FORCE_INLINE void merge(blocks_t* blocks, entry_table_t* table, const unsigned int idx, const unsigned int bytes) {
+    if (!blocks->chain) init_blocks_t(blocks);
+    if (blocks->size < idx) resize_blocks(blocks);
+    else if (!blocks->chain[idx]) blocks->chain[idx] = create_block_t();
+    
+    unsigned int total = 0;
+    if (!blocks->chain[idx]) return;
+    else if (blocks->chain[idx]->inuse == 0x0) {
+        if (!blocks->table) blocks->table = table;
+        while (total != bytes) {
+            byte_entries_t* bnode = get_entry_t_by_bytes(table, idx, 0, 0x0);
+            if (!bnode) break;
+            unsigned int accumalting_bytes = blocks->chain[idx]->bytes += bnode->bytes;
+            if (accumalting_bytes - total > 0) {
+                unsigned int leftover = accumalting_bytes - total;
+                bnode->offset->offset -= blocks->chain[idx]->offset;
+                bnode->bytes = leftover;
+                break;
+            }
+            if (!blocks->chain[idx]->ptr) blocks->chain[idx]->ptr = bnode->ptr;
+            else {
+                uintptr_t a = (uintptr_t)blocks->chain[idx]->ptr, b = (uintptr_t)bnode->ptr;
+                blocks->chain[idx]->ptr = (void*)(a | b);
+            } 
+            blocks->chain[idx]->bytes += bnode->bytes;
+            blocks->chain[idx]->offset += bnode->offset->offset;
+            destroy(blocks->table, idx, bnode->offset->offset, bnode->bytes);
+            bnode = bnode->next;
+        }
         return;
     }
-
+    blocks_t* block = create_block_t();
+    block->next = blocks->chain[idx];
+    blocks->chain[idx] = block;
+    return merge(blocks, blocks->table, idx, bytes);
 }
+
+FORCE_INLINE blocks_t* get_block_entry(blocks_t* blocks, const unsigned int idx, const unsigned int bytes) {
+    if (bytes != 0) {}
+    blocks_t* block = blocks->chain[idx];
+    return block;
+}
+
+FORCE_INLINE blocks_t* update_blocks(blocks_t* blocks, const unsigned int idx, const unsigned int bytes) {
+    if (bytes != 0) {}
+    blocks_t* block = blocks->chain[idx];
+    return block;
+}
+
+typedef struct bucket_t {
+    blocks_t       blocks;
+    entry_table_t  table;
+    arena_t*       arena;
+    unsigned char  flag;
+} bucket_t;
+FORCE_INLINE int find_bucket_index(bucket_t* slot);
+
+
+/////////////////////
+// BUCKET SECTION //
+///////////////////
+
 
 /**
     * @description: A Free function that finds a free slot based on the size at O(n). 
@@ -113,66 +387,45 @@ FORCE_INLINE void bucket_mark_free(int abs_idx) {
     * @return: Returns a slot right after checking the bucket's bitmap.
     * @note: if nothing is returned, that means all of the slots from small, medium and large are occupied. 
 */
-FORCE_INLINE bucket_t* alloc_find_free_slot(size_t sz) {
+FORCE_INLINE bucket_t* find_free_slot(size_t sz) {
     int idx = -1;
-
-    if (sz < BUCKET_SMALL_CAP) {
-        idx = allocator.bitmap.bitmap_test(allocator.bitmap, SMALL_BIT_START, SMALL_BIT_END - 1);
+    if (sz < 1) return NULL;
+    else if (sz <= BUCKET_SMALL_CAP) {
+        idx = allocator.bitmap.bitmap_test(allocator.bitmap, 0, BUCKET_SMALL_CAP - 1);
         #if LOGGING == 1
-
             #if LOGLEVEL == 0  
-
                 printf("[find_free_slot] small idx: %d\n", idx);
-
             #elif LOGLEVEL > 1
-
                 // TODO: Include the logger variable here and its functions
-
             #endif
-
         #endif
-
-        if (idx != -1) return (bucket_t*)((uintptr_t)allocator.bucket.small + (idx - SMALL_BIT_START) * sizeof(bucket_t));
-
+        if (idx != -1) return &allocator.bucket.small[idx];
     }
-    else if (sz < BUCKET_MEDIUM_CAP) {
-        idx = allocator.bitmap.bitmap_test(allocator.bitmap, MEDIUM_BIT_START, MEDIUM_BIT_END - 1);
-
+    else if (sz <= BUCKET_MEDIUM_CAP) {
+        idx = allocator.bitmap.bitmap_test(allocator.bitmap, 0, BUCKET_MEDIUM_CAP - 1);
         #if LOGGING == 1
-
             #if LOGLEVEL == 0 
-
                 printf("[find_free_slot] medium idx: %d\n", idx);
-
             #elif LOGLEVEL > 1
-
                 // TODO: Include the logger variable here and its functions
-
             #endif
-
         #endif 
-
-        if (idx != -1) return (bucket_t*)((uintptr_t)allocator.bucket.medium + (idx - MEDIUM_BIT_START) * sizeof(bucket_t));
+        if (idx != -1) return &allocator.bucket.medium[idx];
+    }
+    else if (sz <= BUCKET_LARGE_CAP) {
+        idx = allocator.bitmap.bitmap_test(allocator.bitmap, 0, BUCKET_LARGE_CAP - 1);
+        #if LOGGING == 1
+            #if LOGLEVEL == 0 
+                printf("[find_free_slot] large idx: %d\n", idx);
+            #elif LOGLEVEL > 1
+                // TODO: Include the logger variable here and its functions
+            #endif
+        #endif 
+        if (idx != -1) return &allocator.bucket.large[idx];
     }
     else {
-        idx = allocator.bitmap.bitmap_test(allocator.bitmap, LARGE_BIT_START, LARGE_BIT_END - 1);
-        #if LOGGING == 1
-
-            #if LOGLEVEL == 0 
-
-                printf("[find_free_slot] large idx: %d\n", idx);
-
-            #elif LOGLEVEL > 1
-
-                // TODO: Include the logger variable here and its functions
-
-            #endif
-            
-        #endif 
-
-        if (idx != -1) return (bucket_t*)((uintptr_t)allocator.bucket.large + (idx - LARGE_BIT_START) * sizeof(bucket_t));
+        // coalescing feature goes here...
     }
-
     return NULL;
 }
 
@@ -185,101 +438,49 @@ FORCE_INLINE bucket_t* alloc_find_free_slot(size_t sz) {
 */
 FORCE_INLINE bucket_t* find_slot(void* ptr) {
     uintptr_t p = (uintptr_t)ptr;
-    int abs_index = -1;
 
-    uintptr_t small_base = (uintptr_t)allocator.bucket.small;
-    uintptr_t idx_bits   = (p - (uintptr_t)allocator.bucket.small[0].arena->chunk) / ARENA_SIZE;
-    uintptr_t b_addr     = small_base + idx_bits * sizeof(bucket_t);
-    bucket_t* b          = (bucket_t*)b_addr;
-
-    if (b >= allocator.bucket.small &&
-        b <  allocator.bucket.small + BUCKET_SMALL_CAP &&
-        b->arena && p >= (uintptr_t)b->arena->chunk &&
-        p <  (uintptr_t)b->arena->chunk + ARENA_SIZE) {
-        abs_index = (int)(b - allocator.bucket.small);
-        if (b->flag == 0x01 && b->arena->flag == 0x01) {
-            bucket_mark_free(abs_index);
-            b = &allocator.bucket.small[abs_index];
+    for (unsigned int i = 0; i < BUCKET_SMALL_CAP; i++) {
+        bucket_t* b = &allocator.bucket.small[i];
+        if (b->arena && p >= (uintptr_t)b->arena->chunk && p < (uintptr_t)b->arena->chunk + ARENA_SIZE) {
+            if (b->flag == 0x01 && b->arena->flag == 0x01) {
+                b->flag = 0x0;
+                b->arena->flag = 0x0;
+                allocator.bitmap = allocator.bitmap.bitmap_clear(allocator.bitmap, i, 0, BUCKET_SMALL_CAP - 1);
+            }
+            return b;
         }
-
-        return b;
     }
-
-    idx_bits = (p - (uintptr_t)allocator.bucket.medium[0].arena->chunk) / ARENA_SIZE;
-    b_addr   = (uintptr_t)allocator.bucket.medium + idx_bits * sizeof(bucket_t);
-    b        = (bucket_t*)b_addr;
-
-    if (b >= allocator.bucket.medium &&
-        b <  allocator.bucket.medium + BUCKET_MEDIUM_CAP &&
-        b->arena && p >= (uintptr_t)b->arena->chunk &&
-        p <  (uintptr_t)b->arena->chunk + ARENA_SIZE) {
-        abs_index = (int)(b - allocator.bucket.medium);
-        if (b->flag == 0x01 && b->arena->flag == 0x01) {
-            bucket_mark_free(abs_index);
-            b = &allocator.bucket.medium[abs_index];
+    for (unsigned int i = 0; i < BUCKET_MEDIUM_CAP; i++) {
+        bucket_t* b = &allocator.bucket.medium[i];
+        if (b->arena && p >= (uintptr_t)b->arena->chunk && p < (uintptr_t)b->arena->chunk + ARENA_SIZE) {
+            if (b->flag == 0x01 && b->arena->flag == 0x01) {
+                b->flag = 0x0;
+                b->arena->flag = 0x0;
+                allocator.bitmap = allocator.bitmap.bitmap_clear(allocator.bitmap, i, 0, BUCKET_MEDIUM_CAP - 1);
+            }
+            return b;
         }
-        return b;
     }
-
-    idx_bits = (p - (uintptr_t)allocator.bucket.large[0].arena->chunk) / ARENA_SIZE;
-    b_addr   = (uintptr_t)allocator.bucket.large + idx_bits * sizeof(bucket_t);
-    b        = (bucket_t*)b_addr;
-
-    if (b >= allocator.bucket.large &&
-        b <  allocator.bucket.large + BUCKET_LARGE_CAP &&
-        b->arena && p >= (uintptr_t)b->arena->chunk &&
-        p <  (uintptr_t)b->arena->chunk + ARENA_SIZE) {
-        abs_index = (int)(b - allocator.bucket.large);
-        if (b->flag == 0x01 && b->arena->flag == 0x01) {
-            bucket_mark_free(abs_index);
-            b = &allocator.bucket.large[abs_index];
+    for (unsigned int i = 0; i < BUCKET_LARGE_CAP; i++) {
+        bucket_t* b = &allocator.bucket.large[i];
+        if (b->arena && p >= (uintptr_t)b->arena->chunk && p < (uintptr_t)b->arena->chunk + ARENA_SIZE) {
+            if (b->flag == 0x01 && b->arena->flag == 0x01) {
+                b->flag = 0x0;
+                b->arena->flag = 0x0;
+                allocator.bitmap = allocator.bitmap.bitmap_clear(allocator.bitmap, i, 0, BUCKET_LARGE_CAP - 1);
+            }
+            return b;
         }
-        return b;
     }
     return NULL;
 }
 
-/**
-    * @description: A Free Function that pushes the unused memory addresses to bucket.
-        It is used with deallocation function
-    * @param b: A specific bucket that will now have been updated 
-*/
-FORCE_INLINE void push_to_bucket(bucket_t* slot, size_t offset) {
-    if (offset != 0 && offset != 1) {
-        slot->maht = update(slot->maht, offset, 0, 0x0);
-        __sync(slot, NULL);
-    }
-    return;
-}
-
-/**
-    * @description: A free function that pops off a memory address that is not in use based on the requested size
-    * @param slot: The slot which is bucket_t that has memory addresses to be used. 
-    * @param bytes: the requested bytes 
-    * @return: Returns null if bucket field is null or if bucket == slot->arena->chunk  
-*/
-FORCE_INLINE void* pop_from_bucket(bucket_t* slot, size_t bytes) {
-    byte_entries_t* tmp = get_entry_t_by_bytes(slot->maht, bytes, 0x0);
-    if (!tmp || tmp->ptr == NULL) return NULL;
-    void* address = NULL;
-    if (tmp) {
-        slot->maht = update(slot->maht, tmp->offset->offset, 0, 0x01);
-        slot->arena = push(slot->arena, bytes);
-        address = tmp->ptr;
-        __sync(slot, NULL);
-    }
-    /*#if LOGGING == 0 || LOGGING == 1
-        const int line = __LINE__;
-        char* res = write_long_cstr(0x01, 1, "Entry variable is: [ %p ]\n", tmp);
-        #if LOGGING == 0
-            printer.add(0, __FILE__, line, res);
-            printer.print(__FILE__, line);
-        #else
-            logger.add(0, __FILE__, line, res);
-        #endif
-        cstr_size(1, res) < ALLOC_THRESHOLD ? reset_and_free_cstr(1, res) : unmap_cstr(1, res);
-    #endif*/
-    return address;
+FORCE_INLINE int find_bucket_index(bucket_t* slot) {
+    if (!slot) return -1;
+    if (slot >= allocator.bucket.small && slot < allocator.bucket.small + BUCKET_SMALL_CAP) return (int)(slot - allocator.bucket.small);
+    if (slot >= allocator.bucket.medium && slot < allocator.bucket.medium + BUCKET_MEDIUM_CAP) return (int)(slot - allocator.bucket.medium);
+    if (slot >= allocator.bucket.large && slot < allocator.bucket.large + BUCKET_LARGE_CAP) return (int)(slot - allocator.bucket.large);
+    return -1;
 }
 
 /**
@@ -297,116 +498,164 @@ FORCE_INLINE size_t find_bucket_size(const bucket_t* slot) {
     if (addr >= small_start && addr < small_end)   return BUCKET_SMALL_CAP;
     if (addr >= medium_start && addr < medium_end) return BUCKET_MEDIUM_CAP;
 
-    #if MODERN_ARCH == 1
-        uintptr_t large_start = (uintptr_t)allocator.bucket.large;
-        uintptr_t large_end   = large_start + BUCKET_LARGE_CAP * sizeof(bucket_t);
-        if (addr >= large_start && addr < large_end) return BUCKET_LARGE_CAP;
-    #endif
-
+    uintptr_t large_start = (uintptr_t)allocator.bucket.large;
+    uintptr_t large_end   = large_start + BUCKET_LARGE_CAP * sizeof(bucket_t);
+    if (addr >= large_start && addr < large_end) return BUCKET_LARGE_CAP;
     return 0;
 }
 
+/**
+    * @description: A Free Function that pushes the unused memory addresses to bucket.
+        It is used with deallocation function
+    * @param b: A specific bucket that will now have been updated 
+*/
+FORCE_INLINE void push_to_bucket(bucket_t* slot, size_t offset) {
+    if (offset != 0 && offset != 1) {
+
+        update(&slot->table, find_bucket_index(slot), offset, 0, 0x0);
+    }
+    return;
+}
+
+/**
+    * @description: A free function that pops off a memory address that is not in use based on the requested size
+    * @param slot: The slot which is bucket_t that has memory addresses to be used. 
+    * @param bytes: the requested bytes 
+    * @return: Returns null if bucket field is null or if bucket == slot->arena->chunk  
+*/
+FORCE_INLINE void* pop_from_bucket(bucket_t* slot, size_t bytes) {
+    byte_entries_t* tmp = get_entry_t_by_bytes(&slot->table, find_bucket_index(slot),  bytes, 0x0);
+    if (!tmp || tmp->ptr == NULL) return NULL;
+    void* address = NULL;
+    if (tmp) {
+        update(&slot->table, find_bucket_index(slot), tmp->offset->offset, 0, 0x01);
+        //slot->arena = push(slot->arena, bytes);
+        address = tmp->ptr;
+    }
+    /*#if LOGGING == 0 || LOGGING == 1
+        const int line = __LINE__;
+        char* res = write_long_cstr(0x01, 1, "Entry variable is: [ %p ]\n", tmp);
+        #if LOGGING == 0
+            printer.add(0, __FILE__, line, res);
+            printer.print(__FILE__, line);
+        #else
+            logger.add(0, __FILE__, line, res);
+        #endif
+        cstr_size(1, res) < ALLOC_THRESHOLD ? reset_and_free_cstr(1, res) : unmap_cstr(1, res);
+    #endif*/
+    return address;
+}
+
 [[gnu::cold]]
-FORCE_INLINE void clear_buckets() {
+FORCE_INLINE void bucket_t_dctor() {
     unsigned int small = 0;
     unsigned int medium = 0;
-    while (small < 64) {
+    while (small < BUCKET_SMALL_CAP) {
         arena_t* arena = allocator.bucket.small[small].arena;
         bucket_t slot = allocator.bucket.small[small];
-        if (slot.maht) clean(slot.maht);
-        //while (arena->next) {
-            if (arena) {
-                if (arena->chunk) munmap_address(arena->chunk, ARENA_SIZE);
-                munmap_address(arena, sizeof(arena_t));
-            }
-            //arena_t* prev = arena;
-            //arena = arena->next;
-            //munmap_address(prev, sizeof(arena_t));
-            
-        //}
+        if (slot.table.entries) clean(&slot.table);
+        if (arena) {
+            if (arena->chunk) munmap_address(arena->chunk, ARENA_SIZE + 1);
+            munmap_address(arena, sizeof(arena_t));
+        }
         small = small + 1;
     }
     munmap_address(allocator.bucket.small, BUCKET_SMALL_CAP * sizeof(bucket_t));
-    while (medium < 128) {
+    while (medium < BUCKET_MEDIUM_CAP) {
         arena_t* arena = allocator.bucket.medium[medium].arena;
         bucket_t slot = allocator.bucket.medium[medium];
-        clean(slot.maht);
-        //while (arena->next) {
-            if (arena) {
-                if (arena->chunk) munmap_address(arena->chunk, ARENA_SIZE);
-                munmap_address(arena, sizeof(arena_t));
-            }
-            //arena_t* prev = arena;
-            //arena = arena->next;
-            //munmap_address(prev, sizeof(arena_t));
-        //}
+        if (slot.table.entries) clean(&slot.table);
+        if (arena) {
+            if (arena->chunk) munmap_address(arena->chunk, ARENA_SIZE + 1);
+            munmap_address(arena, sizeof(arena_t));
+        }
         medium = medium + 1;
     }
     munmap_address(allocator.bucket.medium, BUCKET_MEDIUM_CAP * sizeof(bucket_t));
     unsigned int large = 0;
-    while (large < 256) {
+    while (large < BUCKET_LARGE_CAP) {
         arena_t* arena = allocator.bucket.large[large].arena;
         bucket_t slot = allocator.bucket.large[large];
-        if (slot.maht) clean(slot.maht);
+        if (slot.table.entries) clean(&slot.table);
         if (arena) {
-            if (arena->chunk) munmap_address(arena->chunk, ARENA_SIZE);
+            if (arena->chunk) munmap_address(arena->chunk, ARENA_SIZE + 1);
             munmap_address(arena, sizeof(arena_t));
         }
-        //while (arena->next) {
-            //munmap_address(arena->chunk, ARENA_SIZE);
-            //arena_t* prev = arena;
-            //arena = arena->next;
-            //munmap_address(prev, sizeof(arena_t));
-        //}
         large = large + 1;
     }
     munmap_address(allocator.bucket.large, BUCKET_LARGE_CAP * sizeof(bucket_t));
 }
 
+/**
+    * @description: A Free function that rewinds the arena back to a safe spot, based on certain conditions. 
+    * @param slot: A raw pointer that has been allocated on the heap that is apart of the allocator.bucket
+    * @note: It will rewind all the way to the very last entry, and if that entry is not inuse, it will destroy the whole entry_table_t chain.
+    * @return Nothing
+*/
 FORCE_INLINE void __rewind(bucket_t* slot) {
-    // arena->prev holds the offset of the topmost (most recently pushed)
-    // allocation -- push() sets it directly, so we search offset_map with
-    // prev as the key. get_entry_t_by_offset filters by inuse==0x0 itself,
-    // so if the topmost entry is still alive, onode comes back NULL and
-    // we stop there -- never cascading past a live allocation.
-    offset_entries_t* onode = get_entry_t_by_offset(slot->maht, slot->arena->prev, 0x0);
-    for (;;) {
-        // Following the procedures of a stack which is FILO --
-        // revert to a safe checkpoint, one freed byteset offset at a time.
-        if (!onode) break;
-        unsigned int freed_bytes = onode->bytes->bytes;
-        slot->maht = destroy(slot->maht, onode->offset, 0);
-        slot->arena = pop(slot->arena, freed_bytes);      // pop() subtracts by size, correctly shrinking both curr and prev
-        onode = get_entry_t_by_offset(slot->maht, slot->arena->prev, 0x0);
+    int idx = find_bucket_index(slot);
+    byte_entries_t* bnode = slot->table.entries[idx];
+
+    while (bnode && bnode->offset->inuse == 0x0) {
+        byte_entries_t* next = bnode->next;
+        unsigned int offset = bnode->offset->offset;
+        if (next) slot->arena = pop(slot->arena, next->offset->offset);
+        destroy(&slot->table, idx, offset, 0);
+        bnode = next;
     }
-    // onode is guaranteed NULL here -- the loop only ever exits via `!onode`.
-    // Check arena state instead of dereferencing it.
-    if (slot->arena->prev <= 10) {
-        munmap_address(slot->arena->chunk, ARENA_SIZE);
-        munmap_address(slot->arena, sizeof(arena_t));
-        return;
-    }
-    __sync(slot, NULL);
+    if (!bnode) clear_arena_t(slot->arena);
 }
 
-[[gnu::hot]]
-FORCE_INLINE threads_t find_available_thread() {
+////////////////////////
+// THREADING SECTION //
+//////////////////////
 
-    int rc; 
-    threads_t t = {0};
-    memset(&t, -1, sizeof(threads_t));
-    rc = pthread_mutex_lock(&allocator.pool[ALLOC_THREAD_POOL_SIZE - 1].lock.mutex);
+FORCE_INLINE void* thread_rewind(struct function_t* meta) {
+    void** arguments = routine_metadata_arguments(meta);
+    threads_t* st = (threads_t*)arguments[0];
+    bucket_t* slot = (bucket_t*)arguments[1];
+    int rc = pthread_mutex_lock(&st->lock.mutex);
     if (rc == 0) {
-        threads_t* res = (threads_t*)((uintptr_t)allocator.pool + ((uintptr_t)offsetof(threads_t, flag) * sizeof(threads_t)));
-        if (res->flag == 0x0) {
-            res->flag = 0x01;
-            memcpy(&t, res, sizeof(threads_t));
-        }
-        pthread_mutex_unlock(&allocator.pool[ALLOC_THREAD_POOL_SIZE - 1].lock.mutex);
+        __rewind(slot);
+        st->flag = 0x0;
+        pthread_mutex_unlock(&st->lock.mutex);
+        join_thread(*st, NULL);
     }
-
-    return t;
+    pthread_exit(NULL);
 }
+
+FORCE_INLINE void* thread_update_thread_pool(struct function_t* meta) {
+    void** arguments = routine_metadata_arguments(meta);
+    threads_t* st = (threads_t*)arguments[0];
+    int rc = pthread_mutex_lock(&st->lock.mutex);
+    if (rc == 0) {
+        update_thread_pool(st, ALLOC_THREAD_POOL_SIZE);
+        st->flag = 0x0;
+        pthread_mutex_unlock(&st->lock.mutex);
+    }
+    pthread_exit(NULL);
+}
+
+FORCE_INLINE void* thread_create_thread_pool(struct function_t* meta) {
+    void** arguments = routine_metadata_arguments(meta);
+    threads_t* st = (threads_t*)arguments[0];
+    const unsigned int* size = (const unsigned int*)arguments[2];
+    const unsigned char* mode = (const unsigned char*)arguments[3];
+    int rc = pthread_mutex_lock(&st->lock.mutex);
+    if (rc == 0) {
+        // pass in allocator.pool as argument[1]
+        create_thread_pool((threads_t*)arguments[1], *size, *mode);
+        st->flag = 0x0;
+        pthread_mutex_unlock(&st->lock.mutex);
+    }
+    pthread_exit(NULL);
+}
+
+
+////////////////////////
+// ALLOCATOR SECTION //
+//////////////////////
+allocator_t allocator = {0};
 
 [[gnu::hot]]
 // TODO: Need to make sure that MADV_MERGEABLE enabled does not consume a lot of processing power; use with care.
@@ -542,12 +791,46 @@ FORCE_INLINE void alloc_init(void) {
     }
 }
 
-
-FORCE_INLINE void debug_allocator() {
-    //DBG("allocate error [ %d ]: Failed to assign memory address... printing out information\n", __LINE__);
-    // For each bucket, output the arena offset, the entries i.e `bytes` and `inuse` field members
-    // Group the arena memory address with it's fields and the buckets memory address with its fields
-    // output allocator.bits and view all of the slots   
+FORCE_INLINE void debug_allocator(const size_t bytes) {
+    printf("allocator.allocate: Error, failed to allocate memory for %zu\n", bytes);
+    printf("Printing out information....\n");
+    printf("Allocator arena state values are: arena = [ %p ], next = [ %p ], res = [ %p ], curr = [ %d ], prev = [  %d ], flag = [ %#0x ]\n", 
+        allocator.arena, allocator.arena->next, allocator.arena->res, allocator.arena->curr, allocator.arena->prev, allocator.arena->flag);
+    for (unsigned int i = 0; i < BUCKET_SMALL_CAP; i++) {
+        if (allocator.bucket.small[i].arena) {
+            printf("Allocator Bucket Small [ %d ] state values are: arena = [ %p ], next = [ %p ], res = [ %p ], curr = [ %d ], prev = [  %d ], flag = [ %#0x ] bucket_flag = [ %#0x ]\n", 
+            i, allocator.bucket.small[i].arena, allocator.bucket.small[i].arena->next, allocator.bucket.small[i].arena->res, allocator.bucket.small[i].arena->curr, allocator.bucket.small[i].arena->prev, allocator.bucket.small[i].arena->flag, allocator.bucket.small[i].flag);
+            if (allocator.bucket.small[i].table.entries) {
+                printf("Entries at [ %d ] values are:\n", i);
+                debug_entry_table_t(0x0, &allocator.bucket.small[i].table, i);
+            }
+        }
+    }
+    for (unsigned int i = 0; i < BUCKET_MEDIUM_CAP; i++) {
+        if (allocator.bucket.medium[i].arena) {
+            printf("Allocator Bucket Medium [ %d ] state values are: arena = [ %p ], next = [ %p ], res = [ %p ], curr = [ %d ], prev = [  %d ], flag = [ %#0x ] bucket_flag = [ %#0x ]\n", 
+            i, allocator.bucket.medium[i].arena, allocator.bucket.medium[i].arena->next, allocator.bucket.medium[i].arena->res, allocator.bucket.medium[i].arena->curr, allocator.bucket.medium[i].arena->prev, allocator.bucket.medium[i].arena->flag, allocator.bucket.medium[i].flag);
+            if (allocator.bucket.medium[i].table.entries) {
+                printf("Entries at [ %d ] values are:\n", i);
+                debug_entry_table_t(0x0, &allocator.bucket.medium[i].table, i);
+            }
+        }
+    }
+    for (unsigned int i = 0; i < BUCKET_LARGE_CAP; i++) {
+        if (allocator.bucket.large[i].arena) {
+            printf("Allocator Bucket Large [ %d ] state values are: arena = [ %p ], next = [ %p ], res = [ %p ], curr = [ %d ], prev = [  %d ], flag = [ %#0x ] bucket_flag = [ %#0x ]\n", 
+            i, allocator.bucket.large[i].arena, allocator.bucket.large[i].arena->next, allocator.bucket.large[i].arena->res, allocator.bucket.large[i].arena->curr, allocator.bucket.large[i].arena->prev, allocator.bucket.large[i].arena->flag, allocator.bucket.large[i].flag);
+            if (allocator.bucket.large[i].table.entries) {
+                printf("Entries at [ %d ] values are:\n", i);
+                debug_entry_table_t(0x0, &allocator.bucket.large[i].table, i);
+            }
+        }
+    }
+    printf("Printing out threading variable states\n");
+    for (unsigned int i = 0; i < ALLOC_THREAD_POOL_SIZE; i++) {
+        printf("Information for thread [ %d ]\n", i);
+        debug_threads(allocator.pool[i]);
+    } 
 }
 
 /**
@@ -560,79 +843,74 @@ FORCE_INLINE void debug_allocator() {
 void* allocate(size_t bytes) {
     char* address = NULL;
     int idx = -1;
-    bucket_t* slot = (bucket_t*)alloc_find_free_slot(bytes);
+    int_fast16_t end = 0;
+    bucket_t* slot = NULL;
+    if (bytes <= BUCKET_LARGE_CAP) slot = find_free_slot(bytes);
+    else {
+        // coalesing feature will go here. We will need a new user defined type
+        // we will need to find out the size, get the lcd i.e the amount of times we divide it until it gets into a bucket range
+    }
     if (slot) {
-        int_fast16_t start = 0;
-        int_fast16_t end = 0;
-        if (!slot->arena) slot->arena = allocator.arena;
+        if (!slot->arena) {
+            if (allocator.arena->curr == 1) slot->arena = allocator.arena;
+            else slot->arena = init_arena_t();
+        }
         if (slot->flag != 0x01) {
-            if (bytes <= SMALL_BIT_END) {
-                start = SMALL_BIT_START;
-                end = SMALL_BIT_END;
+            if (bytes <= BUCKET_SMALL_CAP) {
+                end = BUCKET_SMALL_CAP;
                 address = pop_from_bucket(slot, bytes);             
                 if (address) {
                     memset(address, 0, bytes);
                     return address;
                 }
-                idx = allocator.bitmap.bitmap_test(allocator.bitmap, SMALL_BIT_START, SMALL_BIT_END);
+                idx = allocator.bitmap.bitmap_test(allocator.bitmap, 0, BUCKET_SMALL_CAP);
             }
-            else if (bytes <= MEDIUM_BIT_END && bytes >= SMALL_BIT_END) {
-                start = MEDIUM_BIT_START;
-                end = MEDIUM_BIT_END;
+            if (bytes <= BUCKET_MEDIUM_CAP && bytes >= BUCKET_SMALL_CAP) {
+                end = BUCKET_MEDIUM_CAP;
                 address = pop_from_bucket(slot, bytes); 
                 if (address) {
                     memset(address, 0, bytes);
                     return address;
                 }
-                idx = allocator.bitmap.bitmap_test(allocator.bitmap, MEDIUM_BIT_START, MEDIUM_BIT_END);
+                idx = allocator.bitmap.bitmap_test(allocator.bitmap, 0, BUCKET_MEDIUM_CAP);
             }
-            else {
-                start = LARGE_BIT_START;
-                end = LARGE_BIT_END;
+            else if (bytes <= BUCKET_LARGE_CAP && bytes >= BUCKET_MEDIUM_CAP) {
+                end = BUCKET_LARGE_CAP;
                 address = pop_from_bucket(slot, bytes);
                 if (address) {
                     memset(address, 0, bytes);
                     return address;
                 }
-                idx = allocator.bitmap.bitmap_test(allocator.bitmap, LARGE_BIT_START, LARGE_BIT_END);
+                idx = allocator.bitmap.bitmap_test(allocator.bitmap, 0, BUCKET_LARGE_CAP);
             }
 
             if (allocator.arena->flag != 0x01 && idx != -1) {
                 allocator.arena = push(allocator.arena, bytes);
                 if (allocator.arena->flag == 0x01) {
                     slot->flag = 0x01;
-                    allocator.bitmap = allocator.bitmap.bitmap_set(allocator.bitmap, idx, start, end);
+                    allocator.bitmap = allocator.bitmap.bitmap_set(allocator.bitmap, idx, 0, end);
                     arena_t* full = allocator.arena;
                     allocator.arena = NULL;
                     alloc_init();
                     allocator.arena->next = full;
-                    __sync(slot, NULL);
                     return allocate(bytes);
                 }
                 address = allocator.arena->res;
                 size_t offset = (uintptr_t)slot->arena->res - (uintptr_t)allocator.arena->chunk;
-                slot->maht = set(slot->maht, offset, bytes, 0x01, address);
+                set(&slot->table, idx, offset, bytes, 0x01, address);
                 memset(address, 0, bytes);
                 return address;
             }
         }
     }
-    else debug_allocator();
+    else debug_allocator(bytes);
     return NULL;
 }
 
 /**
     * @description: A free function that determines if the following parameter that was passed into it is within a specific arena's memory region.
     * @param ptr: A memory address that can or is not apart of a arena. 
-    * @return: Returns nothing if 'ptr' is not within any of the arena's memory range. 
-    * @note: Known bug: As of 3/24/26, deallocate is supposed to be able to take a memory address despite it's offset, and unwind the specific arena backwards i.e moving the offsets back.
-            If we unwind the stack i.e by coming from the begining or anywhere, sooner or later, it will eventually cause the free function in arena.c to underflow.
-            Since we are increasing from here and decreasing from 'pop', it breaks the traditional arena logic. 
-            A traditional arena also known as a bump allocator, functions just like a stack i.e FILO. 
-            We have options to fix this bug: 
-                1. We want to keep the traditional arena logic (this is preffered), and we want to convert the function below to be able to handle this bug.
-                    It could be the double end stack or a queue. (Hard) 
-                2. We ditch the arena idea and use a different memory structure that is more flexible than the arena. (Medium)   
+    * @return: Returns nothing if 'ptr' is not within any of the arena's memory range.   
 */
 [[gnu::hot]]
 FORCE_INLINE void deallocate(void* ptr) {
@@ -660,11 +938,13 @@ FORCE_INLINE void deallocate(void* ptr) {
     }
 
     size_t offset = (size_t)((uintptr_t)ptr - (uintptr_t)slot->arena->chunk);
-    offset_entries_t* bytes = get_entry_t_by_offset(slot->maht, offset, 0x01);
-    if (bytes) {
+    const int index = find_bucket_index(slot);
+    offset_entries_t* offset_entry = get_entry_t_by_offset(&slot->table, index, offset, 0x01);
+    if (offset_entry) {
+        const unsigned int bytes = offset_entry->bytes->bytes;
         push_to_bucket(slot, offset);
-        memset(ptr, 0xFF, bytes->bytes->bytes);
         __rewind(slot);
+        if (slot->arena && slot->arena->chunk) memset(ptr, 0xFF, bytes);
     }
 }
 
@@ -689,7 +969,7 @@ FORCE_INLINE void allocator_dctor() {
         clean_threads(allocator.pool[i]);
     }
     munmap_address(allocator.pool, ALLOC_THREAD_POOL_SIZE * sizeof(threads_t));
-    clear_buckets();
+    bucket_t_dctor();
     if (allocator.arena) {
         //if (allocator.arena->chunk) munmap_address(allocator.arena->chunk, ARENA_SIZE);
         munmap_address(allocator.arena, sizeof(arena_t));
