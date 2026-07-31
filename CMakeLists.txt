@@ -176,6 +176,10 @@ if (CMAKE_BUILD_TYPE STREQUAL "Testing")
 
 endif()
 
+if (CMAKE_BUILD_TYPE STREQUAL "BenchMarking")
+
+
+endif()
 
 if (CMAKE_BUILD_TYPE STREQUAL "Profile")
 

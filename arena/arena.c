@@ -1,20 +1,19 @@
 #include "arena.h"
 #include <stddef.h>
 #include <stdint.h>
-#include <stdio.h>
 #include <stdnoreturn.h>
 #include <string.h>
 #include <stdlib.h>
+#include <limits.h>
 
 /*
 #include "arena.h"
 #include <stddef.h>
 #include <stdint.h>
-#include <stdio.h>
 #include <stdnoreturn.h>
 #include <string.h>
 #include <stdlib.h>
-#include <sys/types.h>
+#include <limits.h>
 */
 
 
@@ -58,6 +57,7 @@ arena_t* init_arena_t() {
     }
     memset(arena->chunk, 0, ARENA_SIZE + 1);
     arena->curr = 1;
+    arena->size = ARENA_SIZE + 1;
     return arena;
 }
 
@@ -97,35 +97,9 @@ arena_t* pop(arena_t* arena, size_t offset) {
     return arena;
 }
 
-/*void* resize(arena_t *arena, void *old_memory, size_t old_size, size_t new_size, size_t align) {
-	uintptr_t old_mem = (uintptr_t)old_memory;
-
-	if (!(align & (align - 1))) return (void*)0;
-
-	if (old_mem == NULL || old_size == 0) {
-        arena = push(arena, new_size);
-        void* resized = arena->res;
-		return resized;
-	} 
-	else if ((uintptr_t)arena->chunk <= old_mem && old_mem < (uintptr_t)arena->chunk + arena->size) {
-		if ((uintptr_t)arena->chunk + arena->prev == (uintptr_t)old_mem) {
-			arena->curr = arena->prev + new_size;
-			if (new_size > old_size) {
-				// Zero the new memory by default
-				memset(arena->chunk, 0, new_size - old_size);
-			}
-			return old_memory;
-		} 
-		else {
-            arena = push(arena, new_size);
-			void *new_memory = arena->res;
-			size_t copy = old_size < new_size ? old_size : new_size;
-			memmove(new_memory, old_memory, copy);
-			return new_memory;
-		}
-	}
-
-	return (void*)0;
+/*void resize(arena_t *arena) {
+    //if (arena->size > USHRT_MAX) return;
+	return;
 }*/
 
 void clear_arena_t(arena_t *arena) {

@@ -218,25 +218,32 @@ TEST(ReuseSuite, Small) {
 
 TEST(CleanSuite, Small) {
     clean_small_buckets(0, indexes[0]);
-    /* If arena fails to become NULL, that means table was not properly cleaned */
-    if (allocator.bucket.small[0].arena->curr != 1) {
-        debug_entry_table_full( &allocator.bucket.small[1].table, 0);
-    }
+    if (allocator.bucket.small[0].arena->curr != 1) debug_entry_table_full( &allocator.bucket.small[1].table, 0);
     EXPECT_EQ(allocator.bucket.small[0].arena->curr, 1);
     EXPECT_EQ(allocator.bucket.small[0].arena->flag, 0X0);
-
     clean_small_buckets(indexes[0], indexes[1]);
-    if (allocator.bucket.small[1].arena->curr != 1) {
-        debug_entry_table_full( &allocator.bucket.small[1].table, 1);
-    }
+    if (allocator.bucket.small[1].arena->curr != 1) debug_entry_table_full( &allocator.bucket.small[1].table, 1);
     EXPECT_EQ(allocator.bucket.small[1].arena->curr, 1);
-
     clean_small_buckets(indexes[1], indexes[2]);
-    fprintf(stderr, "[CHECK] small[2].arena=%p curr=%u\n", (void*)allocator.bucket.small[2].arena, allocator.bucket.small[2].arena->curr);
-    if (allocator.bucket.small[2].arena->curr != 1) {
-        debug_entry_table_full( &allocator.bucket.small[1].table, 2);
-    }
+    if (allocator.bucket.small[2].arena->curr != 1) debug_entry_table_full( &allocator.bucket.small[1].table, 2);
     EXPECT_EQ(allocator.bucket.small[2].arena->curr, 1);
+}
+
+TEST(Coalescing, Small) {
+    int** arr[4];
+    arr[0] = allocator.allocate(sizeof(int));
+    arr[1] = allocator.allocate(sizeof(int));
+    arr[2] = allocator.allocate(sizeof(int));
+    const unsigned int curr = allocator.bucket.small[0].arena->curr;
+    
+    allocator.deallocate(arr[0]);
+    allocator.deallocate(arr[1]);
+
+    arr[3] = allocator.allocate(8);
+    EXPECT_EQ(curr, allocator.bucket.small[0].arena->curr); /* If it stays the same, the blocks have been merged */ 
+    for (unsigned int i = 0; i < 4; i++) allocator.deallocate(arr[i]); 
+    memset(arr, 0, sizeof(int) * 4);
+    EXPECT_EQ(allocator.bucket.small[0].arena->curr, 1);
 }
 
 TEST(Bitmap, Medium) {
@@ -324,6 +331,23 @@ TEST(CleanSuite, Medium) {
     EXPECT_EQ(allocator.bucket.medium[2].arena->curr, 1);
 }
 
+TEST(Coalescing, Medium) {
+    int** arr[4];
+    arr[0] = allocator.allocate(BUCKET_SMALL_CAP);
+    arr[1] = allocator.allocate(BUCKET_SMALL_CAP);
+    arr[2] = allocator.allocate(BUCKET_SMALL_CAP); /* An extra allocation will keep the entries alive and well. */
+    const unsigned int curr = allocator.bucket.medium[0].arena->curr;
+    
+    allocator.deallocate(arr[0]);
+    allocator.deallocate(arr[1]);
+
+    arr[3] = allocator.allocate(128);
+    EXPECT_EQ(curr, allocator.bucket.medium[0].arena->curr); /* If it stays the same, the blocks have been merged */ 
+    for (unsigned int i = 0; i < 4; i++) allocator.deallocate(arr[i]); 
+    memset(arr, 0, sizeof(int) * 4);
+    EXPECT_EQ(allocator.bucket.medium[0].arena->curr, 1);
+}
+
 TEST(Bitmap, Large) {
     for (unsigned int i = 0; i < 192; i++) allocator.bitmap = allocator.bitmap.bitmap_set(allocator.bitmap, i, 0, BUCKET_LARGE_CAP);
     allocator.bitmap = allocator.bitmap.bitmap_set(allocator.bitmap, 192, 0, BUCKET_LARGE_CAP);
@@ -405,6 +429,44 @@ TEST(CleanSuite, Large) {
     clean_large_buckets(indexes[1], indexes[2]);
     if (allocator.bucket.large[2].arena->curr != 1) debug_entry_table_full(&allocator.bucket.large[2].table, 2);
     EXPECT_EQ(allocator.bucket.large[2].arena->curr, 1);
+}
+
+TEST(Coalescing, Large) {
+    int** arr[4];
+    arr[0] = allocator.allocate(128);
+    arr[1] = allocator.allocate(128);
+    arr[2] = allocator.allocate(128); /* An extra allocation will keep the entries alive and well. */
+    const unsigned int curr = allocator.bucket.large[0].arena->curr;
+    
+    allocator.deallocate(arr[0]);
+    allocator.deallocate(arr[1]);
+
+    arr[3] = allocator.allocate(256);
+    EXPECT_EQ(curr, allocator.bucket.large[0].arena->curr); /* If it stays the same, the blocks have been merged */ 
+    for (unsigned int i = 0; i < 4; i++) allocator.deallocate(arr[i]); 
+    memset(arr, 0, sizeof(int) * 4);
+    EXPECT_EQ(allocator.bucket.large[0].arena->curr, 1);
+}
+
+TEST(Coalescing, Any) {
+    int** arr[4];
+    unsigned int curr[4];
+    arr[0] = allocator.allocate(256);
+    arr[1] = allocator.allocate(256);
+    arr[2] = allocator.allocate(256); /* An extra allocation will keep the entries alive and well. */
+    curr[0] = allocator.bucket.large[0].arena->curr;
+    
+    allocator.deallocate(arr[0]);
+    allocator.deallocate(arr[1]);
+
+    arr[3] = allocator.allocate(512);
+    EXPECT_NE(arr[3], NULL);
+    arr[0] = allocator.allocate(1000);
+    EXPECT_EQ(arr[0], NULL);
+    EXPECT_EQ(curr[0], allocator.bucket.large[0].arena->curr); /* If it stays the same, the blocks have been merged */ 
+    for (unsigned int i = 0; i < 4; i++) allocator.deallocate(arr[i]); 
+    EXPECT_EQ(allocator.bucket.large[0].arena->curr, 1);
+    memset(arr, 0, sizeof(int) * 4);
 }
 
 int main(void) {

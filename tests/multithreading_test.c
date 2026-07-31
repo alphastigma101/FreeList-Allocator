@@ -1,35 +1,30 @@
+#include "../tests/tests.h"
 #include <limits.h>
-#include <stdint.h>
-#include <stdio.h>
 #include <stdlib.h>
-#include <assert.h> // Development
 #include <stdalign.h> // Development
 #include <string.h>
-#include <sys/mman.h>
 #include <sys/types.h>
-#include <unistd.h>
 #include "../threads/threads.h" // Production
 //#include "../DataStructures/C/structures.h" // Development
 
+/*
+#include "../tests/tests.h"
+#include <limits.h>
+#include <stdlib.h>
+#include <stdalign.h> // Development
+#include <string.h>
+#include <sys/types.h>
+#include "../threads/threads.h" // Production
+//#include "../DataStructures/C/structures.h" // Development
+*/
 
-#define ANSI_RESET   "\033[0m"
-#define ANSI_BOLD    "\033[1m"
-#define ANSI_RED     "\033[31m"
-#define ANSI_GREEN   "\033[32m"
-#define ANSI_YELLOW  "\033[33m"
-#define ANSI_CYAN    "\033[36m"
-#define ANSI_MAGENTA "\033[35m"
+static threads_t* threads = NULL;
 
-#define TEST_PASS    ANSI_BOLD ANSI_GREEN  "  [✔] " ANSI_RESET
-#define TEST_FAIL    ANSI_BOLD ANSI_RED    "  [✘] " ANSI_RESET
-#define TEST_INFO    ANSI_BOLD ANSI_CYAN   "  [~] " ANSI_RESET
-#define TEST_HEADER  ANSI_BOLD ANSI_MAGENTA
-#define SEPARATOR    ANSI_CYAN "  ────────────────────────────────────────────\n" ANSI_RESET
-
-// Numerical Value Test
-static void* addition(args_t* args) {
-    int* i = args->arr[0];
-    pthread_mutex_t* mutex = (pthread_mutex_t*)args->arr[1];
+// Numerical Helper
+static void* addition(struct function_t* meta) {
+    void** args = routine_metadata_arguments(meta);
+    int* i = args[2];
+    pthread_mutex_t* mutex = (pthread_mutex_t*)args[0];
     for (int j = 0; *i < 1000; j+=3) { 
         pthread_mutex_lock(mutex);
         *i = j;
@@ -39,210 +34,249 @@ static void* addition(args_t* args) {
 }
 
 // String Traversal Test mode can be either forward or backwards
-static void* traversal(args_t* args) {
-    const uint8_t* d_mode = (uint8_t*)args->arr[1];
-    const char** _str    = (const char**)args->arr[0];
-    pthread_mutex_t* mutex = (pthread_mutex_t*)args->arr[2];
-    if (*d_mode == 0x01) {
-        
-        while (1) {
-            pthread_mutex_lock(mutex);
-            if (strlen(*_str) == 0) {
-                pthread_mutex_unlock(mutex);
-                break;
-            }
-            const char* copy = *_str;
-            (*_str)++; 
-            assert((strlen(copy) - strlen(*_str)) == 1);
-            pthread_mutex_unlock(mutex);
-        }
-    }
-    if (*d_mode == 0x02) {
-            
-        while (1) {
-            pthread_mutex_lock(mutex);
-            if (strlen(*_str) == 0) {
-                pthread_mutex_unlock(mutex);
-                break;
-            }
-            const char* copy = *_str;
-            (*_str)++;
-            assert((strlen(copy) - strlen(*_str)) == 1);
-            pthread_mutex_unlock(mutex);
-        }
-        
-        
-    }
+static void* traversal(struct function_t* meta) {
+    void** args = routine_metadata_arguments(meta);
+    if (!args) pthread_exit(NULL);
 
+    char* _str = (char*)args[0];
+    pthread_mutex_t* mutex = (pthread_mutex_t*)args[3];
+    size_t* pos = (size_t*)args[4];
+    size_t total_len = strlen(_str);
+
+    while (1) {
+        pthread_mutex_lock(mutex);
+        if (*pos >= total_len) {
+            pthread_mutex_unlock(mutex);
+            break;
+        }
+        size_t before = *pos;
+        (*pos)++;
+        EXPECT_EQ(*pos - before, 1);
+        pthread_mutex_unlock(mutex);
+    }
     return NULL;
 }
 
-void* thread_arguments(args_t* args) {
-    switch (args->size) {
+static void* lf_traversal(struct function_t* meta) {
+    void** args = routine_metadata_arguments(meta);
+    if (!args) pthread_exit(NULL);
+    atomic_uintptr_t* _ptr = (atomic_uintptr_t*)args[0];
+
+    for (;;) {
+        uintptr_t current = atomic_load(_ptr);
+        const char* str = (const char*)current;
+        if (*str == '\0') break;
+        uintptr_t next = current + 1;
+        atomic_compare_exchange_strong(_ptr, &current, next);
+    }
+    return NULL;
+}
+
+void* thread_arguments(struct function_t* meta) {
+    void** args = routine_metadata_arguments(meta);
+    if (!args) pthread_exit(NULL);
+    atomic_int* ptr = (atomic_int*)args[1]; 
+    const int size = atomic_load(ptr);
+    switch (size) {
         case 1:
-            addition(args);
+            addition(meta);
+            break;
+        case 2:
+            lf_traversal(meta);
             break;
         case 3:
-            traversal(args);
+            traversal(meta);
             break;
         default:
             break;
     }    
-
     pthread_exit(NULL);
 }
+
+TEST(LockThreadPool, NumericValue) {
+    int* i = shared_address(NULL, sizeof(int), PROT_WRITE | PROT_READ, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+    atomic_int size;
+    atomic_store(&size, 1);
+    EXPECT_NE(i, MAP_FAILED);
+    *i = 0;
+    routine_metadata(&threads[0], 3, &threads[0].lock->mutex, &size, i);
+    create_thread(&threads[0], thread_arguments);
+
+    int main_value     = 0;
+    int last_thread_value = -1;
+    int current_thread_value = 0;
+
+    for (int j = 0; j < 1000; j++) {
+        main_value = j + 1;
+        pthread_mutex_lock(&threads[0].lock->mutex);
+        current_thread_value = *i;
+        pthread_mutex_unlock(&threads[0].lock->mutex);
+
+        EXPECT_EQ(main_value, j + 1);
+        EXPECT_GE(current_thread_value, last_thread_value);
+        last_thread_value = current_thread_value;
+    }
+
+    EXPECT_EQ(main_value, 1000);
+    EXPECT_EQ(*i, 1002);
+    munmap_address(i, sizeof(int));
+    join_thread(threads[0], NULL);
+}
+
+TEST(LockThreadPool, StringTraversal) {
+    const char* src1 = "This is a short string";
+    const char* src2 = "This is a very very very very long string";
+    size_t len1 = strlen(src1), len2 = strlen(src2);
+
+    char* one = shared_address(NULL, len1 + 1, PROT_WRITE | PROT_READ, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+    memcpy(one, src1, len1 + 1);
+    char* two = shared_address(NULL, len2 + 1, PROT_WRITE | PROT_READ, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+    memcpy(two, src2, len2 + 1);
+
+    size_t one_pos = 0, two_pos = 0;
+
+    atomic_uchar t1, t2;
+    atomic_int size;
+    atomic_store(&t1, 0x01);
+    atomic_store(&t2, 0x02);
+    atomic_store(&size, 3);
+
+    routine_metadata(&threads[1], 5, one, &size, &t1, &threads[1].lock->mutex, &one_pos);
+    create_thread(&threads[1], thread_arguments);
+    routine_metadata( &threads[2], 5, two, &size, &t2, &threads[2].lock->mutex, &two_pos);
+    create_thread(&threads[2], thread_arguments);
+
+    float esc = 0.0;
+    float r1 = 0.0;
+    float r2 = 0.0;
+    for (;;) {
+        if (esc == 1) break;
+        pthread_mutex_lock(&threads[1].lock->mutex);
+        if (one_pos < len1) {
+            size_t before = one_pos;
+            size_t step = (len1 - one_pos < 2) ? (len1 - one_pos) : 2;
+            one_pos += step;
+            EXPECT_EQ(one_pos - before, step);
+        } else r1 = 0.5;
+        pthread_mutex_unlock(&threads[1].lock->mutex);
+
+        pthread_mutex_lock(&threads[2].lock->mutex);
+        if (two_pos < len2) {
+            size_t before = two_pos;
+            size_t step = (len2 - two_pos < 2) ? (len2 - two_pos) : 2;
+            two_pos += step;
+            EXPECT_EQ(two_pos - before, step);
+        } else r2 = 0.5;
+        pthread_mutex_unlock(&threads[2].lock->mutex);
+        esc = r1 + r2;
+    }
+
+    for (int i = 1; i < 3; i++) {
+        join_thread(threads[i], NULL);
+    }
+
+    munmap_address(one, len1 + 1);
+    munmap_address(two, len2 + 1);
+}
+
+TEST(LockFreeThreadPool, StringTraversal) {
+    for (int i = 0; i < 4; i++ ) clean_threads(&threads[i]);
+    memset(threads, 0, sizeof(threads_t) * 4);
+    create_thread_pool(threads, 4, 0x0, 0x0, 0x0);
+    
+    atomic_uintptr_t one, two;
+    
+    const char* src1 = "This is a short string, but every thread that access me will not be locked\n";
+    atomic_store(&one, (uintptr_t)src1);
+    const char* src2 = "This is a very very very very very very long string, and I mean very long. This will also have no lock on it so ervery thread should be able to access it\n";
+    atomic_store(&two, (uintptr_t)src2);
+    
+    atomic_int size;
+    atomic_store(&size, 2);
+    routine_metadata(&threads[0], 2, &one, &size);
+    create_thread(&threads[0], thread_arguments);
+    routine_metadata(&threads[1], 2, &two, &size);
+    create_thread(&threads[1], thread_arguments);
+    
+    float t1_res = 0.0, t2_res = 0.0;
+    float res = 0.0;
+
+    for (;;) {
+        if (res == 1) break;
+        if (t1_res != 0.5) {
+            uintptr_t current = atomic_load(&one);
+            const char* str = (const char*)current;
+            if (*str == '\0') t1_res = 0.5;
+            else {
+                size_t remaining = strlen(str);
+                uintptr_t step = (remaining < 2) ? remaining : 2;
+                uintptr_t next = current + step;
+                if (atomic_compare_exchange_strong(&one, &current, next)) {
+                    const char* new_str = (const char*)next;
+                    EXPECT_EQ(strlen(str) - strlen(new_str), step);
+                }
+            }
+        }
+
+        if (t2_res != 0.5) {
+            uintptr_t current = atomic_load(&two);
+            const char* str = (const char*)current;
+            if (*str == '\0') t2_res = 0.5;
+            else {
+                size_t remaining = strlen(str);
+                uintptr_t step = (remaining < 2) ? remaining : 2;
+                uintptr_t next = current + step;
+                if (atomic_compare_exchange_strong(&two, &current, next)) {
+                    const char* new_str = (const char*)next;
+                    EXPECT_EQ(strlen(str) - strlen(new_str), step);
+                }
+            }
+        }
+
+        res = t1_res + t2_res;
+    }
+
+    for (int i = 0; i < 4; i++ ) clean_threads(&threads[i]);
+}
+
+
+TEST(Thread, Clean) {
+    for (int i = 0; i < 4; i++ ) clean_threads(&threads[i]);
+}
+
 
 
 // TODO: ZSTD Also has its own threading library, so that needs to be integrated into busybox's configuration
 
 int main(void) {
-
-    threads_t* threads = aligned_alloc(alignof(threads_t), 8 * sizeof(threads_t));
-    threads_t tmp = {0};
-
-    for (int i = 0; i < 8; i++) {
-        tmp = init_threads_t();
-        memcpy(&threads[i], &tmp, sizeof(threads_t));
-        memset(&tmp, 0, sizeof(threads_t));
-    }
-
-    {
-        printf("\n");
-        printf(TEST_HEADER "  ══════════════════════════════════════════════\n" ANSI_RESET);
-        printf(TEST_HEADER "  NUMERICAL VALUE TEST  ·  Thread Pool           \n" ANSI_RESET);
-        printf(TEST_HEADER "  ══════════════════════════════════════════════\n" ANSI_RESET);
-
-
-        int* i = shared_address(NULL, sizeof(int), PROT_WRITE | PROT_READ, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
-        if (i == MAP_FAILED) {
-            printf(TEST_FAIL "ERROR 74: Failed to allocate memory for i\n");
-            return 1;
-        }
-        printf(TEST_INFO "Allocated shared int @ %p\n", (void*)i);
-        *i = 0;
-        //threads[0] = coroutine_metadata(0x01, threads[0], 3, 1, i, threads[0].lock.mutex);
-        threads[0].args.size = 1;
-        threads[0].args.arr = malloc(2 * sizeof(void*)); 
-        threads[0].args.arr[0] = i;
-        threads[0].args.arr[1] = &threads[0].lock.mutex;
-
-        create_thread(&threads[0], 0x01, thread_arguments);
-        
-        printf(TEST_INFO "Thread spawned — shared address mapped @ %p\n", i);
-
-        printf(SEPARATOR);
-        printf(TEST_INFO "Running " ANSI_YELLOW "1000" ANSI_RESET " iteration monotonicity check...\n");
-
-        int main_value     = 0;
-        int last_thread_value = -1;
-        int current_thread_value = 0;
-
-        for (int j = 0; j < 1000; j++) {
-            main_value = j + 1;
-            pthread_mutex_lock(&threads[0].lock.mutex);
-            current_thread_value = *i;
-            pthread_mutex_unlock(&threads[0].lock.mutex);
-
-
-            assert(main_value == j + 1 &&
-                   "Main thread: should increment by 1");
-
-            assert(current_thread_value >= last_thread_value &&
-                   "Thread value should be monotonically increasing or stable");
-
-            last_thread_value = current_thread_value;
-        }
-
-        printf(TEST_PASS "Monotonicity check passed across all 1000 iterations\n");
-        printf(SEPARATOR);
-
-        join_thread(threads[0], NULL);
-        printf(TEST_INFO "Thread joined successfully\n");
-
-        assert(main_value == 1000 && "Main thread value should be 1000");
-        printf(TEST_PASS "Main thread final value : " ANSI_YELLOW "%d" ANSI_RESET " / expected " ANSI_YELLOW "1000\n" ANSI_RESET, main_value);
-
-        assert(*i == 1002 && "Thread final value should be 1002");
-        printf(TEST_PASS "Thread final value      : " ANSI_YELLOW "%d" ANSI_RESET " / expected " ANSI_YELLOW "1002\n" ANSI_RESET, *i);
-
-        printf(SEPARATOR);
-        printf(TEST_HEADER "  RESULT: " ANSI_GREEN "PASSED ✔\n" ANSI_RESET);
-        printf(TEST_HEADER "  ══════════════════════════════════════════════\n\n" ANSI_RESET);
-        munmap_address(i, sizeof(int));
-    }
- 
-    {
-        printf("\n");
-        printf(TEST_HEADER "  ══════════════════════════════════════════════\n" ANSI_RESET);
-        printf(TEST_HEADER "  STRING TRAVERSAL TEST  ·  Thread Pool          \n" ANSI_RESET);
-        printf(TEST_HEADER "  ══════════════════════════════════════════════\n" ANSI_RESET);
-
-        char* one = shared_address(NULL, 1, PROT_WRITE | PROT_READ, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
-        one = "This is a short string";
-        char* two = shared_address(NULL, 1, PROT_WRITE | PROT_READ, MAP_SHARED | MAP_ANONYMOUS, -1, 0); 
-        two = "This is a very very very very long string"; 
-
-        printf(TEST_INFO "Short string : " ANSI_YELLOW "\"%s\"\n" ANSI_RESET, one);
-        printf(TEST_INFO "Long string  : " ANSI_YELLOW "\"%s\"\n" ANSI_RESET, two);
-        printf(SEPARATOR);
-
-        const uint8_t mode_1 = 0x01;
-        threads[1].args.size = 3;
-        threads[1].args.arr = malloc(3 * sizeof(void*));
-        threads[1].args.arr[0] = (void*)&one;
-        threads[1].args.arr[1] = (void*)&mode_1;
-        threads[1].args.arr[2] = (void*)&threads[1].lock.mutex;
-        create_thread(&threads[1], 0x01, thread_arguments);
-
-        const uint8_t mode_2 = 0x02;
-        threads[2].args.size = 3;
-        threads[2].args.arr = malloc(sizeof(void*) * 3);
-        threads[2].args.arr[0] = (void*)&two;
-        threads[2].args.arr[1] = (void*)&mode_2;
-        threads[2].args.arr[2] = (void*)&threads[2].lock.mutex;
-        create_thread(&threads[2], 0x01, thread_arguments);
-        
-        printf(SEPARATOR);
-        printf(TEST_INFO "Entering traversal loop — monitoring both threads...\n");
-
-        float esc = 0.0;
-        float r1 = 0.0;
-        float r2 = 0.0;
-        for (;;) {
-            if (esc == 1) break;
-
-            pthread_mutex_lock(&threads[1].lock.mutex);
-            if (strlen(one) != 0) {
-                const char* cpy_so = one;
-                one += 2;
-                assert((strlen(cpy_so) - strlen(one) == 2));
-            } else r1 = 0.5;
-            pthread_mutex_unlock(&threads[1].lock.mutex);
-
-            pthread_mutex_lock(&threads[2].lock.mutex);
-            if (strlen(two) != 0) {
-                const char* cpy_so = two;
-                two += 2;
-                assert((strlen(cpy_so) - strlen(two) == 2));
-            } else r2 = 0.5;
-            pthread_mutex_unlock(&threads[2].lock.mutex);
-            
-            esc = r1 + r2;
-              
-        }
-        
-        printf(TEST_PASS "Thread[1] — all chars valid printable ASCII, pointer stayed in bounds\n");
-        printf(TEST_PASS "Thread[2] — all chars valid printable ASCII, pointer stayed in bounds\n");
-        printf(SEPARATOR);
-        printf(TEST_HEADER "  RESULT: " ANSI_GREEN "PASSED ✔\n" ANSI_RESET);
-        printf(TEST_HEADER "  ══════════════════════════════════════════════\n\n" ANSI_RESET);
-
-        for (int i = 1; i < 3; i++) {
-            join_thread(threads[i], NULL);
-        }
-        //if (one) munmap_address(one, 1);
-        //if (two) munmap_address(two, 1);
-    } 
+    printf("\n"
+        "  ╔══════════════════════════════════════════════════╗\n"
+        "  ║           BUILD CONFIGURATION VALUES             ║\n"
+        "  ╚══════════════════════════════════════════════════╝\n"
+        "\n"
+        "   " ANSI_CYAN "ASAN_STACK_MULTIPLIER" ANSI_RESET "  →  " ANSI_GREEN "%d\n" ANSI_RESET
+        "   " ANSI_CYAN "MUTEX_ATTR          "  ANSI_RESET "  →  " ANSI_GREEN "%d\n" ANSI_RESET
+        "   " ANSI_CYAN "THREAD_STATE        "  ANSI_RESET "  →  " ANSI_GREEN "%d\n" ANSI_RESET
+        "   " ANSI_CYAN "USTP                "  ANSI_RESET "  →  " ANSI_GREEN "%d\n" ANSI_RESET
+        "   " ANSI_CYAN "INHERITSCHED        "  ANSI_RESET "  →  " ANSI_GREEN "%d\n" ANSI_RESET
+        "   " ANSI_CYAN "LOGGING             "  ANSI_RESET "  →  " ANSI_GREEN "%d\n" ANSI_RESET
+        "   " ANSI_CYAN "ITEM_SIZE           "  ANSI_RESET "  →  " ANSI_GREEN "%d\n" ANSI_RESET
+        "   " ANSI_CYAN "CLEANER_TIME        "  ANSI_RESET "  →  " ANSI_GREEN "%d\n" ANSI_RESET
+        "\n"
+        ANSI_YELLOW "  ══════════════════════════════════════════════════\n\n" ANSI_RESET,
+        ASAN_STACK_MULTIPLIER,
+        MUTEX_ATTR,
+        THREAD_STATE,
+        USTP,
+        INHERITSCHED,
+        LOGGING,
+        ITEM_SIZE,
+        CLEANER_TIME
+    );
+    threads = aligned_alloc(alignof(threads_t), 4 * sizeof(threads_t));
+    memset(threads, 0, 4 * sizeof(threads_t));
+    create_thread_pool(threads, 4, 0x0, 0x01, 0x0);
+    
 
     // User defined data structures / Objects 
     // Create a queue, linked lists, binary search tree, and a couple other data structures 
@@ -291,8 +325,6 @@ int main(void) {
 
     }*/
 
-    for (int i = 0; i <  8; i++ ) clean_threads(threads[i]);
 
-
-    return 0;
+    return __run_all_tests();
 }

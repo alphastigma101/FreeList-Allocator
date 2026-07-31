@@ -1,18 +1,17 @@
 #include "allocator.h"
-#include <pthread.h>
 #include <stdalign.h>
+#include <stdatomic.h>
 #include <stddef.h>
-#include <stdint.h>
-#include <stdio.h>
 #include <stdnoreturn.h>
+#include <sys/sysinfo.h>
 #include <string.h>
 #include <stdlib.h>
-#include <sys/mman.h>
 #include <sys/types.h>
 
 /*
 #include "allocator.h"
 #include <stdalign.h>
+#include <sys/sysinfo.h>
 #include <string.h>
 #include <stdlib.h>
 #include <sys/types.h>
@@ -74,7 +73,7 @@ FORCE_INLINE void resize_table(entry_table_t* table) {
 }
 
 FORCE_INLINE byte_entries_t* create_byte_entry(const unsigned int bytes, const unsigned char inuse, void* ptr) {
-    byte_entries_t* bnode = aligned_alloc(alignof(byte_entries_t), sizeof(byte_entries_t));
+    byte_entries_t* bnode = ALLOCATOR_MODE == 0X01 ? shared_address(NULL, sizeof(byte_entries_t), PROT_WRITE | PROT_READ, MAP_SHARED | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0) : aligned_alloc(alignof(byte_entries_t), sizeof(byte_entries_t));
     if (bnode) {
         memset(bnode, 0, sizeof(byte_entries_t)); 
         bnode->ptr = ptr; 
@@ -88,7 +87,7 @@ FORCE_INLINE byte_entries_t* create_byte_entry(const unsigned int bytes, const u
 }
 
 FORCE_INLINE offset_entries_t* create_offset_entry(const unsigned int offset, const unsigned char inuse, void* ptr) {
-    offset_entries_t* onode = aligned_alloc(alignof(offset_entries_t), sizeof(offset_entries_t));
+    offset_entries_t* onode = ALLOCATOR_MODE == 0X01 ? shared_address(NULL, sizeof(offset_entries_t), PROT_WRITE | PROT_READ, MAP_SHARED | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0) : aligned_alloc(alignof(offset_entries_t), sizeof(offset_entries_t));
     if (onode) {
         memset(onode, 0, sizeof(offset_entries_t)); 
         onode->ptr = ptr; 
@@ -128,20 +127,11 @@ FORCE_INLINE void set(entry_table_t* table, const unsigned int idx, const unsign
 FORCE_INLINE byte_entries_t* get_entry_t_by_bytes(entry_table_t* table, const int idx, const unsigned int bytes, const unsigned char inuse) {
     byte_entries_t* n = NULL;
     if (table->entries) n = table->entries[idx];
-    if (bytes != 0) { 
-        while (__builtin_expect(n != NULL, 1)) {
-            __builtin_prefetch(n->next, 0, 1);
-            unsigned int matches = (n->bytes == bytes) & (n->inuse == inuse);
-            if (matches) return n;
-            n = n->next;
-        }
-    }
-    else {
-        while (__builtin_expect(n != NULL, 1)) {
-            __builtin_prefetch(n->next, 0, 1);
-            if (n->inuse) return n;
-            n = n->next;
-        }
+    while (__builtin_expect(n != NULL, 1)) {
+        __builtin_prefetch(n->next, 0, 1);
+        unsigned int matches = (n->bytes == bytes) & (n->inuse == inuse);
+        if (matches) return n;
+        n = n->next;
     }
     return NULL;
 }
@@ -215,13 +205,13 @@ FORCE_INLINE void destroy(entry_table_t* table, const int idx, const unsigned in
     memset(bn, 0, offsetof(byte_entries_t, next));
     memset((char*)bn + offsetof(byte_entries_t, next) + sizeof(byte_entries_t*), 0,
            sizeof(byte_entries_t) - offsetof(byte_entries_t, next) - sizeof(byte_entries_t*));
-    free(bn);
+    ALLOCATOR_MODE == 0X01 ? munmap_address(bn, sizeof(byte_entries_t*)) : free(bn);
 
     if (on) {
         memset(on, 0, offsetof(offset_entries_t, next));
         memset((char*)on + offsetof(offset_entries_t, next) + sizeof(offset_entries_t*), 0,
                sizeof(offset_entries_t) - offsetof(offset_entries_t, next) - sizeof(offset_entries_t*));
-        free(on);
+        ALLOCATOR_MODE == 0X01 ? munmap_address(on, sizeof(offset_entries_t*)) : free(on);
     }
 }
 
@@ -268,11 +258,11 @@ FORCE_INLINE void debug_entry_table_t(const unsigned char mode, entry_table_t* t
         }
     }
 }
-// coalescing is when you take freed adjacent memory blocks and combine them together to form a size specific to the user's request
+
 typedef struct blocks_t {
     struct blocks_t** chain;
     struct blocks_t* next;
-    entry_table_t*   table; /* link bucket_t->table to this field */
+    entry_table_t*   table;
     void*            ptr;
     unsigned int     bytes;
     unsigned int     offset;
@@ -286,16 +276,17 @@ typedef struct blocks_t {
 
 FORCE_INLINE void init_blocks_t(blocks_t* blocks) {
     blocks->size = 64;
-    blocks->chain = shared_address(NULL, blocks->size * sizeof(blocks_t*), PROT_WRITE | PROT_READ, MAP_SHARED | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+    blocks->chain = ALLOCATOR_MODE == 0X01 ? shared_address(NULL, blocks->size * sizeof(blocks_t*), PROT_WRITE | PROT_READ, MAP_SHARED | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0) :
+     aligned_alloc(alignof(blocks_t*), blocks->size * sizeof(blocks_t*));
     if (blocks->chain == MAP_FAILED) return;
     int res = madvise(blocks->chain, blocks->size * sizeof(blocks_t*), MADV_SEQUENTIAL | MADV_MERGEABLE);
     if (res == -1) return;
-    memset(blocks->chain, 0, blocks->size * sizeof(blocks_t));
+    memset(blocks->chain, 0, blocks->size * sizeof(blocks_t*));
     return;
 }
 
 FORCE_INLINE blocks_t* create_block_t() {
-    blocks_t* block = aligned_alloc(alignof(blocks_t), sizeof(blocks_t));
+    blocks_t* block = ALLOCATOR_MODE == 0X01 ? shared_address(NULL, sizeof(blocks_t), PROT_WRITE | PROT_READ, MAP_SHARED | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0) : aligned_alloc(alignof(blocks_t), sizeof(blocks_t));
     if (!block) return NULL;
     memset(block, 0, sizeof(blocks_t));
     return block;
@@ -303,68 +294,147 @@ FORCE_INLINE blocks_t* create_block_t() {
 
 FORCE_INLINE void resize_blocks(blocks_t* blocks) {
     const unsigned int new_size = blocks->size * 2;
-    blocks_t** chain = shared_address(NULL, new_size * sizeof(blocks_t*), PROT_WRITE | PROT_READ, MAP_SHARED | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+    blocks_t** chain = ALLOCATOR_MODE == 0X01 ? 
+        shared_address(NULL, new_size * sizeof(blocks_t*), PROT_WRITE | PROT_READ, MAP_SHARED | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0) :
+        aligned_alloc(alignof(blocks_t*), sizeof(blocks_t*) * new_size);
     if (chain == MAP_FAILED) return;
     int res = madvise(chain, new_size * sizeof(blocks_t*), MADV_SEQUENTIAL | MADV_MERGEABLE);
     if (res == -1) return;
-    memcpy(chain, blocks->chain, sizeof(blocks_t) * blocks->size);
-    munmap_address(blocks->chain, sizeof(blocks_t) * blocks->size);
+    memcpy(chain, blocks->chain, sizeof(blocks_t*) * blocks->size);      /* was sizeof(blocks_t) */
+    munmap_address(blocks->chain, sizeof(blocks_t*) * blocks->size);     /* was sizeof(blocks_t) */
     blocks->chain = chain;
     blocks->size = new_size;
     return;
 }
 
-// We need to merge the arena's offsets together and add the bytes together to get the specific fit 
-// But when we do merge the offsets together, we also need to merge the pointers together i.e using the OR logic gate
-// We also have to be careful of not overflowing, hence the leftover. If we do overflow then we need to get the leftover bytes
-// and add the offset to the bnode->ptr
+FORCE_INLINE unsigned char is_mergeable(blocks_t* blocks, entry_table_t* table, const unsigned int idx, const unsigned int bytes) {
+    (void)blocks;
+    if (!table->entries) return 0x0;
+
+    byte_entries_t* seed = table->entries[idx];
+    while (seed) {
+        if (seed->inuse == 0x0) {
+            unsigned int accumulated = seed->bytes;
+            unsigned int probe_offset = seed->offset->offset + seed->bytes;
+            while (accumulated < bytes) {
+                offset_entries_t* nxt = get_entry_t_by_offset(table, idx, probe_offset, 0x0);
+                if (!nxt) break;
+                accumulated += nxt->bytes->bytes;
+                probe_offset += nxt->bytes->bytes;
+            }
+            if (accumulated >= bytes) return 0x01;
+        }
+        seed = seed->next;
+    }
+    return 0x0;
+}
+
 FORCE_INLINE void merge(blocks_t* blocks, entry_table_t* table, const unsigned int idx, const unsigned int bytes) {
     if (!blocks->chain) init_blocks_t(blocks);
-    if (blocks->size < idx) resize_blocks(blocks);
-    else if (!blocks->chain[idx]) blocks->chain[idx] = create_block_t();
-    
-    unsigned int total = 0;
-    if (!blocks->chain[idx]) return;
-    else if (blocks->chain[idx]->inuse == 0x0) {
-        if (!blocks->table) blocks->table = table;
-        while (total != bytes) {
-            byte_entries_t* bnode = get_entry_t_by_bytes(table, idx, 0, 0x0);
-            if (!bnode) break;
-            unsigned int accumalting_bytes = blocks->chain[idx]->bytes += bnode->bytes;
-            if (accumalting_bytes - total > 0) {
-                unsigned int leftover = accumalting_bytes - total;
-                bnode->offset->offset -= blocks->chain[idx]->offset;
-                bnode->bytes = leftover;
-                break;
+    else if (blocks->size >= idx) resize_blocks(blocks);
+    if (!blocks->table) blocks->table = table;
+
+    byte_entries_t* seed = table->entries[idx];
+    while (seed) {
+        if (seed->inuse == 0x0) {
+            unsigned int accumulated = seed->bytes;
+            unsigned int probe_offset = seed->offset->offset + seed->bytes;
+            while (accumulated < bytes) {
+                offset_entries_t* nxt = get_entry_t_by_offset(table, idx, probe_offset, 0x0);
+                if (!nxt) break;
+                accumulated += nxt->bytes->bytes;
+                probe_offset += nxt->bytes->bytes;
             }
-            if (!blocks->chain[idx]->ptr) blocks->chain[idx]->ptr = bnode->ptr;
-            else {
-                uintptr_t a = (uintptr_t)blocks->chain[idx]->ptr, b = (uintptr_t)bnode->ptr;
-                blocks->chain[idx]->ptr = (void*)(a | b);
-            } 
-            blocks->chain[idx]->bytes += bnode->bytes;
-            blocks->chain[idx]->offset += bnode->offset->offset;
-            destroy(blocks->table, idx, bnode->offset->offset, bnode->bytes);
-            bnode = bnode->next;
+            if (accumulated >= bytes) break;
         }
-        return;
+        seed = seed->next;
     }
-    blocks_t* block = create_block_t();
-    block->next = blocks->chain[idx];
-    blocks->chain[idx] = block;
-    return merge(blocks, blocks->table, idx, bytes);
+    if (!seed) return;
+
+    unsigned int total = 0;
+    unsigned int cur_offset = seed->offset->offset;
+    blocks_t* head = NULL;
+    blocks_t* tail = NULL;
+
+    while (total < bytes) {
+        offset_entries_t* oe = get_entry_t_by_offset(table, idx, cur_offset, 0x0);
+        if (!oe) break;
+        byte_entries_t* piece_entry = oe->bytes;
+        unsigned int piece_bytes = piece_entry->bytes;
+        unsigned int need = bytes - total;
+
+        blocks_t* node = create_block_t();
+        if (!node) break;
+        node->offset = cur_offset;
+        node->inuse = 0x01;
+        node->next = NULL;
+
+        if (piece_bytes > need) {
+            unsigned int leftover_bytes = piece_bytes - need;
+            unsigned int leftover_offset = cur_offset + need;
+            void* leftover_ptr = (char*)piece_entry->ptr + need;
+
+            node->ptr = piece_entry->ptr;
+            node->bytes = need;
+
+            destroy(table, idx, cur_offset, 0);
+            set(table, idx, leftover_offset, leftover_bytes, 0x0, leftover_ptr);
+
+            total += need;
+        } else {
+            node->ptr = piece_entry->ptr;
+            node->bytes = piece_bytes;
+
+            total += piece_bytes;
+            cur_offset += piece_bytes;
+
+            destroy(table, idx, node->offset, 0);
+        }
+
+        if (!head) head = node; else tail->next = node;
+        tail = node;
+    }
+
+    if (!head) return;
+    tail->next = blocks->chain[idx];
+    blocks->chain[idx] = head;
 }
 
-FORCE_INLINE blocks_t* get_block_entry(blocks_t* blocks, const unsigned int idx, const unsigned int bytes) {
-    if (bytes != 0) {}
-    blocks_t* block = blocks->chain[idx];
-    return block;
+
+FORCE_INLINE void update_block_t_by_offset(blocks_t* blocks, const unsigned int idx, const unsigned int offset, const unsigned char inuse) {
+    if (!blocks->chain || !blocks->chain[idx]) return;
+    blocks_t* seed = blocks->chain[idx];
+    while (seed) {
+        if ((seed->offset == offset) && (seed->inuse == inuse)) {
+            seed->inuse = 0x0;
+            return;
+        }
+        seed = seed->next;
+    }
 }
 
-FORCE_INLINE blocks_t* update_blocks(blocks_t* blocks, const unsigned int idx, const unsigned int bytes) {
-    if (bytes != 0) {}
-    blocks_t* block = blocks->chain[idx];
-    return block;
+FORCE_INLINE blocks_t* get_block_t_by_offset(blocks_t* blocks, const unsigned int idx, const unsigned int offset, const unsigned char inuse) {
+    if (!blocks->chain || !blocks->chain[idx]) return NULL;
+    blocks_t* seed = blocks->chain[idx];
+    while (seed) {
+        if ((seed->offset == offset) && (seed->inuse == inuse)) return seed;
+        seed = seed->next;
+    }
+    return NULL;
+}
+
+
+FORCE_INLINE void block_t_dctor(blocks_t* blocks) {
+    blocks_t* seed = blocks;
+    while (seed) {
+        blocks_t* node = seed->next;
+        if (seed) {
+            memset(seed, 0, sizeof(blocks_t));
+            ALLOCATOR_MODE == 0x01 ? munmap_address(seed, sizeof(blocks_t)) : free(seed);
+        }
+        seed = node;
+    }
+    blocks = NULL;
 }
 
 typedef struct bucket_t {
@@ -373,6 +443,7 @@ typedef struct bucket_t {
     arena_t*       arena;
     unsigned char  flag;
 } bucket_t;
+FORCE_INLINE void* coalescing(const unsigned int bytes); /* Not apart of bucket section. Used for forward declaration to integrate into bucket functions */
 FORCE_INLINE int find_bucket_index(bucket_t* slot);
 
 
@@ -450,6 +521,8 @@ FORCE_INLINE bucket_t* find_slot(void* ptr) {
                 }
                 return b;
             }
+            blocks_t* blocks = get_block_t_by_offset(&b->blocks, i, offset, 0x01);
+            if (blocks) return b;
         }
     }
     for (unsigned int i = 0; i < BUCKET_MEDIUM_CAP; i++) {
@@ -463,6 +536,8 @@ FORCE_INLINE bucket_t* find_slot(void* ptr) {
                 }
                 return b;
             }
+            blocks_t* blocks = get_block_t_by_offset(&b->blocks, i, offset, 0x01);
+            if (blocks) return b;
         }
     }
     for (unsigned int i = 0; i < BUCKET_LARGE_CAP; i++) {
@@ -476,6 +551,8 @@ FORCE_INLINE bucket_t* find_slot(void* ptr) {
                 }
                 return b;
             }
+            blocks_t* blocks = get_block_t_by_offset(&b->blocks, i, offset, 0x01);
+            if (blocks) return b;
         }
     }
     return NULL;
@@ -528,7 +605,7 @@ FORCE_INLINE void push_to_bucket(bucket_t* slot, size_t offset) {
 */
 FORCE_INLINE void* pop_from_bucket(bucket_t* slot, size_t bytes) {
     byte_entries_t* tmp = get_entry_t_by_bytes(&slot->table, find_bucket_index(slot),  bytes, 0x0);
-    if (!tmp || tmp->ptr == NULL) return NULL;
+    if (!tmp || tmp->ptr == NULL) return coalescing(bytes);
     void* address = NULL;
     if (tmp) {
         update(&slot->table, find_bucket_index(slot), tmp->offset->offset, 0, 0x01);
@@ -561,6 +638,7 @@ FORCE_INLINE void bucket_t_dctor() {
             if (arena->chunk) munmap_address(arena->chunk, ARENA_SIZE + 1);
             munmap_address(arena, sizeof(arena_t));
         }
+        if (slot.blocks.chain && slot.blocks.chain[small]) block_t_dctor(slot.blocks.chain[small]);
         small = small + 1;
     }
     munmap_address(allocator.bucket.small, BUCKET_SMALL_CAP * sizeof(bucket_t));
@@ -572,6 +650,7 @@ FORCE_INLINE void bucket_t_dctor() {
             if (arena->chunk) munmap_address(arena->chunk, ARENA_SIZE + 1);
             munmap_address(arena, sizeof(arena_t));
         }*/
+        if (slot.blocks.chain&& slot.blocks.chain[medium]) block_t_dctor(slot.blocks.chain[medium]);
         medium = medium + 1;
     }
     munmap_address(allocator.bucket.medium, BUCKET_MEDIUM_CAP * sizeof(bucket_t));
@@ -584,6 +663,7 @@ FORCE_INLINE void bucket_t_dctor() {
             if (arena->chunk) munmap_address(arena->chunk, ARENA_SIZE + 1);
             munmap_address(arena, sizeof(arena_t));
         }
+        if (slot.blocks.chain&& slot.blocks.chain[large]) block_t_dctor(slot.blocks.chain[large]);
         large = large + 1;
     }
     munmap_address(allocator.bucket.large, BUCKET_LARGE_CAP * sizeof(bucket_t));
@@ -608,11 +688,14 @@ FORCE_INLINE void __rewind(bucket_t* slot) {
     if (!bnode) clear_arena_t(slot->arena);
 }
 
+
 ////////////////////////
 // THREADING SECTION //
 //////////////////////
 
-FORCE_INLINE void* thread_rewind(struct function_t* meta) {
+FORCE_INLINE long thread_huge_grow_slots_and_claim();
+
+/*FORCE_INLINE void* thread_rewind(struct function_t* meta) {
     void** arguments = routine_metadata_arguments(meta);
     threads_t* st = (threads_t*)arguments[0];
     bucket_t* slot = (bucket_t*)arguments[1];
@@ -624,9 +707,9 @@ FORCE_INLINE void* thread_rewind(struct function_t* meta) {
         join_thread(*st, NULL);
     }
     pthread_exit(NULL);
-}
+}*/
 
-FORCE_INLINE void* thread_update_thread_pool(struct function_t* meta) {
+/*FORCE_INLINE void* thread_update_thread_pool(struct function_t* meta) {
     void** arguments = routine_metadata_arguments(meta);
     threads_t* st = (threads_t*)arguments[0];
     int rc = pthread_mutex_lock(&st->lock.mutex);
@@ -636,9 +719,9 @@ FORCE_INLINE void* thread_update_thread_pool(struct function_t* meta) {
         pthread_mutex_unlock(&st->lock.mutex);
     }
     pthread_exit(NULL);
-}
+}*/
 
-FORCE_INLINE void* thread_create_thread_pool(struct function_t* meta) {
+/*FORCE_INLINE void* thread_create_thread_pool(struct function_t* meta) {
     void** arguments = routine_metadata_arguments(meta);
     threads_t* st = (threads_t*)arguments[0];
     const unsigned int* size = (const unsigned int*)arguments[2];
@@ -651,17 +734,95 @@ FORCE_INLINE void* thread_create_thread_pool(struct function_t* meta) {
         pthread_mutex_unlock(&st->lock.mutex);
     }
     pthread_exit(NULL);
+}*/
+
+FORCE_INLINE void* thread_get_entry_t_by_bytes(struct function_t* meta) {
+    void** args = routine_metadata_arguments(meta);
+    if (!args) return NULL;
+
+    return NULL;
+}
+
+FORCE_INLINE long thread_bitmap_index(bitmap_t* bitmap, int start, int end) {
+    int word0 = start / 64;
+    int max_word = (bitmap->n_bytes / 8) - 1;
+    for (int w = word0; w <= max_word; w++) {
+        _Atomic(unsigned long)* word_ptr = (_Atomic(unsigned long)*)(bitmap->bits + w * 8);
+        int word_lo = w * 64;
+        unsigned long old_val;
+        for (;;) {
+            old_val = atomic_load(word_ptr);
+            if (old_val == 0) break; /* nothing free in this word -- try the next */
+            int bit = __builtin_ctzl(old_val);
+            int global_bit = word_lo + bit;
+            if (global_bit > end) break; /* past our allowed range */
+            unsigned long new_val = old_val & ~(1UL << bit);
+            if (atomic_compare_exchange_weak(word_ptr, &old_val, new_val)) return global_bit;
+            /* someone else claimed a bit in this word first -- loop, re-read, retry */
+        }
+    }
+    return -1;
 }
 
 
 ////////////////////////
 // ALLOCATOR SECTION //
 //////////////////////
+
+
+#define HUGE_PAGE_SIZE (2UL * 1024 * 1024)   /* 2MB, matches MAP_HUGE_2MB */
+#define MAX_HUGE_SLOTS 4096U                  /* reserved range = 4096 * 2MB = 8GB virtual, MAP_NORESERVE so no physical cost */
+#define HUGE_SLOT_CONTINUATION 0xFFFFU        /* marks a slot as "part of a prior multi-slot allocation", not a real entry */
+#define HUGE_MAX_PAGES_PER_ALLOC 0xFFFEU      /* one less than the continuation sentinel, so there's no ambiguity */
+#define HUGE_SLOT_RESERVED_PAGES 64U          /* fixed budget per slot within the shared region -- see note below */
+
+typedef struct huge_slot_t {
+    blocks_t       blocks;
+    entry_table_t  table;
+    size_t         capacity;
+    size_t         size;
+    unsigned short page_count;   /* how many HUGE_PAGE_SIZE units this allocation spans; 0 = free */
+    unsigned char used_hugetlb;  /* 1 if MAP_HUGETLB actually succeeded for this slot, 0 if it fell back */
+} huge_slot_t;
+static size_t __huge_slot_capacity_end = 0;
+static size_t __huge_slot_capacity_start = 0;
+
+typedef struct huge_block_allocator_t {
+    bitmap_t  bitmap;
+    void* (*allocate)(const size_t);
+    void (*deallocate)(void*);
+    unsigned char* region;
+    huge_slot_t* slots;
+    atomic_size_t end;
+} huge_block_allocator_t;
+FORCE_INLINE void* _allocate(size_t bytes);
+FORCE_INLINE void _deallocate(void* ptr);
+FORCE_INLINE void init_huge_allocator(void);
+FORCE_INLINE unsigned char overcommit(size_t bytes);
+
 allocator_t allocator = {0};
 
-[[gnu::hot]]
+[[gnu::cold]]
+FORCE_INLINE void allocator_init_arena_t(void) {
+    allocator.arena = init_arena_t();
+    if (!allocator.arena) {
+        #if LOGGING == 0 || LOGGING == 1
+            const int line = __LINE__;
+            #if LOGGING == 0
+                printer.add(5, __FILE__, line, ANSI_RED "alloc_init: Failed to allocate memory for allocator's arena!\n.... Returning back to caller\n" ANSI_RESET);
+                printer.print(__FILE__, line);
+            #else 
+                logger.add(5, __FILE__, line, ANSI_RED "alloc_init: Failed to allocate memory for allocator's arena!\n.... Returning back to caller\n" ANSI_RESET);
+            #endif
+        #endif 
+        munmap_address(allocator.arena, sizeof(arena_t));
+        return;
+    }
+}
+
+[[gnu::cold]]
 // TODO: Need to make sure that MADV_MERGEABLE enabled does not consume a lot of processing power; use with care.
-FORCE_INLINE void alloc_init(void) {
+FORCE_INLINE void allocator_init_buckets_t(void) {
     int res = 0;
     if (!allocator.bucket.small) {
         allocator.bucket.large = shared_address(NULL, BUCKET_LARGE_CAP * sizeof(bucket_t), PROT_WRITE | PROT_READ, MAP_SHARED | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
@@ -748,49 +909,40 @@ FORCE_INLINE void alloc_init(void) {
         #else 
             if (res == -1) return;
         #endif
-        allocator.pool = shared_address(NULL, ALLOC_THREAD_POOL_SIZE * sizeof(threads_t), PROT_WRITE | PROT_READ, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
-        #if LOGGING == 1 || LOGGING == 0
-            if (allocator.pool == MAP_FAILED) {
-                const int line = __LINE__;
-                #if LOGGING == 0
-                    printer.add(5, __FILE__, line, ANSI_RED "alloc_init: Failed to create allocator's internal threads!\n.... Returning back to caller\n" ANSI_RESET);
-                    printer.print(__FILE__, line);
-                #else 
-                    logger.add(5, __FILE__, line,  ANSI_RED "alloc_init: Failed to create allocator's internal threads!\n.... Returning back to caller\n" ANSI_RESET);
-                #endif
-            }
-        #else 
-            if (allocator.pool == MAP_FAILED) return;
-        #endif
-        res = madvise(allocator.pool, ALLOC_THREAD_POOL_SIZE * sizeof(threads_t), MADV_SEQUENTIAL | MADV_MERGEABLE);
-        #if LOGGING == 1 || LOGGING == 0
-            if (res == -1) {
-                const int line = __LINE__;
-                #if LOGGING == 0
-                    printer.add(5, __FILE__, line, ANSI_RED "alloc_init: Failed to modify memory region of allocator internal threads with madvise!\n.... Returning back to caller\n" ANSI_RESET);
-                    printer.print(__FILE__, line);
-                #else 
-                    logger.add(5, __FILE__, line, ANSI_RED "alloc_init: Failed to modify memory region of allocator internal threads with madvise!\n.... Returning back to caller\n" ANSI_RESET);
-                #endif
-            }
-        #else 
-            if (res == -1) return;
-        #endif
     }
-    allocator.arena = init_arena_t();
-    if (!allocator.arena) {
-        #if LOGGING == 0 || LOGGING == 1
+}
+
+[[gnu::cold]]
+FORCE_INLINE void allocator_init_threads_t(void) {
+    int res = 0;
+    allocator.pool = shared_address(NULL, ALLOC_THREAD_POOL_SIZE * sizeof(threads_t), PROT_WRITE | PROT_READ, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+    #if LOGGING == 1 || LOGGING == 0
+        if (allocator.pool == MAP_FAILED) {
             const int line = __LINE__;
             #if LOGGING == 0
-                printer.add(5, __FILE__, line, ANSI_RED "alloc_init: Failed to allocate memory for allocator's arena!\n.... Returning back to caller\n" ANSI_RESET);
+                printer.add(5, __FILE__, line, ANSI_RED "alloc_init: Failed to create allocator's internal threads!\n.... Returning back to caller\n" ANSI_RESET);
                 printer.print(__FILE__, line);
             #else 
-                logger.add(5, __FILE__, line, ANSI_RED "alloc_init: Failed to allocate memory for allocator's arena!\n.... Returning back to caller\n" ANSI_RESET);
+                logger.add(5, __FILE__, line,  ANSI_RED "alloc_init: Failed to create allocator's internal threads!\n.... Returning back to caller\n" ANSI_RESET);
             #endif
-        #endif 
-        munmap_address(allocator.arena, sizeof(arena_t));
-        return;
-    }
+        }
+    #else 
+        if (allocator.pool == MAP_FAILED) return;
+    #endif
+    res = madvise(allocator.pool, ALLOC_THREAD_POOL_SIZE * sizeof(threads_t), MADV_SEQUENTIAL | MADV_MERGEABLE);
+    #if LOGGING == 1 || LOGGING == 0
+        if (res == -1) {
+            const int line = __LINE__;
+            #if LOGGING == 0
+                printer.add(5, __FILE__, line, ANSI_RED "alloc_init: Failed to modify memory region of allocator internal threads with madvise!\n.... Returning back to caller\n" ANSI_RESET);
+                printer.print(__FILE__, line);
+            #else 
+                logger.add(5, __FILE__, line, ANSI_RED "alloc_init: Failed to modify memory region of allocator internal threads with madvise!\n.... Returning back to caller\n" ANSI_RESET);
+            #endif
+        }
+    #else 
+        if (res == -1) return;
+    #endif
 }
 
 FORCE_INLINE void debug_allocator(const size_t bytes) {
@@ -835,6 +987,42 @@ FORCE_INLINE void debug_allocator(const size_t bytes) {
     } 
 }
 
+FORCE_INLINE void* coalescing(const unsigned int bytes) {
+    if (bytes >= ARENA_SIZE) return NULL;
+
+    for (unsigned int i = 0; i < BUCKET_SMALL_CAP; i++) {
+        bucket_t* b = &allocator.bucket.small[i];
+        if (b->arena && b->flag == 0x0 && b->arena->flag == 0x0) {
+            if (is_mergeable(&b->blocks, &b->table, i, bytes) == 0x01) {
+                merge(&b->blocks, &b->table, i, bytes);
+                if (b->blocks.chain[i]) return b->blocks.chain[i]->ptr;
+            }
+        }
+    }
+
+    for (unsigned int i = 0; i < BUCKET_MEDIUM_CAP; i++) {
+        bucket_t* b = &allocator.bucket.medium[i];
+        if (b->arena && b->flag == 0x0 && b->arena->flag == 0x0) {
+            if (is_mergeable(&b->blocks, &b->table, i, bytes) == 0x01) {
+                merge(&b->blocks, &b->table, i, bytes);
+                if (b->blocks.chain[i]) return b->blocks.chain[i]->ptr;
+            }
+        }
+    }
+
+    for (unsigned int i = 0; i < BUCKET_LARGE_CAP; i++) {
+        bucket_t* b = &allocator.bucket.large[i];
+        if (b->arena && b->flag == 0x0 && b->arena->flag == 0x0) {
+            if (is_mergeable(&b->blocks, &b->table, i, bytes) == 0x01) {
+                merge(&b->blocks, &b->table, i, bytes);
+                if (b->blocks.chain[i]) return b->blocks.chain[i]->ptr;
+            }
+        }
+    }
+
+    return allocator.huge->allocate(bytes);
+}
+
 /**
     * @description: A Free Function that recrusive calls itself if arena is full and moves it forward.
     * @param bytes: The requested bytes.
@@ -849,7 +1037,9 @@ void* allocate(size_t bytes) {
     bucket_t* slot = NULL;
     if (bytes <= BUCKET_LARGE_CAP) slot = find_free_slot(bytes);
     else {
-        // coalesing feature will go here...
+        void* res = coalescing(bytes);
+        if (res) return res;
+        else return allocator.huge->allocate(bytes);
     }
     if (slot) {
         if (!slot->arena) {
@@ -899,6 +1089,116 @@ void* allocate(size_t bytes) {
     return NULL;
 }
 
+FORCE_INLINE void thread_ensure_capacity(size_t bytes) {
+    size_t end = atomic_load(&allocator.huge->end);
+    if (bytes <= end) return;
+    if (bytes > end) {
+        size_t new_end = end;
+        while (new_end < bytes) new_end *= 2;
+        if (atomic_compare_exchange_strong(&allocator.huge->end, &end, new_end)) {
+            allocator.huge->region = remap_address(allocator.huge->region, allocator.huge->end, atomic_load(&allocator.huge->end));
+            allocator.huge->end = new_end;
+        }
+    }
+}
+
+
+FORCE_INLINE void* thread_huge_allocate(struct function_t* meta) {
+    void** arguments = routine_metadata_arguments(meta);
+    const size_t bytes = *(size_t*)arguments[1];
+    void* result = NULL;
+
+    unsigned int pages_needed = (unsigned int)((bytes + HUGE_PAGE_SIZE - 1) / HUGE_PAGE_SIZE);
+    if (pages_needed == 0) { pthread_exit(NULL); return NULL; }
+
+    thread_ensure_capacity(bytes);
+
+    long index = allocator.huge->bitmap.bitmap_test(allocator.huge->bitmap, __huge_slot_capacity_start, __huge_slot_capacity_end);
+    if (index == -1) index = thread_huge_grow_slots_and_claim();
+    if (index == -1) { pthread_exit(NULL); return NULL; }
+
+    huge_slot_t* slot = &allocator.huge->slots[index];
+
+    byte_entries_t* exact = get_entry_t_by_bytes(&slot->table, (int)index, (unsigned int)bytes, 0x0);
+    if (exact && exact->ptr) {
+        update(&slot->table, (int)index, 0, (unsigned int)bytes, 0x01);
+        result = exact->ptr;
+    } else if (is_mergeable(&slot->blocks, &slot->table, (unsigned int)index, (unsigned int)bytes)) {
+        merge(&slot->blocks, &slot->table, (unsigned int)index, (unsigned int)bytes);
+        if (slot->blocks.chain[index]) result = slot->blocks.chain[index]->ptr;
+    }
+
+    if (!result) {
+        if (slot->capacity < slot->size + pages_needed) {
+            size_t new_capacity = slot->capacity == 0 ? HUGE_SLOT_RESERVED_PAGES : slot->capacity;
+            while (new_capacity < slot->size + pages_needed) new_capacity *= 2;
+            slot->capacity = new_capacity;
+        }
+
+        unsigned char* slot_base = allocator.huge->region + (size_t)index * HUGE_SLOT_RESERVED_PAGES * HUGE_PAGE_SIZE;
+        void* addr = slot_base + (size_t)slot->size * HUGE_PAGE_SIZE;
+        size_t map_bytes = (size_t)pages_needed * HUGE_PAGE_SIZE;
+
+        void* got = mmap(addr, map_bytes, PROT_READ | PROT_WRITE, MAP_FIXED | MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB, -1, 0);
+        unsigned char used_hugetlb = 1;
+        if (got == MAP_FAILED) {
+            got = mmap(addr, map_bytes, PROT_READ | PROT_WRITE, MAP_FIXED | MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+            used_hugetlb = 0;
+            if (got == MAP_FAILED) got = NULL;
+        }
+        if (got) {
+            set(&slot->table, (unsigned int)index, (unsigned int)(slot->size * HUGE_PAGE_SIZE), (unsigned int)bytes, 0x01, got);
+            slot->size += pages_needed;
+            slot->page_count = (unsigned short)slot->size;
+            slot->used_hugetlb = used_hugetlb;
+            result = got;
+        }
+    }
+
+    if (slot->capacity <= slot->size) {
+        allocator.huge->bitmap = allocator.huge->bitmap.bitmap_set(allocator.huge->bitmap, (int)index, (int)__huge_slot_capacity_start, (int)__huge_slot_capacity_end);
+    }
+
+    pthread_exit(result);
+    return NULL;
+}
+
+FORCE_INLINE long thread_huge_grow_slots_and_claim(void) {
+    long index = thread_bitmap_index(&allocator.huge->bitmap, __huge_slot_capacity_start, __huge_slot_capacity_end);
+    if (index == -1) { /* still nothing -- we're genuinely the one who needs to grow */
+        size_t old_end = __huge_slot_capacity_end;
+        size_t new_end = old_end * 2;
+        allocator.huge->slots = remap_address(allocator.huge->slots, old_end, new_end);
+        /* TODO, still unaddressed from before: newly mapped slot entries
+         * need memset + capacity initialized before they're safe to claim */
+        __huge_slot_capacity_end = new_end;
+        index = thread_bitmap_index(&allocator.huge->bitmap, __huge_slot_capacity_start, __huge_slot_capacity_end);
+    }
+    //atomic_flag_clear(&huge_slots_growth_in_progress);
+    return index;
+}
+
+FORCE_INLINE void* _allocate(const size_t bytes) {
+    if (bytes == 0 || !allocator.huge) return NULL;
+    else if (!allocator.huge->region) return NULL;
+
+    unsigned int pages_needed = (unsigned int)((bytes + HUGE_PAGE_SIZE - 1) / HUGE_PAGE_SIZE);
+    if (pages_needed == 0) return NULL;
+    else if (!overcommit(bytes)) return NULL;
+
+    threads_t* slot_thread = NULL;
+    for (unsigned int i = HUGE_THREAD_POOL_START; i < ALLOC_THREAD_POOL_SIZE; i++) {
+        if (allocator.pool[i].flag == 0x0) { slot_thread = &allocator.pool[i]; break; }
+    }
+    if (!slot_thread) return NULL;
+
+    void* result = NULL;
+    routine_metadata( slot_thread, 2, slot_thread, &bytes);
+    create_thread(slot_thread, thread_huge_allocate);
+    join_thread(*slot_thread, &result);
+    return result;
+}
+
 /**
     * @description: A free function that determines if the following parameter that was passed into it is within a specific arena's memory region.
     * @param ptr: A memory address that can or is not apart of a arena. 
@@ -910,7 +1210,7 @@ FORCE_INLINE void deallocate(void* ptr) {
 
     bucket_t* slot = NULL;
     slot = find_slot(ptr);
-    if (!slot) return;
+    if (!slot) return allocator.huge->deallocate(ptr);
 
     unsigned char* base = (unsigned char*)slot->arena->chunk;
     if ((unsigned char*)ptr < base || (unsigned char*)ptr >= base + ARENA_SIZE) {
@@ -938,7 +1238,23 @@ FORCE_INLINE void deallocate(void* ptr) {
         push_to_bucket(slot, offset);
         __rewind(slot);
         if (slot->arena && slot->arena->chunk) memset(ptr, 0xFF, bytes);
-    }
+    } else update_block_t_by_offset(&slot->blocks, find_bucket_index(slot), offset, 0x01);
+}
+
+FORCE_INLINE void _deallocate(void* ptr) {
+    if (!ptr || !allocator.huge) return;
+    else if (!allocator.huge->region) return;
+
+    uintptr_t p = (uintptr_t)ptr, base = (uintptr_t)allocator.huge->region;
+    if (p < base || p >= base + (uintptr_t)MAX_HUGE_SLOTS * HUGE_PAGE_SIZE) return;
+    if ((p - base) % HUGE_PAGE_SIZE != 0) return; /* not a slot boundary -- not a valid huge_allocate() pointer */
+
+    unsigned int idx = (unsigned int)((p - base) / HUGE_PAGE_SIZE); /* O(1) direct index, no search */
+    unsigned short pages = allocator.huge->slots[idx].page_count;
+    if (pages == 0 || pages == HUGE_SLOT_CONTINUATION) return; /* already free, or a mid-allocation pointer */
+
+    munmap_address(ptr, (size_t)pages * HUGE_PAGE_SIZE);
+    for (unsigned int j = 0; j < pages; j++) { allocator.huge->slots[idx + j].page_count = 0; allocator.huge->slots[idx + j].used_hugetlb = 0; }
 }
 
 [[gnu::cold]]
@@ -946,26 +1262,68 @@ void init_allocator_t() {
     if (!allocator.bitmap.bits)  {
         init_logger_t();
         allocator.bitmap = init_bitmap_t(BITMAP_SIZE);
-        alloc_init();
+        allocator_init_arena_t();
+        allocator_init_buckets_t();
+        allocator_init_threads_t();
+        allocator.huge = aligned_alloc(alignof(huge_block_allocator_t), sizeof(huge_block_allocator_t));
+        if (!allocator.huge) return;
+        memset(allocator.huge, 0, sizeof(huge_block_allocator_t));
+        init_huge_allocator();
     }
 
     if (!allocator.allocate) {
         allocator.allocate   = allocate;
         allocator.deallocate = deallocate;
+        allocator.huge->allocate = _allocate;
+        allocator.huge->deallocate = _deallocate;
     }
+}
+
+/* overcommit safeguard: refuse if this single allocation would eat more than
+ * half of currently-free RAM. sysinfo() is one syscall -- O(1), not
+ * proportional to anything this allocator tracks. */
+FORCE_INLINE unsigned char overcommit(const size_t bytes) {
+    struct sysinfo info;
+    if (sysinfo(&info) != 0) return 0x0; /* can't verify -- refuse rather than risk the OOM killer */
+    unsigned long available = (unsigned long)info.freeram * (unsigned long)info.mem_unit;
+    return (bytes < available / 2) ? 0x1 : 0x0;
+}
+
+[[gnu::cold]]
+FORCE_INLINE void init_huge_allocator(void) {
+    allocator.huge->region = ALLOCATOR_MODE == 0X01 ? shared_address(NULL, (size_t)MAX_HUGE_SLOTS * HUGE_PAGE_SIZE, PROT_WRITE | PROT_READ, MAP_SHARED | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0) :
+     private_address(NULL, (size_t)MAX_HUGE_SLOTS * HUGE_PAGE_SIZE,
+                                       PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+    if (allocator.huge->region == MAP_FAILED) { allocator.huge->region = NULL; return; }
+    allocator.huge->end = (size_t)MAX_HUGE_SLOTS * HUGE_PAGE_SIZE;
+    allocator.huge->slots = ALLOCATOR_MODE == 0X01 ? shared_address(NULL, MAX_HUGE_SLOTS * sizeof(huge_slot_t), PROT_WRITE | PROT_READ, MAP_SHARED | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0)
+    : aligned_alloc(alignof(huge_slot_t), MAX_HUGE_SLOTS * sizeof(huge_slot_t));
+    if (!allocator.huge->slots) { 
+        munmap_address(allocator.huge->region, (size_t)MAX_HUGE_SLOTS * HUGE_PAGE_SIZE); 
+        allocator.huge->region = NULL;
+        allocator.huge->slots = NULL; 
+        return; 
+    }
+    memset(allocator.huge->slots, 0, MAX_HUGE_SLOTS * sizeof(huge_slot_t)); /* allocator.huge->slot.size should always be 0 when init */
+    memset(allocator.huge->slots, MAX_HUGE_SLOTS, offsetof(huge_slot_t, capacity));
+    __huge_slot_capacity_end = MAX_HUGE_SLOTS;
 }
 
 [[gnu::cold]]
 [[gnu::destructor]]
 FORCE_INLINE void allocator_dctor() {
-    for (unsigned int i = 0;  i < ALLOC_THREAD_POOL_SIZE; i++) {
-        clean_threads(allocator.pool[i]);
-    }
+    for (unsigned int i = 0;  i < ALLOC_THREAD_POOL_SIZE; i++) clean_threads(&allocator.pool[i]);
     munmap_address(allocator.pool, ALLOC_THREAD_POOL_SIZE * sizeof(threads_t));
     bucket_t_dctor();
     if (allocator.arena) {
         //if (allocator.arena->chunk) munmap_address(allocator.arena->chunk, ARENA_SIZE);
         munmap_address(allocator.arena, sizeof(arena_t));
     }
-    clean_bitmap(allocator.bitmap);   
+    clean_bitmap(allocator.bitmap);
+    if (allocator.huge) {
+        munmap_address(allocator.huge->region, (size_t)MAX_HUGE_SLOTS * HUGE_PAGE_SIZE);
+        free(allocator.huge->slots);
+        free(allocator.huge);
+        allocator.huge = NULL;
+    }   
 }
