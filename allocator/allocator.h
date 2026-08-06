@@ -17,10 +17,17 @@
 #define _ALLOCATOR_H_
 #include "../arena/arena.h"
 
-#define BUCKET_SMALL_CAP 64U
-#define BUCKET_MEDIUM_CAP 128U
-#define BUCKET_LARGE_CAP 256U
-#define ALLOCATOR_MODE 0x01
+#ifndef BUCKET_SMALL_CAP 
+    #define BUCKET_SMALL_CAP 64U
+#endif
+
+#ifndef  BUCKET_MEDIUM_CAP
+    #define BUCKET_MEDIUM_CAP 128U
+#endif
+
+#ifndef BUCKET_LARGE_CAP
+    #define BUCKET_LARGE_CAP 256U
+#endif
 
 /* RAM tier heuristic based on arch/vendor macros -- a best-effort
  * classification, NOT a real memory measurement. Three tiers:
@@ -62,6 +69,16 @@
     #endif
 #endif
 
+/* Set the exact size of the page you need. Will be used in conjunction with MAP_HUGETLB */
+#ifndef HUGE_PAGE_SIZE
+    #define HUGE_PAGE_SIZE (2UL * 1024 * 1024)
+#endif 
+
+/* Set the dynamic array size of huge slots, if allocator.huge is ever to be used */
+#ifndef MAX_HUGE_SLOTS
+    #define MAX_HUGE_SLOTS 4096U
+#endif 
+
 
 /**
    * @description: Free List allocator highly optimized.
@@ -78,16 +95,52 @@ typedef struct allocator_t {
     void                (*deallocate)(void*);
     struct huge_block_allocator_t* huge;
     arena_t*            arena;
-    threads_t*          pool;  /* internal allocator threads */
+    threads_t*          pool;
 } allocator_t;
 
 extern allocator_t allocator;
+#if BENCHMARK_ENV == 1
+    struct entry_table_t;
+    struct byte_entries_t;
+    struct offset_entries_t;
+    struct blocks_t;
+    struct bucket_t;
+
+    typedef struct benchmark_allocator_t {
+        /* Entry functions */
+        struct byte_entries_t* (*get_entry_t_by_bytes)(struct entry_table_t* table, const size_t idx, const size_t bytes, const unsigned char inuse);
+        struct offset_entries_t* (*get_entry_t_by_offset)(struct entry_table_t* table, const size_t idx, const size_t offset, const unsigned char inuse);
+        void (*update)(struct entry_table_t* table, const size_t idx, const size_t offset, const size_t bytes, const unsigned char inuse);
+        void (*destroy)(struct entry_table_t* table, const size_t idx, const size_t offset, const size_t bytes);
+        void (*clean)(struct entry_table_t *table);
+
+        unsigned char (*is_mergeable)(struct entry_table_t* table, const size_t idx, const size_t bytes);
+        void (*merge)(struct blocks_t* blocks, struct entry_table_t* table, const size_t idx, const size_t bytes);
+        void (*update_block_t_by_offset)(struct blocks_t* blocks, const size_t idx, const size_t offset, const unsigned char inuse);
+        struct blocks_t* (*get_block_t_by_offset)(struct blocks_t* blocks, const size_t idx, const size_t offset, const unsigned char inuse);
+        void (*block_t_dctor)(struct blocks_t* blocks);
+
+        /* coalescing */
+        void* (*coalescing)(const size_t bytes);
+
+        /* bucket functions */
+        struct bucket_t* (*find_slot)(void* ptr);
+        void (*push_to_bucket)(struct bucket_t* slot, size_t offset);
+        void* (*pop_from_bucket)(struct bucket_t* slot, size_t bytes);
+        void (*bucket_t_dctor)();
+        void (*__rewind)(struct bucket_t* slot);
+
+    } benchmark_allocator_t;
+    extern benchmark_allocator_t benchmark_allocator;
+#endif
+
 extern void init_allocator_t();
 
 
 /** Maximum number of worker threads managed by the allocator. */
-#define ALLOC_THREAD_POOL_SIZE  10U
-#define HUGE_THREAD_POOL_START (ALLOC_THREAD_POOL_SIZE / 2)
+#ifndef ALLOC_THREAD_POOL_SIZE
+    #define ALLOC_THREAD_POOL_SIZE  10U
+#endif
 
 
 #endif

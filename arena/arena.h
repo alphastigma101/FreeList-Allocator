@@ -16,6 +16,8 @@ typedef struct arena_t {
 } arena_t;
 
 extern arena_t* init_arena_t();
+extern arena_t* init_thread_ptr_arena_t(const unsigned char mode);
+extern arena_t* init_ptr_arena_t(arena_t* arena);
 extern uintptr_t alignment(uintptr_t ptr, size_t align);
 extern arena_t* push(arena_t* arena, size_t bytes);
 extern arena_t* pop(arena_t* arena, size_t offset);

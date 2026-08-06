@@ -26,7 +26,7 @@ extern void init_buffer_t();
 extern void reset_buffer(const uint8_t mode);
 extern char* append_to_cstr(char* cstrt, char* cstrs, uint8_t mode);
 extern char* create_cstr(size_t size);
-extern int cstr_size(const int length, ...); 
+extern size_t cstr_size(const int length, ...); 
 extern int_fast8_t check_or_write_cstr(const uint8_t mode, const size_t c1, const size_t c2, const int length, ...);
 extern char* write_long_cstr(const uint8_t mode, const int length, ...);
 extern void reset_and_free_cstr(const int length, ...);

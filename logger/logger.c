@@ -1,5 +1,6 @@
 #include "logger.h"
 #include <stdalign.h>
+#include <stddef.h>
 #include <sys/stat.h>
 #include <stdlib.h>
 #include <dirent.h>
@@ -15,7 +16,7 @@ static code_fragment_t*** table = NULL;
 static code_fragment_t** arr = NULL;
 static int ARR_RUNTIME_SIZE = 0;
 static int RUNTIME_TABLE_SIZE = 0;
-static int DATA_SIZE = 0;
+static size_t DATA_SIZE = 0;
 
 #if LOGGING == 1
     logger_t logger = {0};
@@ -59,7 +60,7 @@ static void write_to_stream(FILE* fp, const int length, ...) {
 
 [[gnu::hot]]
 FORCE_INLINE const char* create_timestamp() {
-    memset(timestamp, 0, cstr_size(1, timestamp));
+    memset(timestamp, 0, (size_t)cstr_size(1, timestamp));
     struct timespec ts; 
     timespec_get(&ts, TIME_UTC); 
     strftime(timestamp, sizeof(timestamp), "%a %b %e %T %Y", localtime(&ts.tv_sec));
@@ -69,7 +70,7 @@ FORCE_INLINE const char* create_timestamp() {
 
 FORCE_INLINE int parse_timestamp(char* cstr) {
     int hours = 0, minutes = 0, seconds = 0;
-    const size_t size = cstr_size(1, cstr);
+    const size_t size = (size_t)cstr_size(1, cstr);
     for (size_t i = 0; i < size; i++) {
         if (cstr[i] == ':') {
             hours = cstr[i - 1] + cstr[i - 2] * 3600;
@@ -145,7 +146,7 @@ static void add(int priority, const char* file, int line, const char* desc, ...)
 
     if (ARR_RUNTIME_SIZE == ITEM_SIZE) append_to_table();
     
-    size_t hash = (size_t)(((uintptr_t)(cstr_size(1, file) * 2654435761UL) ^ (uintptr_t)line) % (size_t)ITEM_SIZE);
+    size_t hash = (size_t)(((uintptr_t)((size_t)cstr_size(1, file) * 2654435761UL) ^ (uintptr_t)line) % (size_t)ITEM_SIZE);
     if (arr[hash] == NULL) {
         if (table[hash]) arr = table[hash];
         if (!arr[hash]) arr[hash] = aligned_alloc(alignof(code_fragment_t),   sizeof(code_fragment_t));
@@ -271,14 +272,14 @@ GCC_OPTIMIZE_O0 FORCE_INLINE int initiate_write() {
         return -1;
     }
 
-    char** arr_file = ITEM_SIZE < ALLOC_THRESHOLD ? calloc(ITEM_SIZE, 1) : mmap(NULL, ITEM_SIZE, PROT_WRITE | PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+    char** arr_file = ITEM_SIZE < ALLOC_THRESHOLD ? calloc(ITEM_SIZE, 1) : mmap(NULL, ITEM_SIZE * sizeof(char*), PROT_WRITE | PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
     if (!arr_file) return -2;
 
     char* modified_cstring = "";
     for (int i = 0; i < ITEM_SIZE; i++) {
         code_fragment_t* frag = arr[i] != NULL ? arr[i] : table[i] ? *table[i] : NULL;
         if (frag != NULL) {
-            size_t hash = (size_t)(((uintptr_t)(cstr_size(1, frag->file) * 2654435761UL) ^ (uintptr_t)frag->line) % (size_t)ITEM_SIZE);
+            size_t hash = (size_t)(((uintptr_t)((size_t)cstr_size(1, frag->file) * 2654435761UL) ^ (uintptr_t)frag->line) % (size_t)ITEM_SIZE);
             write_check = check_or_write_cstr(0x01, 0, 0, 1, ANSI_YELLOW "[%d] is less than or equal to: [%d]" ANSI_RESET, cstr_size(1, buffer.get_msg_t_cstr() ), cstr_size(1, ANSI_YELLOW "[%d] is less than or equal to: [%d]" ANSI_RESET));
             if (write_check == 0x0 || write_check == 0x03) { // empty the buffer regardless
                 DBG(buffer.get_msg_t_cstr(), NULL);
@@ -303,7 +304,7 @@ GCC_OPTIMIZE_O0 FORCE_INLINE int initiate_write() {
 
 FORCE_INLINE int_fast8_t write_to_log(FILE *fp, const char** arr_file) {
     int first_entry = 0;
-    char* out = create_cstr(DATA_SIZE * 2);
+    char* out = create_cstr((size_t)DATA_SIZE * 2);
     for (size_t i = 0; i < ITEM_SIZE; i++) {
         if (arr_file[i] != NULL) {
             if (first_entry == 0) {
@@ -325,13 +326,13 @@ FORCE_INLINE int_fast8_t write_to_log(FILE *fp, const char** arr_file) {
 }
 
 FORCE_INLINE code_fragment_t* find(const char* file, const int line) {
-    size_t hash = (size_t)(((uintptr_t)(cstr_size(1, file) * 2654435761UL) ^ (uintptr_t)line) % (size_t)ITEM_SIZE);
+    size_t hash = (size_t)(((uintptr_t)((size_t)cstr_size(1, file) * 2654435761UL) ^ (uintptr_t)line) % (size_t)ITEM_SIZE);
     if (arr[hash]) return (code_fragment_t*)arr[hash];
     return NULL;
 }
 
 FORCE_INLINE void print(const char* file, const int line) {
-    size_t hash = (size_t)(((uintptr_t)(cstr_size(1,  file) * 2654435761UL) ^ (uintptr_t)line) % (size_t)ITEM_SIZE);
+    size_t hash = (size_t)(((uintptr_t)((size_t)cstr_size(1,  file) * 2654435761UL) ^ (uintptr_t)line) % (size_t)ITEM_SIZE);
     if (arr[hash] == NULL) return;
     DBG(NULL, arr[hash]);
     return;
@@ -423,6 +424,6 @@ void dctor_logger() {
             }
         }
     }
-    memset(timestamp, 0, cstr_size(1, timestamp));
+    memset(timestamp, 0, (size_t)cstr_size(1, timestamp));
     return;
 }

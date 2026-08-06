@@ -10,3 +10,6 @@ CMakeFiles
 snapshots
 tests/tests.h
 tests/bench.h
+test_*
+bench_*
+Notes*

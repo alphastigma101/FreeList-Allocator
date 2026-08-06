@@ -16,23 +16,18 @@
 */
 #include "threads.h"
 #include "../logger/buffer.h"
-#include <pthread.h>
 #include <stdalign.h>
 #include <stdarg.h>
-#include <stddef.h>
-#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
 #define __USE_GNU 1
 #include <sys/mman.h>
-
 /*
 #include "threads.h"
 #include "../logger/buffer.h"
 #include <stdalign.h>
 #include <stdarg.h>
-#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
@@ -42,7 +37,7 @@
 
 typedef struct function_t {
     void** args;
-    int size;
+    size_t size;
 } function_t;
 
 
@@ -61,25 +56,19 @@ inline void routine_metadata(threads_t* t, const int length, ...) {
         memset(t->routine, 0, sizeof(function_t));
     }
 
-    if (t->routine->size != length) {
+    if (t->routine->size != (size_t)length) {
         if (t->routine->args) free(t->routine->args);
-        t->routine->args = malloc(length * sizeof(void*));
+        t->routine->args = malloc((size_t)(length) * sizeof(void*));
         if (!t->routine->args) return;
-        t->routine->size = length;
+        t->routine->size = (size_t)length;
     }
-    memset(t->routine->args, 0, length * sizeof(void*));
+    memset(t->routine->args, 0, (size_t)(length) * sizeof(void*));
 
     va_list args;
     va_start(args, length);
     for (int i = 0; i < length; i++) t->routine->args[i] = va_arg(args, void*);
     va_end(args);
 }
-
-inline size_t routine_metadata_size(struct function_t *meta) {
-    if (meta) return meta->size;
-    return -1;
-}
-
 
 /**
  * @brief Creates a shared memory mapping accessible across processes
@@ -94,7 +83,7 @@ inline size_t routine_metadata_size(struct function_t *meta) {
 void* shared_address(void *addr, size_t len, int prot, int flags, int fildes, unsigned char off) {
     off_t offset = (off_t)off * sysconf(_SC_PAGE_SIZE);
     
-    void* result = mmap(addr, len, prot, flags | MAP_SHARED, fildes, offset);
+    void* result = mmap(addr, len, prot, MAP_SHARED | MAP_ANONYMOUS | flags, fildes, offset);
     
     if (result == MAP_FAILED) {
         fprintf(stderr, "shared_address: mmap failed: %s\n", strerror(errno));
@@ -116,7 +105,7 @@ void* shared_address(void *addr, size_t len, int prot, int flags, int fildes, un
 */
 void* private_address(void *addr, size_t len, int prot, int flags, int fildes, unsigned char off) {
     
-    void* result = mmap(addr, len, prot, flags | MAP_PRIVATE | MAP_ANONYMOUS, fildes, off);
+    void* result = mmap(addr, len, prot, MAP_PRIVATE | MAP_ANONYMOUS | flags, fildes, off);
     
     if (result == MAP_FAILED) {
         fprintf(stderr, "private_address: mmap failed: %s\n", strerror(errno));
@@ -179,10 +168,10 @@ size_t __ss = {0}; /* Abbreviated as stack size and is used in create_attrs and 
 [[gnu::hot]]
 threads_t init_threads_t(const unsigned char mode, const unsigned char locked) {
     threads_t t = {0};
-    if (mode == 0x01 && locked == 0x01) {
-        init_attr_t(&t, 0, locked);
-        init_locks_t(&t, 0);
-    }
+    //if (mode == 0x01 && locked == 0x01) {
+        t = init_attr_t(&t, 0, locked);
+        t = init_locks_t(&t, 0);
+    //}
     return t;
 }
 
@@ -261,20 +250,17 @@ FORCE_INLINE threads_t init_attr_t(threads_t* t, const size_t idx, const unsigne
 FORCE_INLINE void init_threads_t_stack(threads_t* tp, const size_t idx) {
     int rc;
     unsigned int page_size = (unsigned int)sysconf(_SC_PAGESIZE);
-    unsigned int base_size = PTHREAD_STACK_MIN * ASAN_STACK_MULTIPLIER;
+    unsigned int base_size = (unsigned int)PTHREAD_STACK_MIN * ASAN_STACK_MULTIPLIER;
     __ss                   = (base_size + page_size - 1) & ~(page_size - 1);
 
-    /* mprotect requires page alignment -- malloc() doesn't guarantee it,
-        * confirmed directly (EINVAL every time otherwise). Reserve one
-        * EXTRA page up front for the guard page, so protecting it doesn't
-        * eat into the usable stack size. */
+    
     size_t total_with_guard = (size_t)__ss + page_size;
     rc = posix_memalign(tp[idx].attr->stackaddr, page_size, total_with_guard);
     if (rc != 0) {
         printf("posix_memalign failed: %s (errno: %d)\n", strerror(rc), rc);
         tp[idx].attr->stackaddr = NULL;
     }
-
+    // TODO: use MAP_GROWSDOWN for architectures that are modern 
     if (tp[idx].attr->stackaddr) {
         /* stacks grow DOWNWARD on x86_64/most architectures, so the
             * guard page goes at the LOW end; the usable stack starts
@@ -297,28 +283,35 @@ FORCE_INLINE void init_threads_t_stack(threads_t* tp, const size_t idx) {
 }
 
 
+
+/**
+    * @description: A Free function that creates a dynamic array of threads based on the arguments during runtime
+    * @param tp: A pointer of type threads_t. If null it will be mmaped based on the `mode`.
+    * @param size: The size of the pool.
+    * @param mode: 0x0 enables shared while 0x01 enables private
+    * @param locked: Enable locks allocation. Default lock that is used is mutex.
+    * @param stack: 0x0 to disable integration of stack with guard for each thread, otherwise 0x01
+*/
 [[gnu::hot]]
-// mode == wanting the pointers to be init as shared or not 
-// locked == wanting to init attr_t and lock_t 
-inline void create_thread_pool(threads_t* tp, const unsigned int size, const unsigned char mode, const unsigned char locked, const unsigned char stack) {
+inline void create_thread_pool(threads_t* tp, const size_t size, const unsigned char mode, const unsigned char locked, const unsigned char stack) {
     if (mode == 0x0 && !tp) tp = shared_address(NULL, size * sizeof(threads_t), PROT_WRITE | PROT_READ, MAP_SHARED | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
     else if (mode == 0x01 && !tp) tp = private_address(NULL, size * sizeof(threads_t), PROT_WRITE | PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0); 
     
     if (!tp) return;
   
-    for (unsigned int i = 0; i < size; i++) {
-        tp[i] = init_attr_t(&tp[i], i, locked);
-        if (locked) tp[i] = init_locks_t(&tp[i], i);
-        create_attrs(&tp[i], i, mode, stack);
+    for (size_t i = 0; i < size; i++) {
+        tp[i] = init_attr_t(tp, i, locked);
+        if (locked) tp[i] = init_locks_t(tp, i);
+        create_attrs(tp, i, locked, stack);
+        tp[i].flag = 0x0;
     }
     return;
 }
 
-inline void update_thread_pool(threads_t *tp, const unsigned int size) {
-    for (unsigned int i = 0; i < size; i++) {
+inline void update_thread_pool(threads_t *tp, const size_t size) {
+    for (size_t i = 0; i < size; i++) {
         if (tp[i].flag == 0x01) {
-            // We are going to need to lock it again, so we can use size - 1 thread variable to accomplish this task
-            join_thread(tp[i], NULL);
+            join_thread(&tp[i], NULL);
             tp[i].flag = 0x0;
         }
     } 
@@ -362,34 +355,35 @@ void create_thread(threads_t* tp, void* func) {
     }
     return;
 }
-
-void join_thread(threads_t t, void** rtn) {
-    t.flag = 0x0;
-    if (t.attr) {
+// TODO: you can create threads without the need of attributes for the thread. So if that is the case, then it will be a stateless thread
+// So we need a function that sets the detacthed state up at runtime 
+void join_thread(threads_t* t, void** rtn) {
+    t->flag = 0x0;
+    if (t->attr) {
         int state; 
-        pthread_attr_getdetachstate(&t.attr->thread_attr, &state);
-        if (state != PTHREAD_CREATE_DETACHED)
-            pthread_join(t.thread_id, (void**)rtn);
+        pthread_attr_getdetachstate(&t->attr->thread_attr, &state);
+        if (state != PTHREAD_CREATE_DETACHED) pthread_join(t->thread_id, rtn);
     }
+    if (t->routine->args) for (size_t i = 0; i < t->routine->size; i++) t->routine->args[i] = NULL;
     return;
 }
 
-threads_t find_thread_t(const threads_t* tp, const unsigned int size) {
-    threads_t temp;
-    memset(&temp, -1, sizeof(threads_t));
+threads_t* find_thread_t(threads_t* tp, const unsigned int size) {
 
     for (unsigned int i = 0; i < size; i++) {
-        if (tp->flag == 0x0) return tp[i];
+        if (tp->flag == 0x0) return &tp[i];
     }
 
-    return temp;
+    return NULL;
 }
 
 void clean_threads(threads_t* t) {
-
+    if (t->flag == 0x01) {
+        printf("Warning: Address of thread_t: [ %p ] has not been joined!\n ", t);
+    }
     if (t->attr) {
         if (t->attr->stackaddr) {
-            unsigned int page_size = (unsigned int)sysconf(_SC_PAGESIZE);
+            size_t page_size = (size_t)sysconf(_SC_PAGESIZE);
             size_t total_with_guard = (size_t)__ss + page_size;
             if (__ss > 0) {
                 mprotect(t->attr->stackaddr, total_with_guard, PROT_READ | PROT_WRITE);
@@ -401,18 +395,25 @@ void clean_threads(threads_t* t) {
 
         pthread_attr_destroy(&t->attr->thread_attr);
         pthread_mutexattr_destroy(&t->attr->mutex_attr);
+        memset(t->attr, 0, sizeof(attr_t));
         free(t->attr);
         t->attr = NULL;
     }
 
     if (t->lock) {
         pthread_mutex_destroy(&t->lock->mutex);
+        memset(t->lock, 0, sizeof(lock_t));
         free(t->lock);
         t->lock = NULL;
     }
 
     if (t->routine) {
-        if (t->routine->args) { free(t->routine->args); t->routine->args = NULL; }
+        if (t->routine->args) { 
+            memset(t->routine->args, 0, t->routine->size * sizeof(void*));
+            free(t->routine->args); 
+            t->routine->args = NULL; 
+        }
+        memset(t->routine, 0, sizeof(function_t));
         free(t->routine);
         t->routine = NULL;
     }

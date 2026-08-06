@@ -51,14 +51,14 @@ inline void init_buffer_t() {
 inline char* append_to_cstr(char* cstrt, char* cstrs, const uint8_t mode) {
     char* res = NULL;
     if (mode == 0x0) {
-        const size_t size = cstr_size(1, cstrt) +  cstr_size(1, cstrs);
+        const size_t size = (size_t)cstr_size(1, cstrt) +  (size_t)cstr_size(1, cstrs);
         res = strcat(cstrt, cstrs);
         res[size - 1] = '\0'; 
         return res;
     }
     else if (mode == 0x01 || mode == 0x02) {
-        const size_t a = cstr_size(2, "\",\n\t\t\"", mode == 0x01 ? cstrt : cstrs);
-        const size_t b = cstr_size(1, mode == 0x01 ? cstrs : cstrt);
+        const size_t a = (size_t)cstr_size(2, "\",\n\t\t\"", mode == 0x01 ? cstrt : cstrs);
+        const size_t b = (size_t)cstr_size(1, mode == 0x01 ? cstrs : cstrt);
         if (b < a + b) res = resize_cstr(mode == 0x01 ? cstrs : cstrt, b, a);
         res = strcat(res, "\",\n\t\t\"");
         res = strcat(res, mode == 0x01 ? cstrt : cstrs);
@@ -70,7 +70,7 @@ inline char* append_to_cstr(char* cstrt, char* cstrs, const uint8_t mode) {
 [[gnu::hot]]
 FORCE_INLINE char* resize_cstr(char* cstr, const size_t target_size, const size_t src_size) {
     const size_t total = src_size + target_size;
-    const size_t old_len = cstr_size(1, cstr);
+    const size_t old_len = (size_t)cstr_size(1, cstr);
     char* res = NULL;
     res = total < ALLOC_THRESHOLD ? calloc(total, 1) : mmap(NULL, total, PROT_READ | PROT_WRITE,
                    MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
@@ -230,10 +230,10 @@ FORCE_INLINE int_fast8_t buffer_t_resize(const size_t size, uint8_t mode) {
 inline char* create_cstr(size_t size) { return size < ALLOC_THRESHOLD ? calloc(size, 1) : mmap(NULL, size, PROT_WRITE | PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0); }
 
 [[gnu::hot]]
-inline int cstr_size(const int length, ...) { 
+inline size_t cstr_size(const int length, ...) { 
     va_list args;
     va_start(args, length);
-    int size = 0;
+    size_t size = 0;
     for (int i = 0; i < length && length > 0; i++) { 
         const char* val = va_arg(args, const char *);
         if (val) size += strlen(val) + 1; // + 1 for the null terminator 
@@ -273,20 +273,20 @@ inline int_fast8_t check_or_write_cstr(const uint8_t mode, const size_t c1, cons
             size_t res;
             if (msg.str || dir.str) {
                 int_fast8_t check = 0;
-                const size_t size = vsnprintf(NULL, 0, fmt, args_copy) + 1;
+                const size_t size = (size_t)vsnprintf(NULL, 0, fmt, args_copy) + 1;
                 va_end(args_copy);
                 if (mode == 0x01 && size > msg.size) check = buffer_t_resize(size, 0x01);
                 else if (mode == 0x0 && size > dir.size) check = buffer_t_resize(size, 0x0);
                 check = mode == 0x01 && (msg.size >= size) ? 0x01 : mode == 0x0 && (dir.size >= size) ? 0x01 : 0x0; 
-                res = check == 0x01 ? vsnprintf(mode == 0x01 ? msg.str : dir.str, mode == 0x01 ? msg.size : dir.size, fmt, args) : -1;
+                res = check == 0x01 ? (size_t)vsnprintf(mode == 0x01 ? msg.str : dir.str, mode == 0x01 ? msg.size : dir.size, fmt, args) : SIZE_MAX;
                 va_end(args);
                 return (res + 1) == size ? 0x01 : 0x0;
             }
             else {
-                const size_t size = vsnprintf(NULL, 0, fmt, args_copy) + 1;
+                const size_t size = (size_t)vsnprintf(NULL, 0, fmt, args_copy) + 1;
                 va_end(args_copy);
                 mode == 0x01 ? create_buffer_t_msg(size) : create_buffer_t_dir(size);
-                res = vsnprintf(mode == 0x01 ? msg.str : dir.str,
+                res = (size_t)vsnprintf(mode == 0x01 ? msg.str : dir.str,
                                 mode == 0x01 ? msg.size : dir.size,
                                 fmt, args);
                 va_end(args);
@@ -347,7 +347,7 @@ inline void reset_and_free_cstr(const int length, ...) {
     for (int i = 0; i < length && length > 0; i++) {
         uint8_t* val = va_arg(args, uint8_t*);
         if (val) {
-            memset(val, 0, cstr_size(1, val));
+            memset(val, 0, (size_t)cstr_size(1, val));
             free(val);
         }
     }
@@ -362,7 +362,7 @@ inline void unmap_cstr(const int length, ...) {
     for (int i = 0; i < length && length > 0; i++) {
         char* val = va_arg(args, char*);
         if (val) {
-            if (munmap(val, cstr_size(1, val) != -1)) continue;
+            if (munmap(val, cstr_size(1, val)) != -1) continue;
             else break;
         }
     }
@@ -380,7 +380,7 @@ inline void unmap_cstr(const int length, ...) {
 inline char* format_target_cstr(const char* fmt, va_list args) {
     va_list copy;
     va_copy(copy, args);
-    size_t size = vsnprintf(NULL, 0, fmt, copy) + 1;
+    size_t size = (size_t)vsnprintf(NULL, 0, fmt, copy) + 1;
     va_end(copy);
 
     char* res = size < ALLOC_THRESHOLD ? calloc(size, 1) : mmap(NULL, size, PROT_READ | PROT_WRITE,

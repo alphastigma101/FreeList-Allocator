@@ -1,5 +1,7 @@
 #include "../tests/tests.h"
 #include <limits.h>
+#include <stddef.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <stdalign.h> // Development
 #include <string.h>
@@ -9,7 +11,6 @@
 
 /*
 #include "../tests/tests.h"
-#include <limits.h>
 #include <stdlib.h>
 #include <stdalign.h> // Development
 #include <string.h>
@@ -39,8 +40,8 @@ static void* traversal(struct function_t* meta) {
     if (!args) pthread_exit(NULL);
 
     char* _str = (char*)args[0];
-    pthread_mutex_t* mutex = (pthread_mutex_t*)args[3];
-    size_t* pos = (size_t*)args[4];
+    pthread_mutex_t* mutex = (pthread_mutex_t*)args[1];
+    size_t* pos = (size_t*)args[2];
     size_t total_len = strlen(_str);
 
     while (1) {
@@ -120,7 +121,7 @@ TEST(LockThreadPool, NumericValue) {
     EXPECT_EQ(main_value, 1000);
     EXPECT_EQ(*i, 1002);
     munmap_address(i, sizeof(int));
-    join_thread(threads[0], NULL);
+    join_thread(&threads[0], NULL);
 }
 
 TEST(LockThreadPool, StringTraversal) {
@@ -135,15 +136,9 @@ TEST(LockThreadPool, StringTraversal) {
 
     size_t one_pos = 0, two_pos = 0;
 
-    atomic_uchar t1, t2;
-    atomic_int size;
-    atomic_store(&t1, 0x01);
-    atomic_store(&t2, 0x02);
-    atomic_store(&size, 3);
-
-    routine_metadata(&threads[1], 5, one, &size, &t1, &threads[1].lock->mutex, &one_pos);
+    routine_metadata(&threads[1], 3, one, &threads[1].lock->mutex, &one_pos);
     create_thread(&threads[1], thread_arguments);
-    routine_metadata( &threads[2], 5, two, &size, &t2, &threads[2].lock->mutex, &two_pos);
+    routine_metadata( &threads[2], 3, two, &threads[2].lock->mutex, &two_pos);
     create_thread(&threads[2], thread_arguments);
 
     float esc = 0.0;
@@ -172,7 +167,7 @@ TEST(LockThreadPool, StringTraversal) {
     }
 
     for (int i = 1; i < 3; i++) {
-        join_thread(threads[i], NULL);
+        join_thread(&threads[i], NULL);
     }
 
     munmap_address(one, len1 + 1);
@@ -236,12 +231,14 @@ TEST(LockFreeThreadPool, StringTraversal) {
         res = t1_res + t2_res;
     }
 
-    for (int i = 0; i < 4; i++ ) clean_threads(&threads[i]);
+    for (int i = 0; i < 2; i++ ) join_thread(&threads[i], NULL);
 }
 
 
 TEST(Thread, Clean) {
-    for (int i = 0; i < 4; i++ ) clean_threads(&threads[i]);
+    for (int i = 0; i < 4; i++) clean_threads(&threads[i]);
+    free(threads);
+    threads = NULL;
 }
 
 
