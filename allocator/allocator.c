@@ -1,10 +1,5 @@
 #include "allocator.h"
-#include <pthread.h>
 #include <stdalign.h>
-#include <stdatomic.h>
-#include <stddef.h>
-#include <stdio.h>
-#include <sys/mman.h>
 #include <sys/sysinfo.h>
 #include <string.h>
 #include <stdlib.h>
@@ -59,9 +54,10 @@ FORCE_INLINE entry_table_t* entry_table_init(entry_table_t* table) {
     table->entries = ENABLE_SHARED_MEMORY == 1 ? shared_address(NULL, 64 * sizeof(byte_entries_t*), PROT_WRITE | PROT_READ, MAP_NORESERVE, -1, 0) :
     private_address(NULL, 64 * sizeof(byte_entries_t*), PROT_WRITE | PROT_READ, MAP_NORESERVE, -1, 0);
     if (table->entries == MAP_FAILED) {
-        free(table);
-        table = NULL;
+        memset(table, 0, sizeof(entry_table_t));
+        free(table->entries);
         table->entries = NULL;
+        table = NULL;
         return NULL;
     }
     else {
@@ -159,7 +155,7 @@ FORCE_INLINE void set(entry_table_t* table, const size_t idx, const size_t offse
 
 FORCE_INLINE byte_entries_t* get_entry_t_by_bytes(entry_table_t* table, const size_t idx, const size_t bytes, const unsigned char inuse) {
     if (!table || !table->entries) return NULL;
-    else if (idx > table->bucket_count) return NULL; 
+    else if (idx >= table->bucket_count) return NULL; 
     
     byte_entries_t* n = NULL;
     if (table->entries) n = table->entries[idx];
@@ -175,7 +171,7 @@ FORCE_INLINE byte_entries_t* get_entry_t_by_bytes(entry_table_t* table, const si
 
 FORCE_INLINE offset_entries_t* get_entry_t_by_offset(entry_table_t* table, const size_t idx, const size_t offset, const unsigned char inuse) {
     if (!table || !table->entries) return NULL;
-    else if (idx > table->bucket_count) return NULL;
+    else if (idx >= table->bucket_count) return NULL;
     
     byte_entries_t* bnode = NULL;
     if (table->entries) bnode = table->entries[idx];
@@ -200,7 +196,7 @@ FORCE_INLINE offset_entries_t* get_entry_t_by_offset(entry_table_t* table, const
 FORCE_INLINE void update(entry_table_t* table, const size_t idx, const size_t offset, const size_t bytes, const unsigned char inuse) {
     if (!table || !table->entries) return;
     else if ((offset == 0) && (bytes == 0)) return;
-    else if (idx > table->bucket_count) return;
+    else if (idx >= table->bucket_count) return;
 
     byte_entries_t* bnode = table->entries[idx];
     while (bnode) {
@@ -289,7 +285,7 @@ FORCE_INLINE void table_free_pages(entry_table_t* table) {
 
 FORCE_INLINE void debug_entry_table_t(const unsigned char mode, entry_table_t* table, const size_t idx) {
     if (!table || !table->entries) return;
-    else if (idx > table->bucket_count) return;
+    else if (idx >= table->bucket_count) return;
     
     if (mode == 0x0) {
         byte_entries_t* bn = table->entries[idx];
@@ -521,7 +517,7 @@ typedef struct huge_slot_t {
     size_t         capacity; /* Represents the amount of memory it can hold */
     size_t         space;   /* capacity >= space otherwise slot is full */
 } huge_slot_t;
-FORCE_INLINE void* coalescing(const size_t bytes); /* Not apart of bucket section. Used for forward declaration to integrate into bucket functions */
+FORCE_INLINE void* coalescing(const size_t bytes); /* Defined in Allocator Section */
 FORCE_INLINE size_t find_bucket_index(bucket_t* slot);
 
 
@@ -675,6 +671,7 @@ FORCE_INLINE void push_to_bucket(bucket_t* slot, size_t offset) {
     offset_entries_t* onode = get_entry_t_by_offset(&slot->blocks.table, idx, offset, 0x01);
     if (!onode) return;
     update(&slot->blocks.table, idx, offset, onode->bytes->bytes, 0x0);
+
     return;
 }
 
@@ -719,7 +716,8 @@ FORCE_INLINE void bucket_t_dctor() {
     while (small < BUCKET_SMALL_CAP) {
         arena_t* arena = allocator.bucket.small[small].arena;
         bucket_t slot = allocator.bucket.small[small];
-        if (slot.blocks.table.entries) clean(&slot.blocks.table);
+        entry_table_t table = atomic_load_explicit(&slot.blocks.table, memory_order_relaxed);
+        if (table.entries) clean(&table);
         if (arena) {
             if (arena->chunk) munmap_address(arena->chunk, ARENA_SIZE + 1);
             munmap_address(arena, sizeof(arena_t));
@@ -732,7 +730,8 @@ FORCE_INLINE void bucket_t_dctor() {
     while (medium < BUCKET_MEDIUM_CAP) {
         //arena_t* arena = allocator.bucket.medium[medium].arena;
         bucket_t slot = allocator.bucket.medium[medium];
-        if (slot.blocks.table.entries) clean(&slot.blocks.table);
+        entry_table_t table = atomic_load_explicit(&slot.blocks.table, memory_order_relaxed);
+        if (table.entries) clean(&table);
         /*if (arena != NULL) {
             if (arena->chunk) munmap_address(arena->chunk, ARENA_SIZE + 1);
             munmap_address(arena, sizeof(arena_t));
@@ -745,7 +744,8 @@ FORCE_INLINE void bucket_t_dctor() {
     while (large < BUCKET_LARGE_CAP) {
         arena_t* arena = allocator.bucket.large[large].arena;
         bucket_t slot = allocator.bucket.large[large];
-        if (slot.blocks.table.entries) clean(&slot.blocks.table);
+        entry_table_t table = atomic_load_explicit(&slot.blocks.table, memory_order_relaxed);
+        if (table.entries) clean(&table);
         if (arena) {
             if (arena->chunk) munmap_address(arena->chunk, ARENA_SIZE + 1);
             munmap_address(arena, sizeof(arena_t));
@@ -774,7 +774,7 @@ FORCE_INLINE void __rewind(bucket_t* slot) {
     }
     if (!bnode) {
         clear_arena_t(slot->arena);
-        //table_free_pages(&slot->blocks.table);
+        table_free_pages(&slot->blocks.table);
     }
 }
 
@@ -796,10 +796,41 @@ FORCE_INLINE void* thread_update(struct function_t* meta) {
     const size_t bytes = *(size_t*)args[3];
     const unsigned char inuse = *(unsigned char*)args[4];
     atomic_size_t* done = (atomic_size_t*)args[5];
+    threads_t* select = (threads_t*)args[6];
     
     update(table, idx, offset, bytes, inuse);
 
+    thread_t_routine_untag(&select->routine);
+    const size_t pool_idx = thread_pool_index(allocator.pool, select);
+    if (pool_idx != SIZE_MAX) {
+        struct function_t* res = atomic_load_explicit(&select->routine, memory_order_relaxed);
+        struct function_t* expected = atomic_load_explicit(&allocator.pool[pool_idx].routine, memory_order_relaxed);
+        atomic_compare_exchange_strong_explicit(&allocator.pool[pool_idx].routine, &expected, res,
+                                             memory_order_acq_rel, memory_order_relaxed);
+    }
     atomic_store_explicit(done, 1, memory_order_release);
+    pthread_exit(NULL);
+}
+
+FORCE_INLINE void* thread_destroy(struct function_t* meta) {
+    void** args = routine_metadata_arguments(meta);
+    if (!args) pthread_exit(NULL);
+    
+    //_Atomic(entry_table_t)* table = (_Atomic(entry_table_t)*)args[0];
+    //const size_t idx = *(size_t*)args[1];
+    //const size_t offset = *(size_t*)args[2];
+    //const size_t bytes = *(size_t*)args[3];
+    threads_t* select = (threads_t*)args[4];
+    
+    //destroy(table, idx, offset, bytes);
+    thread_t_routine_untag(&select->routine);
+    const size_t pool_idx = thread_pool_index(allocator.pool, select);
+    if (pool_idx != SIZE_MAX) {
+        struct function_t* res = atomic_load_explicit(&select->routine, memory_order_relaxed);
+        struct function_t* expected = atomic_load_explicit(&allocator.pool[pool_idx].routine, memory_order_relaxed);
+        atomic_compare_exchange_strong_explicit(&allocator.pool[pool_idx].routine, &expected, res,
+                                             memory_order_acq_rel, memory_order_relaxed);
+    }
     pthread_exit(NULL);
 }
 
@@ -808,20 +839,39 @@ FORCE_INLINE void* thread_update_thread_pool(struct function_t* meta) {
     if (!args) pthread_exit(NULL);
     
     atomic_size_t* done = (atomic_size_t*)args[0];
+    threads_t* select = (threads_t*)args[1];
+
     update_thread_pool(allocator.pool, ALLOC_THREAD_POOL_SIZE);
+    thread_t_routine_untag(&select->routine);
+    const size_t pool_idx = thread_pool_index(allocator.pool, select);
+    if (pool_idx != SIZE_MAX) {
+        struct function_t* res = atomic_load_explicit(&select->routine, memory_order_relaxed);
+        struct function_t* expected = atomic_load_explicit(&allocator.pool[pool_idx].routine, memory_order_relaxed);
+        atomic_compare_exchange_strong_explicit(&allocator.pool[pool_idx].routine, &expected, res,
+                                             memory_order_acq_rel, memory_order_relaxed);
+    }
     atomic_store_explicit(done, 1, memory_order_release);
-    
     pthread_exit(NULL);
 }
 
-FORCE_INLINE void* thread_create_thread_pool(struct function_t* meta) {
+FORCE_INLINE void* thread_create_thread_pool_range(struct function_t* meta) {
     void** args = routine_metadata_arguments(meta);
     if (!args) pthread_exit(NULL);
     
-    unsigned char mode = *(unsigned char*)args[0], locked = *(unsigned char*)args[1], stack = *(unsigned char*)args[2];
-    atomic_size_t* done = (atomic_size_t*)args[3];
+    unsigned char mode = *(unsigned char*)args[0], attr = *(unsigned char*)args[1], locked = *(unsigned char*)args[2], stack = *(unsigned char*)args[3];
+    size_t start = *(size_t*)args[4], end = *(size_t*)args[5];
+    atomic_size_t* done = (atomic_size_t*)args[6];
+    threads_t* select = (threads_t*)args[7];
     
-    create_thread_pool(allocator.pool, ALLOC_THREAD_POOL_SIZE, mode, locked, stack);
+    create_thread_pool_range(allocator.pool, mode, attr, locked, stack, start, end);
+    thread_t_routine_untag(&select->routine);
+    const size_t pool_idx = thread_pool_index(allocator.pool, select);
+    if (pool_idx != SIZE_MAX) {
+        struct function_t* res = atomic_load_explicit(&select->routine, memory_order_relaxed);
+        struct function_t* expected = atomic_load_explicit(&allocator.pool[pool_idx].routine, memory_order_relaxed);
+        atomic_compare_exchange_strong_explicit(&allocator.pool[pool_idx].routine, &expected, res,
+                                             memory_order_acq_rel, memory_order_relaxed);
+    }
     atomic_store_explicit(done, 1, memory_order_release);
     pthread_exit(NULL);
 }
@@ -835,8 +885,17 @@ FORCE_INLINE void* thread_update_block_t_by_offset(struct function_t* meta) {
     const size_t offset = *(size_t*)args[2];
     unsigned char inuse = *(unsigned char*)args[3];
     atomic_size_t* done = (atomic_size_t*)args[4];
+    threads_t* select = (threads_t*)args[5];
 
     update_block_t_by_offset(blocks, index, offset, inuse);
+    thread_t_routine_untag(&select->routine);
+    const size_t pool_idx = thread_pool_index(allocator.pool, select);
+    if (pool_idx != SIZE_MAX) {
+        struct function_t* res = atomic_load_explicit(&select->routine, memory_order_relaxed);
+        struct function_t* expected = atomic_load_explicit(&allocator.pool[pool_idx].routine, memory_order_relaxed);
+        atomic_compare_exchange_strong_explicit(&allocator.pool[pool_idx].routine, &expected, res,
+                                             memory_order_acq_rel, memory_order_relaxed);
+    }
     atomic_store_explicit(done, 1, memory_order_release);
     pthread_exit(NULL);
 }
@@ -847,11 +906,19 @@ FORCE_INLINE void* thread_rewind(struct function_t* meta) {
     
     bucket_t* slot = (bucket_t*)args[0];
     atomic_size_t* done = (atomic_size_t*)args[1];
+    threads_t* select = (threads_t*)args[2];
     
     __rewind(slot);
+    thread_t_routine_untag(&select->routine);
+    const size_t pool_idx = thread_pool_index(allocator.pool, select);
+    if (pool_idx != SIZE_MAX) {
+        struct function_t* res = atomic_load_explicit(&select->routine, memory_order_relaxed);
+        struct function_t* expected = atomic_load_explicit(&allocator.pool[pool_idx].routine, memory_order_relaxed);
+        atomic_compare_exchange_strong_explicit(&allocator.pool[pool_idx].routine, &expected, res,
+                                             memory_order_acq_rel, memory_order_relaxed);
+    }
     atomic_store_explicit(done, 1, memory_order_release);
-    
-   pthread_exit(NULL);
+    pthread_exit(NULL);
 }
 
 FORCE_INLINE void* thread_ensure_capacity(struct function_t* meta) {
@@ -861,6 +928,7 @@ FORCE_INLINE void* thread_ensure_capacity(struct function_t* meta) {
     atomic_size_t* cap = (atomic_size_t*)args[1];
     char* region = (char*)args[2];
     atomic_size_t* done = (atomic_size_t*)args[3];
+    threads_t* select = (threads_t*)args[4];
 
     size_t end = atomic_load_explicit(cap, memory_order_acquire);
     size_t new_end = end;
@@ -870,6 +938,14 @@ FORCE_INLINE void* thread_ensure_capacity(struct function_t* meta) {
         if (atomic_compare_exchange_strong(cap, &end, new_end)) region = remap_address(region, end, new_end);
     }
 
+    thread_t_routine_untag(&select->routine);
+    const size_t pool_idx = thread_pool_index(allocator.pool, select);
+    if (pool_idx != SIZE_MAX) {
+        struct function_t* res = atomic_load_explicit(&select->routine, memory_order_relaxed);
+        struct function_t* expected = atomic_load_explicit(&allocator.pool[pool_idx].routine, memory_order_relaxed);
+        atomic_compare_exchange_strong_explicit(&allocator.pool[pool_idx].routine, &expected, res,
+                                             memory_order_acq_rel, memory_order_relaxed);
+    }
     atomic_store_explicit(done, 1, memory_order_release);
     pthread_exit(NULL);
 }
@@ -877,10 +953,21 @@ FORCE_INLINE void* thread_ensure_capacity(struct function_t* meta) {
 FORCE_INLINE void* thread_allocator_huge_update_slots(struct function_t* meta) {
     void** args = routine_metadata_arguments(meta);
     if (!args) pthread_exit(NULL);
+    
     size_t begin = *(size_t*)args[0];
     size_t end   = *(size_t*)args[1];
     atomic_size_t* done = (atomic_size_t*)args[2];
+    threads_t* select = (threads_t*)args[3];
+
     allocator_huge_update_slots(begin, end);
+    thread_t_routine_untag(&select->routine);
+    const size_t pool_idx = thread_pool_index(allocator.pool, select);
+    if (pool_idx != SIZE_MAX) {
+        struct function_t* res = atomic_load_explicit(&select->routine, memory_order_relaxed);
+        struct function_t* expected = atomic_load_explicit(&allocator.pool[pool_idx].routine, memory_order_relaxed);
+        atomic_compare_exchange_strong_explicit(&allocator.pool[pool_idx].routine, &expected, res,
+                                             memory_order_acq_rel, memory_order_relaxed);
+    }
     atomic_store_explicit(done, 1, memory_order_release);
     pthread_exit(NULL);
 }
@@ -1050,11 +1137,11 @@ FORCE_INLINE void allocator_init_threads_t(void) {
         if (res == -1) return;
     #endif
 
-    unsigned char mode = 0x0, locked = 0x0, stack = 0x0;
-    allocator.pool[0] = init_threads_t(0x0, 0x0); /* TODO: Allocated from stack so it is not syncing properlly with the heap. */
-    // Therefore the threads.c functions need to be updated to use memcpy or something
-    routine_metadata(&allocator.pool[0], 4, &mode, &locked, &stack, &allocator.huge->done);
-    create_thread(&allocator.pool[0], thread_create_thread_pool);
+    const unsigned char mode = 0x0, attr = 0x01, locked = 0x0, stack = 0x0;
+    const size_t start = 1, end = ALLOC_THREAD_POOL_SIZE;
+    allocator.pool[0] = init_threads_t(mode, attr, locked, stack);
+    routine_metadata(&allocator.pool[0], 8, &mode, &attr, &locked, &stack, &start, &end, &allocator.huge->done, &allocator.pool[0]);
+    create_thread(&allocator.pool[0], thread_create_thread_pool_range);
 }
 
 FORCE_INLINE void allocator_resize_bitmap(bitmap_t* bitmap, const size_t new_size) {
@@ -1088,10 +1175,10 @@ FORCE_INLINE void* allocator_byte_request(size_t bytes) {
     threads_t* t1 = find_thread_t(allocator.pool, ALLOC_THREAD_POOL_SIZE);
     if (!t1) return NULL;
 
-    routine_metadata(t1, 4, &bytes, &allocator.huge->allocator_cap, allocator.huge->region, &allocator.huge->done);
+    routine_metadata(t1, 5, &bytes, &allocator.huge->allocator_cap, allocator.huge->region, &allocator.huge->done, &t1);
     create_thread(t1,  thread_ensure_capacity);
     
-    while (!atomic_load_explicit(&allocator.huge->done, memory_order_acquire));
+    while (!atomic_load_explicit(&allocator.huge->done, memory_order_acquire)){};
     atomic_store_explicit(&allocator.huge->done, 0, memory_order_release);
 
     const size_t size = atomic_load_explicit(&allocator.huge->allocator_cap, memory_order_relaxed);
@@ -1201,7 +1288,7 @@ FORCE_INLINE void debug_allocator(const size_t bytes) {
     for (unsigned int i = 0; i < ALLOC_THREAD_POOL_SIZE; i++) {
         printf("Information for thread [ %d ]\n", i);
         debug_threads(allocator.pool[i]);
-    } 
+    }
 }
 
 /**
@@ -1217,12 +1304,13 @@ void* allocate(size_t bytes) {
     int_fast16_t end = 0;
     bucket_t* slot = NULL;
     
-    while(!atomic_load_explicit(&allocator.huge->done, memory_order_acquire)){}    
-    threads_t* t0 = find_thread_t(allocator.pool, ALLOC_THREAD_POOL_SIZE);
-    if (t0) {
+    while(!atomic_load_explicit(&allocator.huge->done, memory_order_acquire)){};
+        
+    threads_t* t1 = find_thread_t(allocator.pool, ALLOC_THREAD_POOL_SIZE);
+    if (t1) {
         atomic_store_explicit(&allocator.huge->done, 0, memory_order_release);
-        routine_metadata(t0, 1, &allocator.huge->done);
-        create_thread(t0, thread_update_thread_pool);    
+        routine_metadata(t1, 2, &allocator.huge->done, &t1);
+        create_thread(t1, thread_update_thread_pool);    
     }
 
     if (bytes <= BUCKET_LARGE_CAP) slot = find_free_slot(bytes);
@@ -1302,16 +1390,24 @@ FORCE_INLINE void deallocate(void* ptr) {
         size_t offset = p - (uintptr_t)allocator.huge->region;
 
         if (idx > allocator.huge->slot_cap) return;
-        entry_table_t* table =  &allocator.huge->slots[idx].blocks.table;
-        offset_entries_t* onode = get_entry_t_by_offset(table, idx, offset, 0x01);
+        offset_entries_t* onode = get_entry_t_by_offset(&allocator.huge->slots[idx].blocks.table, idx, offset, 0x01);
         if (!onode) return;
         else if (allocator.huge->slots[idx].space > (onode->offset + onode->bytes->bytes)) {
             allocator.huge->slots[idx].space -= (onode->offset + onode->bytes->bytes);
+            entry_table_t* table =  &allocator.huge->slots[idx].blocks.table;
             if (table->entries[idx] && table->entries[idx]->next == NULL) {
                 allocator.huge->slots[idx].space = 0;
-                destroy(table, idx, onode->offset, onode->bytes->bytes);
+                destroy(&allocator.huge->slots[idx].blocks.table, idx, onode->offset, onode->bytes->bytes);
                 table_free_pages(table);
-            } else update(&allocator.huge->slots[idx].blocks.table, idx, onode->offset, onode->bytes->bytes, 0x0);
+            } else {
+                threads_t* t1 = find_thread_t(allocator.pool, ALLOC_THREAD_POOL_SIZE);
+                if (!t1) update(&allocator.huge->slots[idx].blocks.table, idx, onode->offset, onode->bytes->bytes, 0x0);
+                else {
+                    unsigned char inuse = 0x0;
+                    routine_metadata(t1, 7, &allocator.huge->slots[idx].blocks.table, &idx, &onode->offset, &onode->bytes->bytes, &inuse, &allocator.huge->done, &t1);
+                    create_thread(t1, thread_update);
+                }
+            }
         } else debug_entry_table_t(0x0, &allocator.huge->slots[idx].blocks.table, idx);
         return;
     }
@@ -1341,11 +1437,14 @@ FORCE_INLINE void deallocate(void* ptr) {
         const size_t bytes = offset_entry->bytes->bytes;
         push_to_bucket(slot, offset);
         if (slot->arena && slot->arena->chunk) memset(ptr, 0xFF, bytes);
-        
+
+        while(!atomic_load_explicit(&allocator.huge->done, memory_order_acquire)){}
         threads_t* t1 = find_thread_t(allocator.pool, ALLOC_THREAD_POOL_SIZE);
+        
         if (!t1) __rewind(slot);
         else {
-            routine_metadata(t1, 2, slot, &allocator.huge->done);
+            atomic_store_explicit(&allocator.huge->done, 0, memory_order_release);
+            routine_metadata(t1, 3, slot, &allocator.huge->done, &t1);
             create_thread(t1, thread_rewind);
         }
     } else {
@@ -1353,7 +1452,7 @@ FORCE_INLINE void deallocate(void* ptr) {
         threads_t* t1 = find_thread_t(allocator.pool, ALLOC_THREAD_POOL_SIZE);
         if (!t1) update_block_t_by_offset(&slot->blocks, index, offset, 0x01);
         else {
-            routine_metadata(t1, 5, &slot->blocks, &index, &offset, &inuse, &allocator.huge->done);
+            routine_metadata(t1, 6, &slot->blocks, &index, &offset, &inuse, &allocator.huge->done, &t1);
             create_thread(t1, thread_update_block_t_by_offset);
         }
     }
@@ -1500,7 +1599,7 @@ FORCE_INLINE void init_huge_allocator(void) {
     if (!t1) allocator_huge_update_slots(0, MAX_HUGE_SLOTS);
     else {
         size_t begin = 0, end = MAX_HUGE_SLOTS;
-        routine_metadata(t1, 3, &begin, &end, &allocator.huge->done);
+        routine_metadata(t1, 4, &begin, &end, &allocator.huge->done, &t1);
         create_thread(t1, thread_allocator_huge_update_slots);
     }
     allocator.huge->slot_cap = (size_t)MAX_HUGE_SLOTS * sizeof(huge_slot_t);
@@ -1509,8 +1608,10 @@ FORCE_INLINE void init_huge_allocator(void) {
 [[gnu::cold]]
 [[gnu::destructor]]
 FORCE_INLINE void allocator_dctor() {
-    for (unsigned int i = 0;  i < ALLOC_THREAD_POOL_SIZE; i++) clean_threads(&allocator.pool[i]);
+    for (size_t i = 0;  i < ALLOC_THREAD_POOL_SIZE; i++) clean_threads(&allocator.pool[i]);
     munmap_address(allocator.pool, ALLOC_THREAD_POOL_SIZE * sizeof(threads_t));
+    allocator.pool = NULL;
+
     bucket_t_dctor();
     if (allocator.arena) {
         //if (allocator.arena->chunk) munmap_address(allocator.arena->chunk, ARENA_SIZE);

@@ -1,77 +1,99 @@
 #ifndef STRUCTURES_H
 #define STRUCTURES_H
 
-#include <stdint.h>
-#include <stdlib.h>
-#include <pthread.h>
-#include <stdatomic.h>
+
+#include "../../threads/threads.h"
+#include <string.h>
 
 /* ============================================================================
  * QUEUE (Thread-Safe FIFO)
  * ============================================================================ */
 
 typedef struct queue_node_t {
-    void* data;
-    struct queue_node_t* next;
+    _Atomic(void*) data;
+    _Atomic(struct queue_node_t*) next;
 } queue_node_t;
 
 typedef struct queue_t {
-    queue_node_t* head;
-    queue_node_t* tail;
-    pthread_mutex_t lock;
+    _Atomic(queue_node_t*) head;
+    _Atomic(queue_node_t*) tail;
+    threads_t*    pool;
     _Atomic size_t size;
 } queue_t;
 
 // Queue operations
-#define QUEUE_INIT(q) do { \
-    (q)->head = NULL; \
-    (q)->tail = NULL; \
-    pthread_mutex_init(&(q)->lock, NULL); \
-    atomic_init(&(q)->size, 0); \
+#define QUEUE_INIT(q, _mode, _attr, _locked, _stack, _size) do { \
+    __typeof__(queue_t *) _qi = (q); \
+    if (!_qi) _qi = shared_address(_qi, sizeof(queue_t), PROT_READ | PROT_WRITE, MAP_NORESERVE, -1, 0); \
+    if (_qi) { \
+        memset(_qi, 0, sizeof(queue_t)); \
+        _qi->head = NULL; \
+        _qi->tail = NULL; \
+        create_thread_pool(_qi->pool, _size, _mode, _attr, _locked, _stack); \
+        atomic_init(&_qi->size, 0); \
+    } \
 } while(0)
 
-#define QUEUE_ENQUEUE(q, item) do { \
-    queue_node_t* node = malloc(sizeof(queue_node_t)); \
-    node->data = (item); \
-    node->next = NULL; \
-    pthread_mutex_lock(&(q)->lock); \
-    if ((q)->tail) (q)->tail->next = node; \
-    else (q)->head = node; \
-    (q)->tail = node; \
-    atomic_fetch_add(&(q)->size, 1); \
-    pthread_mutex_unlock(&(q)->lock); \
+#define QUEUE_ENQUEUE(q, item, type) do { \
+    __typeof__(queue_t *) _qe = (q); \
+    if (_qe) { \
+        queue_node_t* node = shared_address(NULL, sizeof(queue_node_t), PROT_READ | PROT_WRITE, MAP_NORESERVE, -1, 0); \
+        if (node) { \
+            memset(node, 0, sizeof(queue_node_t)); \
+            atomic_store_explicit(&node->data, (item), memory_order_relaxed); \
+            node->next = NULL; \
+            if (atomic_load_explicit(&_qe->tail, memory_order_relaxed) != NULL) atomic_store_explicit(&_qe->tail->next, node, memory_order_relaxed); \
+            else atomic_store_explicit(&_qe->head, node, memory_order_relaxed); \
+            atomic_store_explicit(&_qe->tail, node, memory_order_relaxed); \
+            atomic_fetch_add_explicit(&_qe->size, 1, memory_order_relaxed); \
+        } \
+    } \
 } while(0)
 
 #define QUEUE_DEQUEUE(q, result) do { \
-    pthread_mutex_lock(&(q)->lock); \
-    if ((q)->head) { \
-        queue_node_t* node = (q)->head; \
-        (result) = node->data; \
-        (q)->head = node->next; \
-        if (!(q)->head) (q)->tail = NULL; \
-        free(node); \
-        atomic_fetch_sub(&(q)->size, 1); \
-    } else { \
-        (result) = NULL; \
+    __typeof__(queue_t *) _qd = (q); \
+    if (_qd) { \
+        if (atomic_load_explicit(&_qd->head, memory_order_relaxed) != NULL) { \
+            queue_node_t* node = atomic_load_explicit(&_qd->head, memory_order_relaxed); \
+            (result) = atomic_load_explicit(&node->data, memory_order_relaxed);  \
+            atomic_store_explicit(&_qd->head, node->next, memory_order_relaxed); \
+            if (!atomic_load_explicit(&_qd->head, memory_order_relaxed)) _qd->tail = NULL; \
+            if (node) munmap_address(node, sizeof(queue_node_t)); \
+            node = NULL; \
+            atomic_fetch_sub_explicit(&_qd->size, 1, memory_order_relaxed); \
+        } else { \
+            (result) = NULL; \
+        } \
     } \
-    pthread_mutex_unlock(&(q)->lock); \
 } while(0)
 
-#define QUEUE_SIZE(q) atomic_load(&(q)->size)
+#define QUEUE_SIZE(q) \
+    ({(q) != NULL ? atomic_load_explicit(&(q)->size, memory_order_relaxed) : 0; })
 
 #define QUEUE_DESTROY(q) do { \
-    void* item; \
-    while ((q)->head) { \
-        QUEUE_DEQUEUE(q, item); \
+    __typeof__(queue_t *) _qx = (q); \
+    if (_qx) { \
+        void* item = NULL; \
+        while (atomic_load_explicit(&_qx->head, memory_order_relaxed)) { \
+            QUEUE_DEQUEUE(_qx, item); \
+        } \
+        const size_t size = QUEUE_SIZE(_qx); \
+        if (size == 0) { \
+            if (_qx) { \
+                memset(_qx, 0, sizeof(queue_t)); \
+                _qx = NULL; \
+            } \
+        } \
     } \
-    pthread_mutex_destroy(&(q)->lock); \
 } while(0)
+
+extern queue_t queue;
 
 /* ============================================================================
  * LINKED LIST (Thread-Safe Doubly-Linked)
  * ============================================================================ */
 
-typedef struct list_node_t {
+/*typedef struct list_node_t {
     void* data;
     struct list_node_t* next;
     struct list_node_t* prev;
@@ -80,7 +102,7 @@ typedef struct list_node_t {
 typedef struct list_t {
     list_node_t* head;
     list_node_t* tail;
-    pthread_rwlock_t rwlock;
+    threads_t*   pool;
     _Atomic size_t size;
 } list_t;
 
@@ -129,13 +151,13 @@ typedef struct list_t {
     } \
     pthread_rwlock_unlock(&(l)->rwlock); \
     pthread_rwlock_destroy(&(l)->rwlock); \
-} while(0)
+} while(0)*/
 
 /* ============================================================================
  * BINARY SEARCH TREE (Thread-Safe)
  * ============================================================================ */
 
-typedef struct bst_node_t {
+/*typedef struct bst_node_t {
     int key;
     void* data;
     struct bst_node_t* left;
@@ -144,7 +166,7 @@ typedef struct bst_node_t {
 
 typedef struct bst_t {
     bst_node_t* root;
-    pthread_rwlock_t rwlock;
+    threads_t*  pool;
     _Atomic size_t size;
 } bst_t;
 
@@ -192,7 +214,7 @@ static inline void bst_destroy_nodes(bst_node_t* node) {
     bst_destroy_nodes((tree)->root); \
     pthread_rwlock_unlock(&(tree)->rwlock); \
     pthread_rwlock_destroy(&(tree)->rwlock); \
-} while(0)
+} while(0)*/
 
 /* ============================================================================
  * ATOMIC COUNTER (Lock-Free - Stress Test)
@@ -214,7 +236,7 @@ typedef struct atomic_counter_t {
 
 #define HASH_BUCKETS 256
 
-typedef struct hash_entry_t {
+/*typedef struct hash_entry_t {
     uint32_t key;
     void* value;
     struct hash_entry_t* next;
@@ -222,7 +244,7 @@ typedef struct hash_entry_t {
 
 typedef struct hash_table_t {
     hash_entry_t* buckets[HASH_BUCKETS];
-    pthread_mutex_t locks[HASH_BUCKETS];
+    threads_t*    pool;
     _Atomic size_t size;
 } hash_table_t;
 
@@ -260,7 +282,7 @@ typedef struct hash_table_t {
         pthread_mutex_unlock(&(ht)->locks[i]); \
         pthread_mutex_destroy(&(ht)->locks[i]); \
     } \
-} while(0)
+} while(0)*/
 
 /* ============================================================================
  * RING BUFFER (Lock-Free SPSC - Single Producer Single Consumer)
@@ -268,8 +290,9 @@ typedef struct hash_table_t {
 
 #define RING_SIZE 1024
 
-typedef struct ring_buffer_t {
+/*typedef struct ring_buffer_t {
     void* data[RING_SIZE];
+    threads_t* pool;
     _Atomic size_t head;
     _Atomic size_t tail;
 } ring_buffer_t;
@@ -301,6 +324,6 @@ typedef struct ring_buffer_t {
         (item) = NULL; \
         (success) = 0; \
     } \
-} while(0)
+} while(0)*/
 
 #endif /* STRUCTURES_H */

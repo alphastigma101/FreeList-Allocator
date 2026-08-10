@@ -1,5 +1,6 @@
 #include "../tests/tests.h"
 #include <limits.h>
+#include <sched.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -7,21 +8,23 @@
 #include <string.h>
 #include <sys/types.h>
 #include "../threads/threads.h" // Production
-//#include "../DataStructures/C/structures.h" // Development
+#include "../DataStructures/C/structures.h" // Development
 
+queue_t queue = {0};
 /*
 #include "../tests/tests.h"
 #include <stdlib.h>
 #include <stdalign.h> // Development
 #include <string.h>
 #include <sys/types.h>
+#include <time.h>
 #include "../threads/threads.h" // Production
 //#include "../DataStructures/C/structures.h" // Development
 */
 
 static threads_t* threads = NULL;
 
-// Numerical Helper
+// Numerical Addition Helper
 static void* addition(struct function_t* meta) {
     void** args = routine_metadata_arguments(meta);
     int* i = args[2];
@@ -32,6 +35,23 @@ static void* addition(struct function_t* meta) {
         pthread_mutex_unlock(mutex);
     }
     return NULL;
+}
+
+// Numerical Random Data Helper
+static inline void* queue_t_random_numerical_values(struct function_t* meta) {
+    void** args = routine_metadata_arguments(meta);
+    if (!args) pthread_exit(NULL);
+    
+    queue_t* queue = (queue_t*)args[0];
+    size_t length = *(size_t*)args[1];
+    size_t range = *(size_t*)args[2];
+    
+    for (size_t i = 0; i < length; i++) {
+        size_t value = (rand() % range);
+        QUEUE_ENQUEUE(queue, &value, "external");
+    }
+
+    pthread_exit(NULL);
 }
 
 // String Traversal Test mode can be either forward or backwards
@@ -92,6 +112,89 @@ void* thread_arguments(struct function_t* meta) {
             break;
     }    
     pthread_exit(NULL);
+}
+
+
+TEST(Modes, Thread) {
+    threads_t t0;
+
+    /* attr == 0x0 is the master switch -- nothing should initialize, regardless of mode */
+    t0 = init_threads_t(0x0, 0x0, 0x0, 0x0);
+    EXPECT_EQ(t0.attr, NULL);
+    EXPECT_EQ(t0.lock, NULL);
+    clean_threads(&t0);
+
+    t0 = init_threads_t(0x01, 0x0, 0x01, 0x01);
+    EXPECT_EQ(t0.attr, NULL);
+    EXPECT_EQ(t0.lock, NULL);
+    clean_threads(&t0);
+
+    t0 = init_threads_t(0x02, 0x0, 0x01, 0x01);
+    EXPECT_EQ(t0.attr, NULL);
+    EXPECT_EQ(t0.lock, NULL);
+    clean_threads(&t0);
+
+    /* mode == 0x0, attr == 0x01: attr initializes, mutex (if requested) is independent/not process-shared */
+    t0 = init_threads_t(0x0, 0x01, 0x0, 0x0);
+    EXPECT_NE(t0.attr, NULL);
+    EXPECT_EQ(t0.lock, NULL);
+    clean_threads(&t0);
+
+    t0 = init_threads_t(0x0, 0x01, 0x01, 0x0);
+    EXPECT_NE(t0.attr, NULL);
+    EXPECT_NE(t0.lock, NULL);
+    int pshared = -1;
+    pthread_mutexattr_getpshared(&t0.attr->mutex_attr, &pshared);
+    EXPECT_EQ(pshared, PTHREAD_PROCESS_PRIVATE);
+    clean_threads(&t0);
+
+    /* mode == 0x01, attr == 0x01: shared process, attr only, no lock */
+    t0 = init_threads_t(0x01, 0x01, 0x0, 0x0);
+    EXPECT_NE(t0.attr, NULL);
+    EXPECT_EQ(t0.lock, NULL);
+    clean_threads(&t0);
+
+    /* mode == 0x01, full stack: attr + shared lock + stack */
+    t0 = init_threads_t(0x01, 0x01, 0x01, 0x01);
+    EXPECT_NE(t0.attr, NULL);
+    EXPECT_NE(t0.attr->stackaddr, NULL);
+    EXPECT_NE(t0.lock, NULL);
+    pshared = -1;
+    pthread_mutexattr_getpshared(&t0.attr->mutex_attr, &pshared);
+    EXPECT_EQ(pshared, PTHREAD_PROCESS_SHARED);
+    clean_threads(&t0);
+
+    /* mode == 0x01, locked but no stack */
+    t0 = init_threads_t(0x01, 0x01, 0x01, 0x0);
+    EXPECT_NE(t0.attr, NULL);
+    EXPECT_EQ(t0.attr->stackaddr, NULL);
+    EXPECT_NE(t0.lock, NULL);
+    clean_threads(&t0);
+
+    /* mode == 0x02, full stack: attr + independent lock + stack */
+    t0 = init_threads_t(0x02, 0x01, 0x01, 0x01);
+    EXPECT_NE(t0.attr, NULL);
+    EXPECT_NE(t0.attr->stackaddr, NULL);
+    EXPECT_NE(t0.lock, NULL);
+    pshared = -1;
+    pthread_mutexattr_getpshared(&t0.attr->mutex_attr, &pshared);
+    EXPECT_EQ(pshared, PTHREAD_PROCESS_PRIVATE);
+    clean_threads(&t0);
+
+    /* mode == 0x02, stack requested but NOT locked -- exercises the
+       branch that needs attr set up without going through init_locks_t first */
+    t0 = init_threads_t(0x02, 0x01, 0x0, 0x01);
+    EXPECT_NE(t0.attr, NULL);
+    EXPECT_NE(t0.attr->stackaddr, NULL);
+    EXPECT_EQ(t0.lock, NULL);
+    clean_threads(&t0);
+
+    /* mode == 0x02, locked but no stack */
+    t0 = init_threads_t(0x02, 0x01, 0x01, 0x0);
+    EXPECT_NE(t0.attr, NULL);
+    EXPECT_EQ(t0.attr->stackaddr, NULL);
+    EXPECT_NE(t0.lock, NULL);
+    clean_threads(&t0);
 }
 
 TEST(LockThreadPool, NumericValue) {
@@ -177,7 +280,7 @@ TEST(LockThreadPool, StringTraversal) {
 TEST(LockFreeThreadPool, StringTraversal) {
     for (int i = 0; i < 4; i++ ) clean_threads(&threads[i]);
     memset(threads, 0, sizeof(threads_t) * 4);
-    create_thread_pool(threads, 4, 0x0, 0x0, 0x0);
+    create_thread_pool(threads, 4, 0x0, 0x0, 0x0, 0x0);
     
     atomic_uintptr_t one, two;
     
@@ -234,6 +337,38 @@ TEST(LockFreeThreadPool, StringTraversal) {
     for (int i = 0; i < 2; i++ ) join_thread(&threads[i], NULL);
 }
 
+// LF == Lock Free
+// TP = Thread Pool
+TEST(LFTPExternal, Queue) {
+    for (int i = 0; i < 4; i++ ) clean_threads(&threads[i]);
+    memset(threads, 0, sizeof(threads_t) * 4);
+    create_thread_pool(threads, 4, 0x0, 0x0, 0x0, 0x0);
+
+    QUEUE_INIT(&queue, 0x01, 0x01, 0x0, 0x0, 10UL);
+    
+    size_t length = 50, range = 100;
+    /** Thread A */
+    routine_metadata(&threads[0], 3, &queue, &length, &range);
+    create_thread(&threads[0], queue_t_random_numerical_values);
+    
+    length = 150, range = 200;
+    /** Thread B */
+    routine_metadata(&threads[1], 3, &queue, &length, &range);
+    create_thread(&threads[1], queue_t_random_numerical_values);
+    
+    size_t count = 0;
+    void* item = NULL;
+    while (count != 200 / 2) {
+        QUEUE_DEQUEUE(&queue, item);
+        count++;
+    }
+
+    join_thread(&threads[0], NULL);
+    join_thread(&threads[1], NULL);
+    EXPECT_EQ(QUEUE_SIZE(&queue), 100);
+    QUEUE_DESTROY(&queue);
+}
+
 
 TEST(Thread, Clean) {
     for (int i = 0; i < 4; i++) clean_threads(&threads[i]);
@@ -272,56 +407,7 @@ int main(void) {
     );
     threads = aligned_alloc(alignof(threads_t), 4 * sizeof(threads_t));
     memset(threads, 0, 4 * sizeof(threads_t));
-    create_thread_pool(threads, 4, 0x0, 0x01, 0x0);
-    
-
-    // User defined data structures / Objects 
-    // Create a queue, linked lists, binary search tree, and a couple other data structures 
-    // that will really test to see if multi-threading is working or not 
-    /*{ 
-        
-        queue_t* q = (void*)0;
-        QUEUE_INIT(q);
-        
-        // --------
-        // Add the data members that can be operated on by the data structure for queue 
-        // Add in the asserts
-        // --------
-
-        list_t* llist = (void*)0;
-        LIST_INIT(llist); 
-        // --------
-        // Add the data members that can be operated on by the data structure for linked lists
-        // Add in the asserts
-        // --------
-
-        bst_t* bst = (void*)0;
-        BST_INIT(bst);
-
-        // --------
-        // Add the data members that can be operated on by the data structure for binary search tree
-        // Add in the asserts
-        // --------
-
-        hash_table_t* ht = (void*)0;
-        HASH_INIT(ht);
-
-        // --------
-        // Add the data members that can be operated on by the data structure for hash table
-        // Add in the asserts
-        // --------
-
-    }
-
-    {
-        // An array of threads that is not threads_t 
-    }
-
-    {
-        // Singular thread testing 
-
-    }*/
-
+    create_thread_pool(threads, 4, 0x0, 0x01,0x01, 0x0);
 
     return __run_all_tests();
 }

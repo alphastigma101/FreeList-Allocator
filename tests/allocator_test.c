@@ -43,7 +43,7 @@ typedef struct entry_table_t {
 } entry_table_t;
 
 typedef struct blocks_t {
-    entry_table_t   table;
+    entry_table_t     table;
     struct blocks_t** chain;
     struct blocks_t* next;
     void*            ptr;
@@ -225,14 +225,14 @@ TEST(ReuseSuite, Small) {
 
 TEST(CleanSuite, Small) {
     clean_small_buckets(0, indexes[0]);
-    if (allocator.bucket.small[0].arena->curr != 1) debug_entry_table_full( &allocator.bucket.small[1].blocks.table, 0);
+    //if (allocator.bucket.small[0].arena->curr != 1) debug_entry_table_full(  &allocator.bucket.small[1].blocks.table, 0);
     EXPECT_EQ(allocator.bucket.small[0].arena->curr, 1);
     EXPECT_EQ(allocator.bucket.small[0].arena->flag, 0X0);
     clean_small_buckets(indexes[0], indexes[1]);
-    if (allocator.bucket.small[1].arena->curr != 1) debug_entry_table_full( &allocator.bucket.small[1].blocks.table, 1);
+    //if (allocator.bucket.small[1].arena->curr != 1) debug_entry_table_full( &allocator.bucket.small[1].blocks.table, 1);
     EXPECT_EQ(allocator.bucket.small[1].arena->curr, 1);
     clean_small_buckets(indexes[1], indexes[2]);
-    if (allocator.bucket.small[2].arena->curr != 1) debug_entry_table_full( &allocator.bucket.small[1].blocks.table, 2);
+    //if (allocator.bucket.small[2].arena->curr != 1) debug_entry_table_full( &allocator.bucket.small[1].blocks.table, 2);
     EXPECT_EQ(allocator.bucket.small[2].arena->curr, 1);
 }
 
@@ -330,13 +330,13 @@ TEST(ReuseSuite, Medium) {
 
 TEST(CleanSuite, Medium) {
     clean_medium_buckets(0, indexes[0]);
-    if (allocator.bucket.medium[0].arena->curr != 1) debug_entry_table_full(&allocator.bucket.medium[0].blocks.table, 0);
+    //if (allocator.bucket.medium[0].arena->curr != 1) debug_entry_table_full(&allocator.bucket.medium[0].blocks.table, 0);
     EXPECT_EQ(allocator.bucket.medium[0].arena->curr, 1);
     clean_medium_buckets(indexes[0], indexes[1]);
-    if (allocator.bucket.medium[1].arena->curr != 1) debug_entry_table_full(&allocator.bucket.medium[1].blocks.table, 1);
+    //if (allocator.bucket.medium[1].arena->curr != 1) debug_entry_table_full(&allocator.bucket.medium[1].blocks.table, 1);
     EXPECT_EQ(allocator.bucket.medium[1].arena->curr, 1);
     clean_medium_buckets(indexes[1], indexes[2]);
-    if (allocator.bucket.medium[2].arena->curr != 1) debug_entry_table_full(&allocator.bucket.medium[2].blocks.table, 2);
+    //if (allocator.bucket.medium[2].arena->curr != 1) debug_entry_table_full(&allocator.bucket.medium[2].blocks.table, 2);
     EXPECT_EQ(allocator.bucket.medium[2].arena->curr, 1);
 }
 
@@ -431,12 +431,12 @@ TEST(ReuseSuite, Large) {
 TEST(CleanSuite, Large) {
     clean_large_buckets(0, indexes[0]);
     EXPECT_EQ(allocator.bucket.large[0].arena->curr, 1);
-    if (allocator.bucket.large[0].arena->curr != 1) debug_entry_table_full(&allocator.bucket.large[0].blocks.table, 0);
+    //if (allocator.bucket.large[0].arena->curr != 1) debug_entry_table_full(&allocator.bucket.large[0].blocks.table, 0);
     clean_large_buckets(indexes[0], indexes[1]);
-    if (allocator.bucket.large[1].arena->curr != 1) debug_entry_table_full(&allocator.bucket.large[0].blocks.table, 1);
+    //if (allocator.bucket.large[1].arena->curr != 1) debug_entry_table_full(&allocator.bucket.large[0].blocks.table, 1);
     EXPECT_EQ(allocator.bucket.large[1].arena->curr, 1);
     clean_large_buckets(indexes[1], indexes[2]);
-    if (allocator.bucket.large[2].arena->curr != 1) debug_entry_table_full(&allocator.bucket.large[2].blocks.table, 2);
+    //if (allocator.bucket.large[2].arena->curr != 1) debug_entry_table_full(&allocator.bucket.large[2].blocks.table, 2);
     EXPECT_EQ(allocator.bucket.large[2].arena->curr, 1);
 }
 

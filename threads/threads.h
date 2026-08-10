@@ -178,6 +178,16 @@
 #endif
 
 
+#define TAG_ADDRESS(p) \
+    ((__typeof__(p))((uintptr_t)(p) | (uintptr_t)0x1))
+
+#define UNTAG_ADDRESS(p) \
+    ((__typeof__(p))((uintptr_t)(p) & ~((uintptr_t)0x1)))
+
+#define IS_ADDRESS_TAGGED(p) \
+    (((uintptr_t)(p) & (uintptr_t)0x1) != 0)
+
+
 typedef struct attr_t {
     pthread_attr_t                 thread_attr;
     void**                         stackaddr; 
@@ -193,8 +203,7 @@ typedef struct threads_t {
     attr_t*                        attr; 
     lock_t*                        lock;
     pthread_t                      thread_id;
-    struct function_t*             routine;
-    unsigned char                  flag;                                    
+    _Atomic(struct function_t*)    routine;                                
 } threads_t;
 
 typedef struct semaphores_t {
@@ -202,19 +211,29 @@ typedef struct semaphores_t {
     struct sembuf*  next;
     int (*semget)(key_t __key, int __nsems, int __semflg);  /* Create a standard or get a standard semaphore*/
     int  (*semop)(int __semid, struct sembuf *__sops, size_t __nsops); /* Define and create a semaphore with special flags */
-    unsigned int bucket_count;
+    size_t bucket_count;
 } semaphores_t;
 
 
 /**
  * @brief Initializes a fresh threads_t instance with default values.
 */
-extern threads_t init_threads_t(const unsigned char mode, const unsigned char locked);
+extern threads_t init_threads_t(const unsigned char mode, const unsigned char attr, const unsigned char locked, const unsigned char stack);
 
 /**
  * @brief Allocates and configures a contiguous block of threads forming a pool.
 */
-extern void create_thread_pool(threads_t* tp, const size_t size, const unsigned char mode, const unsigned char locked, const unsigned char stack);
+extern void create_thread_pool(threads_t* tp, const size_t size, const unsigned char mode, const unsigned char attr, const unsigned char locked, const unsigned char stack);
+
+/**
+    * @brief: Function to allocate a pool of threads at a given spot. If pool is Null, it will be allocated with whatever end is  
+*/
+extern void create_thread_pool_range(threads_t* tp, const unsigned char mode, const unsigned char attr, const unsigned char locked, const unsigned char stack, const size_t start, const size_t end);
+
+/**
+    * @brief: Finds the index of where t is located in tp. Otherwise it will return SIZE_MAX 
+*/
+extern size_t thread_pool_index(threads_t* tp, threads_t* t);
 
 /**
  * @brief Dynamically resizes or reconfigures an existing thread pool.
@@ -239,25 +258,33 @@ extern void thread_t_detachable(threads_t* t, const unsigned char mode);
 /**
  * @brief Looks up a specific thread instance within a collection.
 */
-extern threads_t* find_thread_t(threads_t* tp, const unsigned int size);
+extern threads_t* find_thread_t(threads_t* tp, const size_t size);
 
 /**
  * @brief Registers or mutates internal runtime configuration and metadata for a thread context.
 */
-extern void routine_metadata(threads_t* t, const int length, ...);
+extern void routine_metadata(threads_t* t, const size_t length, ...);
 
 /**
  * @brief Extracts the raw argument vector packed within a function configuration structure.
 */
 extern void** routine_metadata_arguments(struct function_t* meta);
 
+/**
+    * @brief: Tags threads_t field data member routine
+*/
+extern void thread_t_routine_tag(_Atomic(struct function_t*)* meta);
 
-extern size_t routine_metadata_size(struct function_t *meta);
+/**
+    * @brief: Tags threads_t field data member routine
+*/
+extern void thread_t_routine_untag(_Atomic(struct function_t*)* meta);
 
 /**
  * @brief Prints state diagnostics and metrics for the specified thread context.
 */
 extern void debug_threads(const threads_t tp);
+
 
 /**
  * @brief Releases heap memory and system resources bound to a thread context.

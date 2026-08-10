@@ -18,11 +18,14 @@
 #include "../logger/buffer.h"
 #include <stdalign.h>
 #include <stdarg.h>
+#include <stdatomic.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
 #define __USE_GNU 1
 #include <sys/mman.h>
+
 /*
 #include "threads.h"
 #include "../logger/buffer.h"
@@ -49,25 +52,75 @@ typedef struct function_t {
 inline void** routine_metadata_arguments(struct function_t* meta) { return meta->args; }
 
 [[gnu::hot]]
-inline void routine_metadata(threads_t* t, const int length, ...) {
-    if (!t->routine) {
-        t->routine = aligned_alloc(alignof(function_t), sizeof(function_t));
-        if (!t->routine) return;
-        memset(t->routine, 0, sizeof(function_t));
+inline void routine_metadata(threads_t* t, const size_t length, ...) {
+    function_t* routine = atomic_load_explicit(&t->routine, memory_order_acquire);
+    if (!routine) {
+        routine = aligned_alloc(alignof(function_t), sizeof(function_t));
+        if (!routine) return;
+        memset(routine, 0, sizeof(function_t));
     }
 
-    if (t->routine->size != (size_t)length) {
-        if (t->routine->args) free(t->routine->args);
-        t->routine->args = malloc((size_t)(length) * sizeof(void*));
-        if (!t->routine->args) return;
-        t->routine->size = (size_t)length;
+    if (routine->size != length) {
+        if (routine->args) {
+            if (routine->size < ALLOC_THRESHOLD && length > ALLOC_THRESHOLD) {
+                memset(routine->args, 0, length * sizeof(void*));
+                free(routine->args);
+                routine->args = NULL;
+                routine->args = private_address(NULL, length * sizeof(void*), PROT_READ | PROT_WRITE, MAP_NORESERVE, -1, 0);
+                if (routine->args == MAP_FAILED) return;
+                else {
+                    int res = madvise(routine->args, length * sizeof(void*), MADV_SEQUENTIAL | MADV_MERGEABLE);
+                    if (res == -1) {
+                        memset(routine->args, 0, length * sizeof(void*));
+                        if (routine->args) munmap_address(routine->args, length * sizeof(void*));
+                        routine->args = NULL;
+                        return;
+                    }
+                }
+            }
+            else if (routine->size > ALLOC_THRESHOLD && length < ALLOC_THRESHOLD) {
+                munmap_address(routine->args, length * sizeof(void*));
+                routine->args = NULL;
+                routine->args = malloc(length * sizeof(void*));
+            }
+            else routine->args = length < ALLOC_THRESHOLD ? realloc(routine->args, length * sizeof(void*)) : remap_address(routine->args, routine->size, length);
+        }
+        else routine->args = length < ALLOC_THRESHOLD ? malloc(length * sizeof(void*)) : private_address(NULL, length * sizeof(void*), PROT_READ | PROT_WRITE, MAP_NORESERVE, -1, 0);
+        if (!routine->args) return;
+        routine->size = length;
     }
-    memset(t->routine->args, 0, (size_t)(length) * sizeof(void*));
+    memset(routine->args, 0, (length) * sizeof(void*));
 
     va_list args;
     va_start(args, length);
-    for (int i = 0; i < length; i++) t->routine->args[i] = va_arg(args, void*);
+    for (size_t i = 0; i < length; i++) routine->args[i] = va_arg(args, void*);
     va_end(args);
+
+    atomic_store_explicit(&t->routine, routine, memory_order_release);
+}
+
+[[gnu::hot]]
+FORCE_INLINE unsigned char thread_t_routine_tagged(_Atomic(struct function_t*)* meta) {
+    function_t* cur = atomic_load_explicit(meta, memory_order_relaxed);
+    return IS_ADDRESS_TAGGED(cur);
+}
+
+[[gnu::hot]]
+inline void thread_t_routine_untag(_Atomic(struct function_t*)* meta) {
+    if (thread_t_routine_tagged(meta)) {
+        function_t* cur = atomic_load_explicit(meta, memory_order_acquire);
+        cur = UNTAG_ADDRESS(cur);
+        atomic_store_explicit(meta, cur, memory_order_release);
+    }
+}
+
+[[gnu::hot]]
+inline void thread_t_routine_tag(_Atomic(struct function_t*)* meta) {
+    if (!thread_t_routine_tagged(meta)) {
+        function_t* routine = atomic_load_explicit(meta, memory_order_acquire);
+        routine = TAG_ADDRESS(routine);
+        atomic_store_explicit(meta, routine, memory_order_release);
+    }
 }
 
 /**
@@ -80,7 +133,7 @@ inline void routine_metadata(threads_t* t, const int length, ...) {
  * @param off Offset in the file/object (in pages, multiply by page size)
  * @return Pointer to mapped region, or MAP_FAILED on error
 */
-void* shared_address(void *addr, size_t len, int prot, int flags, int fildes, unsigned char off) {
+inline void* shared_address(void *addr, size_t len, int prot, int flags, int fildes, unsigned char off) {
     off_t offset = (off_t)off * sysconf(_SC_PAGE_SIZE);
     
     void* result = mmap(addr, len, prot, MAP_SHARED | MAP_ANONYMOUS | flags, fildes, offset);
@@ -103,7 +156,7 @@ void* shared_address(void *addr, size_t len, int prot, int flags, int fildes, un
  * @param off Offset (ignored for anonymous mappings, pass 0)
  * @return Pointer to mapped region, or MAP_FAILED on error
 */
-void* private_address(void *addr, size_t len, int prot, int flags, int fildes, unsigned char off) {
+inline void* private_address(void *addr, size_t len, int prot, int flags, int fildes, unsigned char off) {
     
     void* result = mmap(addr, len, prot, MAP_PRIVATE | MAP_ANONYMOUS | flags, fildes, off);
     
@@ -126,7 +179,7 @@ inline void* remap_address(void* addr, size_t old_len, size_t new_len) {
  * @param addr Pointer returned by shared_address/private_address
  * @note You must track the length separately or store it in the mapped region
 */
-void munmap_address(void* addr, size_t len) {
+inline void munmap_address(void* addr, size_t len) {
     if (addr == NULL || addr == MAP_FAILED) {
         fprintf(stderr, "clean_address: invalid address\n");
         return;
@@ -137,10 +190,9 @@ void munmap_address(void* addr, size_t len) {
     }
 }
 
-FORCE_INLINE void create_attrs(threads_t* tp, const size_t idx, const unsigned char mode, const unsigned char stack);
 FORCE_INLINE void init_threads_t_stack(threads_t* tp, const size_t idx);
-FORCE_INLINE threads_t init_locks_t(threads_t* t, const size_t idx);
-FORCE_INLINE threads_t init_attr_t(threads_t* t, const size_t idx, const unsigned char lock);
+FORCE_INLINE threads_t init_locks_t(threads_t* t, const size_t idx, const unsigned char mode);
+FORCE_INLINE threads_t init_attr_t(threads_t* t, const size_t idx, const unsigned char attr);
 size_t __ss = {0}; /* Abbreviated as stack size and is used in create_attrs and clean_threads */
 
 
@@ -150,72 +202,108 @@ size_t __ss = {0}; /* Abbreviated as stack size and is used in create_attrs and 
 
 
 /**
- * @brief Initializes a thread
- * 
- * @param arr Memory address 
- * @param mode Can be shared or not shared memory space 
- * @param _str Can be a string or it can be NULL
- * 
- * @return tokens_t Object 
-
- * 
- * @details 
- * - addr is a memory address depending on the mode, can have shared resources or not 
- * - mode is set to default i.e 0x01 which is SHARED       
- *         - 0x02 is for ANONYMOUS
- * @note Passed unit test cases as of 3/3/26 
+ * @description: Free function that creates a thread_t object on stack based on the parameters
+ * @param mode: 0x01 is for enabling shared process. This will also effect the mutex 0x02 turns it off.
+ * @param attr: If mode is 0x01 and attr is also 0x01, then mutex will become a shared lock
+                If mode is 0x0 and attr is 0x01, attr for thread will be initialized, but mutex will be a independent lock
+                If mode is 0x0 and attr is 0x0, attr will not be initialized
 */
 [[gnu::hot]]
-threads_t init_threads_t(const unsigned char mode, const unsigned char locked) {
+threads_t init_threads_t(const unsigned char mode, const unsigned char attr, const unsigned char locked, const unsigned char stack) {
     threads_t t = {0};
-    //if (mode == 0x01 && locked == 0x01) {
-        t = init_attr_t(&t, 0, locked);
-        t = init_locks_t(&t, 0);
-    //}
+    if (mode == 0x0 && attr == 0x01) {
+        t = init_attr_t(&t, SIZE_MAX, attr);
+        if (locked == 0x01) t = init_locks_t(&t, SIZE_MAX, mode);
+        if (stack == 0x01) init_threads_t_stack(&t, SIZE_MAX);
+    }
+    if ((mode == 0x01) && (attr == 0x01)) {
+        t = init_attr_t(&t, SIZE_MAX, attr);
+        if (locked == 0x01) t = init_locks_t(&t, SIZE_MAX, mode);
+        if (stack == 0x01) init_threads_t_stack(&t, SIZE_MAX);
+    }
+    if ((mode == 0x02) && (attr == 0x01)) {
+        if (locked == 0x01) {
+            t = init_attr_t(&t, SIZE_MAX, attr);
+            t = init_locks_t(&t, SIZE_MAX, mode);
+        } 
+        if (stack == 0x01) {
+            if (!t.attr) t = init_attr_t(&t, SIZE_MAX, attr);
+            init_threads_t_stack(&t, SIZE_MAX);
+        }
+    }
     return t;
 }
 
-FORCE_INLINE threads_t init_locks_t(threads_t* t, const size_t idx) {
+FORCE_INLINE threads_t init_locks_t(threads_t* t, const size_t idx, const unsigned char mode) {
     int rc;
-    if (!t[idx].lock) {
+
+    if (idx != SIZE_MAX && !t[idx].lock) {
         t[idx].lock = aligned_alloc(alignof(lock_t), sizeof(lock_t));
+        if (!t[idx].lock) return t[idx];
         memset(t[idx].lock, 0, sizeof(lock_t));
     }
+    else if (idx == SIZE_MAX && !t->lock) {
+        t->lock = aligned_alloc(alignof(lock_t), sizeof(lock_t));
+        if (!t->lock) return *t;
+        memset(t->lock, 0, sizeof(lock_t));
+    }
 
-    rc = pthread_mutex_init(&t[idx].lock->mutex, &t[idx].attr->mutex_attr);
+    const void* ptr = idx != SIZE_MAX ? t[idx].attr : t->attr;
+    if (ptr) {
+        if (mode == 0x01) {
+            rc = pthread_mutexattr_init(idx != SIZE_MAX ? &t[idx].attr->mutex_attr : &t->attr->mutex_attr);
+            if (rc) {
+                printf("pthread_mutexattr_init failed: %s (errno: %d)\n", strerror(rc), rc);  
+            }
+            rc = pthread_mutexattr_setpshared(idx != SIZE_MAX ? &t[idx].attr->mutex_attr : &t->attr->mutex_attr, PTHREAD_PROCESS_SHARED); 
+            if (rc) {
+                printf("pthread_mutexattr_setpshared failed: %s (errno: %d)\n\t swapping to mutex default settings\n", strerror(rc), rc);
+                pthread_mutexattr_destroy(idx != SIZE_MAX ? &t[idx].attr->mutex_attr : &t->attr->mutex_attr);
+            }
+            int kind = MUTEX_ATTR == 0 ? PTHREAD_MUTEX_DEFAULT : MUTEX_ATTR == 1 ? PTHREAD_MUTEX_ERRORCHECK : MUTEX_ATTR == 2 ? PTHREAD_MUTEX_RECURSIVE : -1;
+            rc = pthread_mutexattr_settype(idx != SIZE_MAX ? &t[idx].attr->mutex_attr : &t->attr->mutex_attr, kind);
+            if (rc) {
+                printf("pthread_mutexattr_settype failed: %s (errno: %d)\n\t swapping to mutex default settings\n", strerror(rc), rc);
+                printf("kind value is: [ %d ]\n\t MUTEX_ATTR macro numerical values are: (0, 1, 2)\n", kind);
+                printf("\n\t Where 0 == PTHREAD_MUTEX_DEFAULT, 1 == PTHREAD_MUTEX_ERRORCHECK, and 2 == PTHREAD_MUTEX_RECURSIVE\n");
+                pthread_mutexattr_destroy(idx != SIZE_MAX ? &t[idx].attr->mutex_attr : &t->attr->mutex_attr); 
+            }
+        }
+    }
+
+    rc = pthread_mutex_init(idx != SIZE_MAX ? &t[idx].lock->mutex : &t->lock->mutex, idx != SIZE_MAX ? &t[idx].attr->mutex_attr : &t->attr->mutex_attr);
     if (rc) {
         printf("pthread_mutex_init failed: %s (errno: %d)\n\t swapping to mutex default settings\n", strerror(rc), rc);
-        rc = pthread_mutex_init(&t[idx].lock->mutex, NULL);
+        rc = pthread_mutex_init(idx != SIZE_MAX ? &t[idx].lock->mutex : &t->lock->mutex, NULL);
         if (rc) {
             printf("pthread_mutex_init failed again: %s (errno: %d)\n\t trying other locks...\n", strerror(rc), rc);
         }
     } 
-    return t[idx];
+    return idx != SIZE_MAX ? t[idx] : *t;
 }
 
-FORCE_INLINE threads_t init_attr_t(threads_t* t, const size_t idx, const unsigned char lock) {
+FORCE_INLINE threads_t init_attr_t(threads_t* t, const size_t idx, const unsigned char attr) {
     struct sched_param schedparam;
     int rc;
 
-    if (!t[idx].attr) {
+    if (idx != SIZE_MAX && !t[idx].attr && attr) {
         t[idx].attr = aligned_alloc(alignof(attr_t), sizeof(attr_t));
+        if (!t[idx].attr) return t[idx];
         memset(t[idx].attr, 0, sizeof(attr_t));
     }
+    else if (idx == SIZE_MAX && !t->attr && attr) {
+        t->attr = aligned_alloc(alignof(attr_t), sizeof(attr_t));
+        if (!t->attr) return *t;
+        memset(t->attr, 0, sizeof(attr_t));
+    }
 
-    rc = pthread_attr_init(&t[idx].attr->thread_attr);
+    rc = pthread_attr_init(idx != SIZE_MAX ? &t[idx].attr->thread_attr : &t->attr->thread_attr);
     if (rc) {
         printf("pthread_attr_init failed: %s (errno: %d)\n\t will pass NULL into pthread_create later on\n", strerror(rc), rc);
     }
-    
-    if (lock) {
-        rc = pthread_mutexattr_init(&t[idx].attr->mutex_attr);
-        if (rc) {
-            printf("pthread_mutexattr_init failed: %s (errno: %d)\n", strerror(rc), rc);  
-        }
-    }
 
     int inherit = INHERITSCHED == 1 ? PTHREAD_EXPLICIT_SCHED : INHERITSCHED == 0 ? PTHREAD_INHERIT_SCHED : -1;
-    rc = pthread_attr_setinheritsched(&t[idx].attr->thread_attr, inherit);
+    rc = pthread_attr_setinheritsched(idx != SIZE_MAX ? &t[idx].attr->thread_attr : &t->attr->thread_attr, inherit);
     if (rc) {
         printf("pthread_attr_setinheritsched failed: %s (errno: %d)\n", strerror(rc), rc);
         printf("inherit value is: [ %d ]\n\t INHERITSCHED macro numerical values are: (0, 1)\n", inherit);
@@ -223,7 +311,7 @@ FORCE_INLINE threads_t init_attr_t(threads_t* t, const size_t idx, const unsigne
     }
 
     int policy = USTP == 0 ? SCHED_FIFO : USTP == 1 ? SCHED_RR : USTP == 2 ? SCHED_OTHER : -1;
-    rc = pthread_attr_setschedpolicy(&t[idx].attr->thread_attr, policy);
+    rc = pthread_attr_setschedpolicy(idx != SIZE_MAX ? &t[idx].attr->thread_attr : &t->attr->thread_attr, policy);
     if (rc) {
         printf("pthread_attr_setschedpolicy failed: %s (errno: %d)\n", strerror(rc), rc);
         printf("policy value is: [ %d ]\n\t User space thread pool policy i.e USTP macro numerical values are: (0, 1, 2)\n", policy);
@@ -231,58 +319,59 @@ FORCE_INLINE threads_t init_attr_t(threads_t* t, const size_t idx, const unsigne
     }
 
     schedparam.sched_priority = USTP == 0 ? 1 : USTP == 1 ? 1 : USTP == 2 ? 0 : -1;
-    rc = pthread_attr_setschedparam(&t[idx].attr->thread_attr, &schedparam);
+    rc = pthread_attr_setschedparam(idx != SIZE_MAX ? &t[idx].attr->thread_attr : &t->attr->thread_attr, &schedparam);
     if (rc) {
         printf("pthread_attr_setschedparam failed: %s (errno: %d)\n", strerror(rc), rc);
     }
 
     int detachstate = THREAD_STATE == 1 ? PTHREAD_CREATE_JOINABLE : THREAD_STATE == 0 ? PTHREAD_CREATE_DETACHED : -1;
-    rc = pthread_attr_setdetachstate(&t[idx].attr->thread_attr, detachstate);
+    rc = pthread_attr_setdetachstate(idx != SIZE_MAX ? &t[idx].attr->thread_attr : &t->attr->thread_attr, detachstate);
     if (rc) {
         printf("pthread_attr_setdetachstate failed: %s (errno: %d)\n", strerror(rc), rc);
         printf("detachstate value is: [ %d ]\n\t THREAD_STATE Macro numerical values are: (0, 1)", detachstate);
         printf("\n\t Where 0 == PTHREAD_CREATE_DETACHED, and 1 == PTHREAD_CREATE_JOINABLE\n");
     }
     
-    return t[idx];
+    return idx != SIZE_MAX ? t[idx] : *t;
 }
 
 FORCE_INLINE void init_threads_t_stack(threads_t* tp, const size_t idx) {
     int rc;
-    unsigned int page_size = (unsigned int)sysconf(_SC_PAGESIZE);
-    unsigned int base_size = (unsigned int)PTHREAD_STACK_MIN * ASAN_STACK_MULTIPLIER;
-    __ss                   = (base_size + page_size - 1) & ~(page_size - 1);
+    size_t page_size = (size_t)sysconf(_SC_PAGESIZE);
+    size_t base_size = (size_t)PTHREAD_STACK_MIN * ASAN_STACK_MULTIPLIER;
+    __ss             = (base_size + page_size - 1) & ~(page_size - 1);
 
-    
     size_t total_with_guard = (size_t)__ss + page_size;
-    rc = posix_memalign(tp[idx].attr->stackaddr, page_size, total_with_guard);
-    if (rc != 0) {
-        printf("posix_memalign failed: %s (errno: %d)\n", strerror(rc), rc);
-        tp[idx].attr->stackaddr = NULL;
+    if (idx == SIZE_MAX) tp->attr->stackaddr = __ss > ALLOC_THRESHOLD ? private_address(NULL, total_with_guard, PROT_READ | PROT_WRITE, MAP_NORESERVE, -1, 0) : aligned_alloc(page_size, total_with_guard);
+    else tp[idx].attr->stackaddr = __ss > ALLOC_THRESHOLD ? private_address(NULL, total_with_guard, PROT_READ | PROT_WRITE, MAP_NORESERVE, -1, 0) : aligned_alloc(page_size, total_with_guard);
+    
+    void* res = idx == SIZE_MAX ? tp->attr->stackaddr : tp[idx].attr->stackaddr;
+    if (!res) {
+        if (idx == SIZE_MAX) tp->attr->stackaddr = NULL;
+        else tp[idx].attr->stackaddr = NULL;
+        return;
     }
-    // TODO: use MAP_GROWSDOWN for architectures that are modern 
-    if (tp[idx].attr->stackaddr) {
+
+    // TODO: use MAP_GROWSDOWN for architectures that are modern
+    void* stack_ptr = idx == SIZE_MAX ? tp->attr->stackaddr : tp[idx].attr->stackaddr;
+    if (stack_ptr) {
         /* stacks grow DOWNWARD on x86_64/most architectures, so the
             * guard page goes at the LOW end; the usable stack starts
             * right after it */
-        void* usable_stack = (char*)tp[idx].attr->stackaddr + page_size;
-
-        rc = pthread_attr_setstack(&tp[idx].attr->thread_attr, usable_stack, __ss);
+        void* usable_stack = idx == SIZE_MAX ? (char*)tp->attr->stackaddr + page_size : (char*)tp[idx].attr->stackaddr + page_size;
+        rc = pthread_attr_setstack(idx == SIZE_MAX ? &tp->attr->thread_attr : &tp[idx].attr->thread_attr, usable_stack, __ss);
         if (rc) {
             printf("pthread_attr_setstack failed: %s (errno: %d)\n\t swapping to pthread attribute default settings\n", strerror(rc), rc);
-            pthread_attr_destroy(&tp[idx].attr->thread_attr);
+            pthread_attr_destroy(idx == SIZE_MAX ? &tp->attr->thread_attr : &tp[idx].attr->thread_attr);
         }
         else {
-            /* guard ONLY the first page -- not the whole stack */
-            rc = mprotect(tp[idx].attr->stackaddr, page_size, PROT_NONE);
+            rc = mprotect(idx == SIZE_MAX ? tp->attr->stackaddr : tp[idx].attr->stackaddr, page_size, PROT_NONE);
             if (rc == -1) {
                 printf("mprotect failed: %s (errno: %d)\n\t failed to guard the stack\n", strerror(errno), errno);
             }
         }
     }
 }
-
-
 
 /**
     * @description: A Free function that creates a dynamic array of threads based on the arguments during runtime
@@ -293,47 +382,136 @@ FORCE_INLINE void init_threads_t_stack(threads_t* tp, const size_t idx) {
     * @param stack: 0x0 to disable integration of stack with guard for each thread, otherwise 0x01
 */
 [[gnu::hot]]
-inline void create_thread_pool(threads_t* tp, const size_t size, const unsigned char mode, const unsigned char locked, const unsigned char stack) {
-    if (mode == 0x0 && !tp) tp = shared_address(NULL, size * sizeof(threads_t), PROT_WRITE | PROT_READ, MAP_SHARED | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
-    else if (mode == 0x01 && !tp) tp = private_address(NULL, size * sizeof(threads_t), PROT_WRITE | PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0); 
+void create_thread_pool(threads_t* tp, const size_t size, const unsigned char mode, const unsigned char attr, const unsigned char locked, const unsigned char stack) {
     
-    if (!tp) return;
-  
+    if (!tp && mode == 0x0) {
+        tp = aligned_alloc(alignof(threads_t), size * sizeof(threads_t));
+        if (!tp) return;
+        memset(tp, 0, size * sizeof(threads_t));
+    }
+
     for (size_t i = 0; i < size; i++) {
-        tp[i] = init_attr_t(tp, i, locked);
-        if (locked) tp[i] = init_locks_t(tp, i);
-        create_attrs(tp, i, locked, stack);
-        tp[i].flag = 0x0;
+        if (mode == 0x0 && attr == 0x01) {
+            tp[i] = init_attr_t(tp, i, attr);
+            if (locked == 0x01) tp[i] = init_locks_t(tp, i, mode);
+            if (stack == 0x01) init_threads_t_stack(tp, i);
+        }
+        if ((mode == 0x01) && (attr == 0x01)) {
+            if (!tp) {
+                tp = shared_address(NULL, size * sizeof(threads_t), PROT_WRITE | PROT_READ, MAP_NORESERVE, -1, 0);
+                if (tp == MAP_FAILED) return;
+                else {
+                    int res = madvise(tp,size * sizeof(threads_t), MADV_SEQUENTIAL | MADV_MERGEABLE);
+                    if (res == -1) {
+                        if (tp) munmap_address(tp, size * sizeof(threads_t));
+                        tp = NULL;
+                        return;
+                    }
+                    memset(tp, 0, size * sizeof(threads_t));
+                }
+            }
+            tp[i] = init_attr_t(tp, i, attr);
+            if (locked == 0x01) tp[i] = init_locks_t(tp, i, mode);
+            if (stack == 0x01) init_threads_t_stack(tp, i);
+        }
+        if ((mode == 0x02) && (attr == 0x01)) {
+            if (!tp) {
+                tp = private_address(NULL, size * sizeof(threads_t), PROT_WRITE | PROT_READ, MAP_NORESERVE, -1, 0);
+                if (tp == MAP_FAILED) return;
+                else {
+                    int res = madvise(tp,size * sizeof(threads_t), MADV_SEQUENTIAL | MADV_MERGEABLE);
+                    if (res == -1) {
+                        if (tp) munmap_address(tp, size * sizeof(threads_t));
+                        tp = NULL;
+                        return;
+                    }
+                    memset(tp, 0, size * sizeof(threads_t));
+                }
+            }
+            if (locked == 0x01) {
+                tp[i] = init_attr_t(tp, i, attr);
+                tp[i] = init_locks_t(tp, i, mode);
+            } 
+            if (stack == 0x01) {
+                if (!tp[i].attr) tp[i] = init_attr_t(tp, i, attr);
+                init_threads_t_stack(tp, i);
+            }
+        }
+    }
+    return;
+}
+
+[[gnu::hot]]
+void create_thread_pool_range(threads_t* tp, const unsigned char mode, const unsigned char attr, const unsigned char locked, const unsigned char stack, const size_t start, const size_t end) {
+    
+    if (!tp && mode == 0x0) {
+        tp = aligned_alloc(alignof(threads_t), end * sizeof(threads_t));
+        if (!tp) return;
+        memset(tp, 0, end * sizeof(threads_t));
+    }
+
+    for (size_t i = start; i < end; i++) {
+        if (mode == 0x0 && attr == 0x01) {
+            tp[i] = init_attr_t(tp, i, attr);
+            if (locked == 0x01) tp[i] = init_locks_t(tp, i, mode);
+            if (stack == 0x01) init_threads_t_stack(tp, i);
+        }
+        if ((mode == 0x01) && (attr == 0x01)) {
+            if (!tp) {
+                tp = shared_address(NULL, end * sizeof(threads_t), PROT_WRITE | PROT_READ, MAP_NORESERVE, -1, 0);
+                if (tp == MAP_FAILED) return;
+                else {
+                    int res = madvise(tp, end * sizeof(threads_t), MADV_SEQUENTIAL | MADV_MERGEABLE);
+                    if (res == -1) {
+                        if (tp) munmap_address(tp, end * sizeof(threads_t));
+                        tp = NULL;
+                        return;
+                    }
+                    memset(tp, 0, end * sizeof(threads_t));
+                }
+            }
+            tp[i] = init_attr_t(tp, i, attr);
+            if (locked == 0x01) tp[i] = init_locks_t(tp, i, mode);
+            if (stack == 0x01) init_threads_t_stack(tp, i);
+        }
+        if ((mode == 0x02) && (attr == 0x01)) {
+            if (!tp) {
+                tp = private_address(NULL, end * sizeof(threads_t), PROT_WRITE | PROT_READ, MAP_NORESERVE, -1, 0);
+                if (tp == MAP_FAILED) return;
+                else {
+                    int res = madvise(tp, end * sizeof(threads_t), MADV_SEQUENTIAL | MADV_MERGEABLE);
+                    if (res == -1) {
+                        if (tp) munmap_address(tp, end * sizeof(threads_t));
+                        tp = NULL;
+                        return;
+                    }
+                    memset(tp, 0, end * sizeof(threads_t));
+                }
+            }
+            if (locked == 0x01) {
+                tp[i] = init_attr_t(tp, i, attr);
+                tp[i] = init_locks_t(tp, i, mode);
+            } 
+            if (stack == 0x01) {
+                if (!tp[i].attr) tp[i] = init_attr_t(tp, i, attr);
+                init_threads_t_stack(tp, i);
+            }
+        }
     }
     return;
 }
 
 inline void update_thread_pool(threads_t *tp, const size_t size) {
+    pthread_t self = pthread_self();
     for (size_t i = 0; i < size; i++) {
-        if (tp[i].flag == 0x01) {
-            join_thread(&tp[i], NULL);
-            tp[i].flag = 0x0;
-        }
-    } 
-}
-
-FORCE_INLINE void create_attrs(threads_t* tp, const size_t idx, const unsigned char mode, const unsigned char stack) {
-    int rc;
-    
-    if (tp[idx].attr) if (stack) init_threads_t_stack(tp, idx);
-    if (mode == 0x01 && tp[idx].lock) {
-        rc = pthread_mutexattr_setpshared(&tp[idx].attr->mutex_attr, PTHREAD_PROCESS_SHARED); 
-        if (rc) {
-            printf("pthread_mutexattr_setpshared failed: %s (errno: %d)\n\t swapping to mutex default settings\n", strerror(rc), rc);
-            pthread_mutexattr_destroy(&tp[idx].attr->mutex_attr);
-        }
-        int kind = MUTEX_ATTR == 0 ? PTHREAD_MUTEX_DEFAULT : MUTEX_ATTR == 1 ? PTHREAD_MUTEX_ERRORCHECK : MUTEX_ATTR == 2 ? PTHREAD_MUTEX_RECURSIVE : -1;
-        rc = pthread_mutexattr_settype(&tp[idx].attr->mutex_attr, kind);
-        if (rc) {
-            printf("pthread_mutexattr_settype failed: %s (errno: %d)\n\t swapping to mutex default settings\n", strerror(rc), rc);
-            printf("kind value is: [ %d ]\n\t MUTEX_ATTR macro numerical values are: (0, 1, 2)\n", kind);
-            printf("\n\t Where 0 == PTHREAD_MUTEX_DEFAULT, 1 == PTHREAD_MUTEX_ERRORCHECK, and 2 == PTHREAD_MUTEX_RECURSIVE\n");
-            pthread_mutexattr_destroy(&tp[idx].attr->mutex_attr); 
+        function_t* cur = atomic_load_explicit(&tp[i].routine, memory_order_acquire);
+        if (IS_ADDRESS_TAGGED(cur) && !pthread_equal(tp[i].thread_id, self)) {
+            function_t* expected = cur;
+            function_t* desired = UNTAG_ADDRESS(cur);
+            if (atomic_compare_exchange_strong_explicit(&tp[i].routine, &expected, desired,
+                                                          memory_order_acq_rel, memory_order_relaxed)) {
+                join_thread(&tp[i], NULL);
+            }
         }
     }
 }
@@ -346,41 +524,52 @@ FORCE_INLINE void create_attrs(threads_t* tp, const size_t idx, const unsigned c
     * @note: There are cases where the new thread can spawn in and be terminated before pthread_create is done, so checking ESRCH error code using the thread id is crucial.
             Also, thread id pthread_t is a opaque object meaning it can be a numeric value or a struct. Do not initialize it at all 
 */
-void create_thread(threads_t* tp, void* func) {
-    tp->flag = 0x01;
-    int rc = pthread_create(&tp->thread_id, tp->attr ? &tp->attr->thread_attr : NULL, func, tp->routine);
+inline void create_thread(threads_t* tp, void* func) {
+    int rc = pthread_create(&tp->thread_id, tp->attr ? &tp->attr->thread_attr : NULL, func, atomic_load_explicit(&tp->routine, memory_order_relaxed));
     if (rc) {
         printf("pthread_create failed: %s (errno: %d)\n", strerror(rc), rc);
         return;
     }
-    return;
+    thread_t_routine_tag(&tp->routine);
 }
-// TODO: you can create threads without the need of attributes for the thread. So if that is the case, then it will be a stateless thread
-// So we need a function that sets the detacthed state up at runtime 
-void join_thread(threads_t* t, void** rtn) {
-    t->flag = 0x0;
-    if (t->attr) {
-        int state; 
+
+inline void join_thread(threads_t* t, void** rtn) {
+    int state;
+    if (t->attr) { 
         pthread_attr_getdetachstate(&t->attr->thread_attr, &state);
         if (state != PTHREAD_CREATE_DETACHED) pthread_join(t->thread_id, rtn);
-    }
-    if (t->routine->args) for (size_t i = 0; i < t->routine->size; i++) t->routine->args[i] = NULL;
-    return;
+    } else pthread_join(t->thread_id, rtn);
+
+    function_t* routine = NULL;
+    if (thread_t_routine_tagged(&t->routine)) {
+        thread_t_routine_untag(&t->routine);
+        routine = atomic_load_explicit(&t->routine, memory_order_acquire);
+    } routine = atomic_load_explicit(&t->routine, memory_order_acquire);
+
+    if (routine && routine->args) for (size_t i = 0; i < routine->size; i++) routine->args[i] = NULL;
+    atomic_store_explicit(&t->routine, routine, memory_order_release);
 }
 
-threads_t* find_thread_t(threads_t* tp, const unsigned int size) {
-
-    for (unsigned int i = 0; i < size; i++) {
-        if (tp->flag == 0x0) return &tp[i];
+inline threads_t* find_thread_t(threads_t* tp, const size_t size) {
+    for (size_t i = 0; i < size; i++) {
+        if (!thread_t_routine_tagged(&tp[i].routine)) return &tp[i];
     }
-
     return NULL;
 }
 
+inline size_t thread_pool_index(threads_t* tp, threads_t* t) {
+    if (!tp || !t) return SIZE_MAX;
+    return (size_t)(t - tp);
+}
+
 void clean_threads(threads_t* t) {
-    if (t->flag == 0x01) {
-        printf("Warning: Address of thread_t: [ %p ] has not been joined!\n ", t);
+    function_t* raw = atomic_load_explicit(&t->routine, memory_order_acquire);
+    if (raw && IS_ADDRESS_TAGGED(raw)) {
+        printf("Warning: Address of thread_t: [ %p ] has not been joined!\n ", (void*)t);
     }
+    function_t* routine = UNTAG_ADDRESS(raw);
+    atomic_store_explicit(&t->routine, routine, memory_order_release);
+
     if (t->attr) {
         if (t->attr->stackaddr) {
             size_t page_size = (size_t)sysconf(_SC_PAGESIZE);
@@ -389,10 +578,9 @@ void clean_threads(threads_t* t) {
                 mprotect(t->attr->stackaddr, total_with_guard, PROT_READ | PROT_WRITE);
                 memset(t->attr->stackaddr, 0, total_with_guard);
             }
-            free(t->attr->stackaddr);
+            __ss > ALLOC_THRESHOLD ? munmap_address(t->attr->stackaddr, total_with_guard) : free(t->attr->stackaddr);
             t->attr->stackaddr = NULL;
         }
-
         pthread_attr_destroy(&t->attr->thread_attr);
         pthread_mutexattr_destroy(&t->attr->mutex_attr);
         memset(t->attr, 0, sizeof(attr_t));
@@ -407,18 +595,16 @@ void clean_threads(threads_t* t) {
         t->lock = NULL;
     }
 
-    if (t->routine) {
-        if (t->routine->args) { 
-            memset(t->routine->args, 0, t->routine->size * sizeof(void*));
-            free(t->routine->args); 
-            t->routine->args = NULL; 
+    if (routine) {
+        if (routine->args) { 
+            memset(routine->args, 0, routine->size * sizeof(void*));
+            free(routine->args); 
+            routine->args = NULL; 
         }
-        memset(t->routine, 0, sizeof(function_t));
-        free(t->routine);
-        t->routine = NULL;
+        memset(routine, 0, sizeof(function_t));
+        free(routine);
+        atomic_store_explicit(&t->routine, NULL, memory_order_release);
     }
-
-    return;
 }
 
 
