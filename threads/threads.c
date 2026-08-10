@@ -18,8 +18,6 @@
 #include "../logger/buffer.h"
 #include <stdalign.h>
 #include <stdarg.h>
-#include <stdatomic.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
@@ -53,7 +51,7 @@ inline void** routine_metadata_arguments(struct function_t* meta) { return meta-
 
 [[gnu::hot]]
 inline void routine_metadata(threads_t* t, const size_t length, ...) {
-    function_t* routine = atomic_load_explicit(&t->routine, memory_order_acquire);
+    function_t* routine = atomic_load_explicit(&t->routine, memory_order_relaxed);
     if (!routine) {
         routine = aligned_alloc(alignof(function_t), sizeof(function_t));
         if (!routine) return;
@@ -96,30 +94,31 @@ inline void routine_metadata(threads_t* t, const size_t length, ...) {
     for (size_t i = 0; i < length; i++) routine->args[i] = va_arg(args, void*);
     va_end(args);
 
-    atomic_store_explicit(&t->routine, routine, memory_order_release);
+    atomic_store_explicit(&t->routine, routine, memory_order_relaxed);
 }
 
 [[gnu::hot]]
 FORCE_INLINE unsigned char thread_t_routine_tagged(_Atomic(struct function_t*)* meta) {
     function_t* cur = atomic_load_explicit(meta, memory_order_relaxed);
-    return IS_ADDRESS_TAGGED(cur);
+    if (IS_ADDRESS_TAGGED(cur)) return 0x01;
+    return 0x0;
 }
 
 [[gnu::hot]]
 inline void thread_t_routine_untag(_Atomic(struct function_t*)* meta) {
     if (thread_t_routine_tagged(meta)) {
-        function_t* cur = atomic_load_explicit(meta, memory_order_acquire);
+        function_t* cur = atomic_load_explicit(meta, memory_order_relaxed);
         cur = UNTAG_ADDRESS(cur);
-        atomic_store_explicit(meta, cur, memory_order_release);
+        atomic_store_explicit(meta, cur, memory_order_relaxed);
     }
 }
 
 [[gnu::hot]]
 inline void thread_t_routine_tag(_Atomic(struct function_t*)* meta) {
     if (!thread_t_routine_tagged(meta)) {
-        function_t* routine = atomic_load_explicit(meta, memory_order_acquire);
-        routine = TAG_ADDRESS(routine);
-        atomic_store_explicit(meta, routine, memory_order_release);
+        function_t* untagged = atomic_load_explicit(meta, memory_order_relaxed);
+        function_t* tagged = TAG_ADDRESS(untagged);
+        atomic_store_explicit(meta, tagged, memory_order_relaxed);
     }
 }
 
@@ -131,12 +130,15 @@ inline void thread_t_routine_tag(_Atomic(struct function_t*)* meta) {
  * @param flags Mapping flags (will be OR'd with MAP_SHARED)
  * @param fildes File descriptor (or -1 for anonymous mapping)
  * @param off Offset in the file/object (in pages, multiply by page size)
+ * @note: Pass in INT_MAX if no other flags are needed
  * @return Pointer to mapped region, or MAP_FAILED on error
 */
 inline void* shared_address(void *addr, size_t len, int prot, int flags, int fildes, unsigned char off) {
     off_t offset = (off_t)off * sysconf(_SC_PAGE_SIZE);
     
-    void* result = mmap(addr, len, prot, MAP_SHARED | MAP_ANONYMOUS | flags, fildes, offset);
+    void* result = NULL;
+    if (flags != INT_MAX) result = mmap(addr, len, prot, MAP_SHARED | MAP_ANONYMOUS | flags, fildes, offset);
+    else result = mmap(addr, len, prot, MAP_SHARED | MAP_ANONYMOUS, fildes, offset);
     
     if (result == MAP_FAILED) {
         fprintf(stderr, "shared_address: mmap failed: %s\n", strerror(errno));
@@ -154,11 +156,14 @@ inline void* shared_address(void *addr, size_t len, int prot, int flags, int fil
  * @param flags Additional mapping flags (will be OR'd with MAP_PRIVATE | MAP_ANONYMOUS)
  * @param fildes File descriptor (ignored for anonymous mappings, pass -1)
  * @param off Offset (ignored for anonymous mappings, pass 0)
+ * @note: Pass in INT_MAX if no other flags are needed
  * @return Pointer to mapped region, or MAP_FAILED on error
 */
 inline void* private_address(void *addr, size_t len, int prot, int flags, int fildes, unsigned char off) {
     
-    void* result = mmap(addr, len, prot, MAP_PRIVATE | MAP_ANONYMOUS | flags, fildes, off);
+    void* result = NULL;
+    if (flags != INT_MAX) result = mmap(addr, len, prot, MAP_PRIVATE | MAP_ANONYMOUS | flags, fildes, off);
+    else result = mmap(addr, len, prot, MAP_PRIVATE | MAP_ANONYMOUS, fildes, off);
     
     if (result == MAP_FAILED) {
         fprintf(stderr, "private_address: mmap failed: %s\n", strerror(errno));
@@ -504,14 +509,9 @@ void create_thread_pool_range(threads_t* tp, const unsigned char mode, const uns
 inline void update_thread_pool(threads_t *tp, const size_t size) {
     pthread_t self = pthread_self();
     for (size_t i = 0; i < size; i++) {
-        function_t* cur = atomic_load_explicit(&tp[i].routine, memory_order_acquire);
-        if (IS_ADDRESS_TAGGED(cur) && !pthread_equal(tp[i].thread_id, self)) {
-            function_t* expected = cur;
-            function_t* desired = UNTAG_ADDRESS(cur);
-            if (atomic_compare_exchange_strong_explicit(&tp[i].routine, &expected, desired,
-                                                          memory_order_acq_rel, memory_order_relaxed)) {
-                join_thread(&tp[i], NULL);
-            }
+        if (thread_t_routine_tagged(&tp[i].routine) && !pthread_equal(tp[i].thread_id, self)) {
+            thread_t_routine_untag(&tp[i].routine);
+            join_thread(&tp[i], NULL);
         }
     }
 }
@@ -525,29 +525,35 @@ inline void update_thread_pool(threads_t *tp, const size_t size) {
             Also, thread id pthread_t is a opaque object meaning it can be a numeric value or a struct. Do not initialize it at all 
 */
 inline void create_thread(threads_t* tp, void* func) {
-    int rc = pthread_create(&tp->thread_id, tp->attr ? &tp->attr->thread_attr : NULL, func, atomic_load_explicit(&tp->routine, memory_order_relaxed));
-    if (rc) {
-        printf("pthread_create failed: %s (errno: %d)\n", strerror(rc), rc);
-        return;
+    pthread_t self = pthread_self();
+    if (!pthread_equal(tp->thread_id, self)) {
+        int rc = pthread_create(&tp->thread_id, tp->attr ? &tp->attr->thread_attr : NULL, func, atomic_load_explicit(&tp->routine, memory_order_relaxed));
+        if (rc) {
+            printf("pthread_create failed: %s (errno: %d)\n", strerror(rc), rc);
+            return;
+        }
+        thread_t_routine_tag(&tp->routine);
     }
-    thread_t_routine_tag(&tp->routine);
 }
 
 inline void join_thread(threads_t* t, void** rtn) {
-    int state;
-    if (t->attr) { 
-        pthread_attr_getdetachstate(&t->attr->thread_attr, &state);
-        if (state != PTHREAD_CREATE_DETACHED) pthread_join(t->thread_id, rtn);
-    } else pthread_join(t->thread_id, rtn);
+    pthread_t self = pthread_self();
+    if (!pthread_equal(t->thread_id, self)) {
+        int state;
+        if (t->attr) { 
+            pthread_attr_getdetachstate(&t->attr->thread_attr, &state);
+            if (state != PTHREAD_CREATE_DETACHED) pthread_join(t->thread_id, rtn);
+        } else pthread_join(t->thread_id, rtn);
 
-    function_t* routine = NULL;
-    if (thread_t_routine_tagged(&t->routine)) {
-        thread_t_routine_untag(&t->routine);
-        routine = atomic_load_explicit(&t->routine, memory_order_acquire);
-    } routine = atomic_load_explicit(&t->routine, memory_order_acquire);
+        function_t* routine = NULL;
+        if (thread_t_routine_tagged(&t->routine)) {
+            thread_t_routine_untag(&t->routine);
+            routine = atomic_load_explicit(&t->routine, memory_order_relaxed);
+        } else routine = atomic_load_explicit(&t->routine, memory_order_relaxed);
 
-    if (routine && routine->args) for (size_t i = 0; i < routine->size; i++) routine->args[i] = NULL;
-    atomic_store_explicit(&t->routine, routine, memory_order_release);
+        if (routine && routine->args) for (size_t i = 0; i < routine->size; i++) routine->args[i] = NULL;
+        atomic_store_explicit(&t->routine, routine, memory_order_relaxed);
+    }
 }
 
 inline threads_t* find_thread_t(threads_t* tp, const size_t size) {
@@ -563,12 +569,12 @@ inline size_t thread_pool_index(threads_t* tp, threads_t* t) {
 }
 
 void clean_threads(threads_t* t) {
-    function_t* raw = atomic_load_explicit(&t->routine, memory_order_acquire);
-    if (raw && IS_ADDRESS_TAGGED(raw)) {
+    if (thread_t_routine_tagged(&t->routine)) {
         printf("Warning: Address of thread_t: [ %p ] has not been joined!\n ", (void*)t);
+        thread_t_routine_untag(&t->routine);
+        join_thread(t, NULL);
     }
-    function_t* routine = UNTAG_ADDRESS(raw);
-    atomic_store_explicit(&t->routine, routine, memory_order_release);
+
 
     if (t->attr) {
         if (t->attr->stackaddr) {
@@ -595,10 +601,11 @@ void clean_threads(threads_t* t) {
         t->lock = NULL;
     }
 
+    function_t* routine = atomic_load_explicit(&t->routine, memory_order_relaxed);
     if (routine) {
         if (routine->args) { 
             memset(routine->args, 0, routine->size * sizeof(void*));
-            free(routine->args); 
+            routine->size > ALLOC_THRESHOLD ? munmap_address(routine->args, routine->size * sizeof(void*)) : free(routine->args); 
             routine->args = NULL; 
         }
         memset(routine, 0, sizeof(function_t));

@@ -77,6 +77,7 @@ typedef struct queue_t {
         while (atomic_load_explicit(&_qx->head, memory_order_relaxed)) { \
             QUEUE_DEQUEUE(_qx, item); \
         } \
+        (void)item; \
         const size_t size = QUEUE_SIZE(_qx); \
         if (size == 0) { \
             if (_qx) { \

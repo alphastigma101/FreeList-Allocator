@@ -1,6 +1,7 @@
 #include "../tests/tests.h"
 #include <limits.h>
 #include <sched.h>
+#include <stdatomic.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -197,6 +198,17 @@ TEST(Modes, Thread) {
     clean_threads(&t0);
 }
 
+TEST(Tagging, Thread) {
+    thread_t_routine_tag(&threads[0].routine);
+    EXPECT_EQ(0x01, IS_ADDRESS_TAGGED(atomic_load_explicit(&threads[0].routine, memory_order_relaxed)));
+    thread_t_routine_untag(&threads[0].routine);
+    EXPECT_EQ(0x01, !IS_ADDRESS_TAGGED(atomic_load_explicit(&threads[0].routine, memory_order_relaxed)));
+
+    for (size_t i = 0; i < 4; i++) thread_t_routine_tag(&threads[i].routine);
+    update_thread_pool(threads, 4);
+    for (size_t i = 0; i < 4; i++) EXPECT_EQ(0x01, !IS_ADDRESS_TAGGED(atomic_load_explicit(&threads[i].routine, memory_order_relaxed)));
+}
+
 TEST(LockThreadPool, NumericValue) {
     int* i = shared_address(NULL, sizeof(int), PROT_WRITE | PROT_READ, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
     atomic_int size;
@@ -362,6 +374,7 @@ TEST(LFTPExternal, Queue) {
         QUEUE_DEQUEUE(&queue, item);
         count++;
     }
+    (void)item;
 
     join_thread(&threads[0], NULL);
     join_thread(&threads[1], NULL);
@@ -375,10 +388,6 @@ TEST(Thread, Clean) {
     free(threads);
     threads = NULL;
 }
-
-
-
-// TODO: ZSTD Also has its own threading library, so that needs to be integrated into busybox's configuration
 
 int main(void) {
     printf("\n"
