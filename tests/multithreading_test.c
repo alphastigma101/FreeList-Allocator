@@ -43,13 +43,13 @@ static inline void* queue_t_random_numerical_values(struct function_t* meta) {
     void** args = routine_metadata_arguments(meta);
     if (!args) pthread_exit(NULL);
     
-    queue_t* queue = (queue_t*)args[0];
-    size_t length = *(size_t*)args[1];
-    size_t range = *(size_t*)args[2];
+    size_t length = *(size_t*)args[0];
+    size_t range = *(size_t*)args[1];
     
     for (size_t i = 0; i < length; i++) {
-        size_t value = (rand() % range);
-        QUEUE_ENQUEUE(queue, &value, "external");
+        size_t value = (size_t)(rand());
+        value = value % range;
+        QUEUE_ENQUEUE(&queue, &value, "external");
     }
 
     pthread_exit(NULL);
@@ -313,7 +313,7 @@ TEST(LockFreeThreadPool, StringTraversal) {
 
     for (;;) {
         if (res == 1) break;
-        if (t1_res != 0.5) {
+        if (t1_res != (float)0.5) {
             uintptr_t current = atomic_load(&one);
             const char* str = (const char*)current;
             if (*str == '\0') t1_res = 0.5;
@@ -328,7 +328,7 @@ TEST(LockFreeThreadPool, StringTraversal) {
             }
         }
 
-        if (t2_res != 0.5) {
+        if (t2_res != (float)0.5) {
             uintptr_t current = atomic_load(&two);
             const char* str = (const char*)current;
             if (*str == '\0') t2_res = 0.5;
@@ -360,12 +360,12 @@ TEST(LFTPExternal, Queue) {
     
     size_t length = 50, range = 100;
     /** Thread A */
-    routine_metadata(&threads[0], 3, &queue, &length, &range);
+    routine_metadata(&threads[0], 2, &length, &range);
     create_thread(&threads[0], queue_t_random_numerical_values);
     
     length = 150, range = 200;
     /** Thread B */
-    routine_metadata(&threads[1], 3, &queue, &length, &range);
+    routine_metadata(&threads[1], 2, &length, &range);
     create_thread(&threads[1], queue_t_random_numerical_values);
     
     size_t count = 0;

@@ -73,11 +73,11 @@ typedef struct queue_t {
 #define QUEUE_DESTROY(q) do { \
     __typeof__(queue_t *) _qx = (q); \
     if (_qx) { \
-        void* item = NULL; \
+        void* _qx_item = NULL; \
         while (atomic_load_explicit(&_qx->head, memory_order_relaxed)) { \
-            QUEUE_DEQUEUE(_qx, item); \
+            QUEUE_DEQUEUE(_qx, _qx_item); \
         } \
-        (void)item; \
+        (void)_qx_item; \
         const size_t size = QUEUE_SIZE(_qx); \
         if (size == 0) { \
             if (_qx) { \

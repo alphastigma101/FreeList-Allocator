@@ -65,7 +65,7 @@ static int indexes[3];
 static inline int populate_small_buckets(const int idx, const int start_idx) {
     int new_idx = start_idx;
     for (;;) {
-        size_t bytes = (rand() % 62) + 1; // TODO: Change this out. 
+        size_t bytes = (size_t)(rand() % 62) + 1; // TODO: Change this out. 
         s_stack[new_idx].ptr = allocator.allocate(bytes);
         s_stack[new_idx].bytes = bytes;
         if (allocator.bucket.small[idx].flag == 0x01) break;
@@ -76,7 +76,7 @@ static inline int populate_small_buckets(const int idx, const int start_idx) {
 static inline int populate_medium_buckets(const int idx, const int start_idx) {
     int new_idx = start_idx;
     for (;;) {
-        size_t bytes = (rand() % 64) + 65;
+        size_t bytes = (size_t)(rand() % 64) + 65;
         if (bytes > 64) {
             s_stack[new_idx].ptr = allocator.allocate(bytes);
             s_stack[new_idx].bytes = bytes;
@@ -90,7 +90,7 @@ static inline int populate_medium_buckets(const int idx, const int start_idx) {
 static inline int populate_large_buckets(const int idx, const int start_idx) {
     int new_idx = start_idx;
     for (;;) {
-        size_t bytes = (rand() % 128) + 129;
+        size_t bytes = (size_t)(rand() % 128) + 129;
         if (bytes > 128) {
             s_stack[new_idx].ptr = allocator.allocate(bytes);
             if (allocator.bucket.large[idx].flag == 0x01) break;
@@ -165,11 +165,11 @@ TEST(BitmapSuite, Small) {
     EXPECT_EQ(zero, 0);
     allocator.bitmap = allocator.bitmap.bitmap_set(allocator.bitmap, 0, 0, BUCKET_SMALL_CAP);
     allocator.bitmap = allocator.bitmap.bitmap_clear(allocator.bitmap, 2, 0, BUCKET_SMALL_CAP);
-    const int two = allocator.bitmap.bitmap_test(allocator.bitmap, 0, BUCKET_SMALL_CAP);
+    const size_t two = allocator.bitmap.bitmap_test(allocator.bitmap, 0, BUCKET_SMALL_CAP);
     EXPECT_EQ(two, 2);
     allocator.bitmap = allocator.bitmap.bitmap_set(allocator.bitmap, 2, 0, BUCKET_SMALL_CAP);
     allocator.bitmap = allocator.bitmap.bitmap_clear(allocator.bitmap, 3, 0, BUCKET_SMALL_CAP);
-    const int three = allocator.bitmap.bitmap_test(allocator.bitmap, 0, BUCKET_SMALL_CAP);
+    const size_t three = allocator.bitmap.bitmap_test(allocator.bitmap, 0, BUCKET_SMALL_CAP);
     EXPECT_EQ(three, 3);
     for (unsigned int i = 0; i < BUCKET_SMALL_CAP; i++) allocator.bitmap = allocator.bitmap.bitmap_clear(allocator.bitmap, i, 0, BUCKET_SMALL_CAP);
 }
@@ -241,14 +241,14 @@ TEST(Coalescing, Small) {
     arr[0] = allocator.allocate(sizeof(int));
     arr[1] = allocator.allocate(sizeof(int));
     arr[2] = allocator.allocate(sizeof(int));
-    const unsigned int curr = allocator.bucket.small[0].arena->curr;
+    const size_t curr = allocator.bucket.small[0].arena->curr;
     
     allocator.deallocate(arr[0]);
     allocator.deallocate(arr[1]);
 
     arr[3] = allocator.allocate(8);
     EXPECT_EQ(curr, allocator.bucket.small[0].arena->curr); /* If it stays the same, the blocks have been merged */ 
-    for (unsigned int i = 0; i < 4; i++) {
+    for (size_t i = 0; i < 4; i++) {
         if (arr[i]) allocator.deallocate(arr[i]);
     } 
     memset(arr, 0, sizeof(int*) * 4);
@@ -256,26 +256,26 @@ TEST(Coalescing, Small) {
 }
 
 TEST(Bitmap, Medium) {
-    for (int i = 0; i < 64; i++) allocator.bitmap = allocator.bitmap.bitmap_set(allocator.bitmap, i, 0, BUCKET_MEDIUM_CAP);
+    for (size_t i = 0; i < 64; i++) allocator.bitmap = allocator.bitmap.bitmap_set(allocator.bitmap, i, 0, BUCKET_MEDIUM_CAP);
     allocator.bitmap = allocator.bitmap.bitmap_set(allocator.bitmap, 64, 0, BUCKET_MEDIUM_CAP);
     allocator.bitmap = allocator.bitmap.bitmap_set(allocator.bitmap, 65, 0, BUCKET_MEDIUM_CAP);
     allocator.bitmap = allocator.bitmap.bitmap_set(allocator.bitmap, 66, 0, BUCKET_MEDIUM_CAP);
     allocator.bitmap = allocator.bitmap.bitmap_set(allocator.bitmap, 67, 0, BUCKET_MEDIUM_CAP);
-    const int index = allocator.bitmap.bitmap_test(allocator.bitmap, 0, BUCKET_MEDIUM_CAP);
+    const size_t index = allocator.bitmap.bitmap_test(allocator.bitmap, 0, BUCKET_MEDIUM_CAP);
     EXPECT_EQ(index, 68);
     allocator.bitmap = allocator.bitmap.bitmap_clear(allocator.bitmap, 64, 0, BUCKET_MEDIUM_CAP);
-    const int zero = allocator.bitmap.bitmap_test(allocator.bitmap, 0, BUCKET_MEDIUM_CAP);
+    const size_t zero = allocator.bitmap.bitmap_test(allocator.bitmap, 0, BUCKET_MEDIUM_CAP);
     EXPECT_EQ(zero, 64);
     allocator.bitmap = allocator.bitmap.bitmap_set(allocator.bitmap, 64, 0, BUCKET_MEDIUM_CAP);
     allocator.bitmap = allocator.bitmap.bitmap_clear(allocator.bitmap, 66, 0, BUCKET_MEDIUM_CAP);
-    const int two = allocator.bitmap.bitmap_test(allocator.bitmap, 0, BUCKET_MEDIUM_CAP);
+    const size_t two = allocator.bitmap.bitmap_test(allocator.bitmap, 0, BUCKET_MEDIUM_CAP);
     EXPECT_EQ(two, 66);
     allocator.bitmap = allocator.bitmap.bitmap_set(allocator.bitmap, 66, 0, BUCKET_MEDIUM_CAP);
     allocator.bitmap = allocator.bitmap.bitmap_clear(allocator.bitmap, 67, 0, BUCKET_MEDIUM_CAP);
-    const int three = allocator.bitmap.bitmap_test(allocator.bitmap, 0, BUCKET_MEDIUM_CAP);
+    const size_t three = allocator.bitmap.bitmap_test(allocator.bitmap, 0, BUCKET_MEDIUM_CAP);
     EXPECT_EQ(three, 67);
     for (unsigned int i = 0; i < 64; i++) allocator.bitmap = allocator.bitmap.bitmap_clear(allocator.bitmap, i, 0, BUCKET_MEDIUM_CAP);
-    int res = allocator.bitmap.bitmap_test(allocator.bitmap, 0, BUCKET_MEDIUM_CAP);;
+    size_t res = allocator.bitmap.bitmap_test(allocator.bitmap, 0, BUCKET_MEDIUM_CAP);;
     EXPECT_EQ(res, 0);
 }
 
@@ -345,38 +345,38 @@ TEST(Coalescing, Medium) {
     arr[0] = allocator.allocate(BUCKET_SMALL_CAP);
     arr[1] = allocator.allocate(BUCKET_SMALL_CAP);
     arr[2] = allocator.allocate(BUCKET_SMALL_CAP); /* An extra allocation will keep the entries alive and well. */
-    const unsigned int curr = allocator.bucket.medium[0].arena->curr;
+    const size_t curr = allocator.bucket.medium[0].arena->curr;
     
     allocator.deallocate(arr[0]);
     allocator.deallocate(arr[1]);
 
     arr[3] = allocator.allocate(128);
     EXPECT_EQ(curr, allocator.bucket.medium[0].arena->curr); /* If it stays the same, the blocks have been merged */ 
-    for (unsigned int i = 0; i < 4; i++) allocator.deallocate(arr[i]); 
-    memset(arr, 0, sizeof(int) * 4);
+    for (size_t i = 0; i < 4; i++) allocator.deallocate(arr[i]); 
+    memset(arr, 0, sizeof(int*) * 4);
     EXPECT_EQ(allocator.bucket.medium[0].arena->curr, 1);
 }
 
 TEST(Bitmap, Large) {
-    for (unsigned int i = 0; i < 192; i++) allocator.bitmap = allocator.bitmap.bitmap_set(allocator.bitmap, i, 0, BUCKET_LARGE_CAP);
+    for (size_t i = 0; i < 192; i++) allocator.bitmap = allocator.bitmap.bitmap_set(allocator.bitmap, i, 0, BUCKET_LARGE_CAP);
     allocator.bitmap = allocator.bitmap.bitmap_set(allocator.bitmap, 192, 0, BUCKET_LARGE_CAP);
     allocator.bitmap = allocator.bitmap.bitmap_set(allocator.bitmap, 193, 0, BUCKET_LARGE_CAP);
     allocator.bitmap = allocator.bitmap.bitmap_set(allocator.bitmap, 194, 0, BUCKET_LARGE_CAP);
     allocator.bitmap = allocator.bitmap.bitmap_set(allocator.bitmap, 195, 0, BUCKET_LARGE_CAP);
-    const int index = allocator.bitmap.bitmap_test(allocator.bitmap, 0, BUCKET_LARGE_CAP);
+    const size_t index = allocator.bitmap.bitmap_test(allocator.bitmap, 0, BUCKET_LARGE_CAP);
     EXPECT_EQ(index, 196);
     allocator.bitmap = allocator.bitmap.bitmap_clear(allocator.bitmap, 192, 0, BUCKET_LARGE_CAP);
-    const int zero = allocator.bitmap.bitmap_test(allocator.bitmap, 0, BUCKET_LARGE_CAP);
+    const size_t zero = allocator.bitmap.bitmap_test(allocator.bitmap, 0, BUCKET_LARGE_CAP);
     EXPECT_EQ(zero, 192);
     allocator.bitmap = allocator.bitmap.bitmap_set(allocator.bitmap, 192, 0, BUCKET_LARGE_CAP);
     allocator.bitmap = allocator.bitmap.bitmap_clear(allocator.bitmap, 194, 0, BUCKET_LARGE_CAP);
-    const int two = allocator.bitmap.bitmap_test(allocator.bitmap, 0, BUCKET_LARGE_CAP);
+    const size_t two = allocator.bitmap.bitmap_test(allocator.bitmap, 0, BUCKET_LARGE_CAP);
     EXPECT_EQ(two, 194);
     allocator.bitmap = allocator.bitmap.bitmap_set(allocator.bitmap, 194, 0, BUCKET_LARGE_CAP);
     allocator.bitmap = allocator.bitmap.bitmap_clear(allocator.bitmap, 195, 0, BUCKET_LARGE_CAP);
-    const int three = allocator.bitmap.bitmap_test(allocator.bitmap, 0, BUCKET_LARGE_CAP);
+    const size_t three = allocator.bitmap.bitmap_test(allocator.bitmap, 0, BUCKET_LARGE_CAP);
     EXPECT_EQ(three, 195);
-    for (unsigned int i = 0; i < BUCKET_LARGE_CAP; i++) allocator.bitmap = allocator.bitmap.bitmap_clear(allocator.bitmap, i, 0, BUCKET_LARGE_CAP);
+    for (size_t i = 0; i < BUCKET_LARGE_CAP; i++) allocator.bitmap = allocator.bitmap.bitmap_clear(allocator.bitmap, i, 0, BUCKET_LARGE_CAP);
 }
 
 TEST(PopulateSuite, Large) {
@@ -445,25 +445,25 @@ TEST(Coalescing, Large) {
     arr[0] = allocator.allocate(128);
     arr[1] = allocator.allocate(128);
     arr[2] = allocator.allocate(128); /* An extra allocation will keep the entries alive and well. */
-    const unsigned int curr = allocator.bucket.large[0].arena->curr;
+    const size_t curr = allocator.bucket.large[0].arena->curr;
     
     allocator.deallocate(arr[0]);
     allocator.deallocate(arr[1]);
 
     arr[3] = allocator.allocate(256);
     EXPECT_EQ(curr, allocator.bucket.large[0].arena->curr); /* If it stays the same, the blocks have been merged */ 
-    for (unsigned int i = 0; i < 4; i++) allocator.deallocate(arr[i]); 
-    memset(arr, 0, sizeof(int) * 4);
+    for (size_t i = 0; i < 4; i++) allocator.deallocate(arr[i]); 
+    memset(arr, 0, sizeof(int*) * 4);
     EXPECT_EQ(allocator.bucket.large[0].arena->curr, 1);
 }
 
 TEST(Coalescing, Any) {
     int** arr[4];
-    unsigned int curr[4];
+    //size_t curr[4];
     arr[0] = allocator.allocate(256);
     arr[1] = allocator.allocate(256);
     arr[2] = allocator.allocate(256); /* An extra allocation will keep the entries alive and well. */
-    curr[0] = allocator.bucket.large[0].arena->curr;
+    //curr[0] = allocator.bucket.large[0].arena->curr;
     
     allocator.deallocate(arr[0]);
     allocator.deallocate(arr[1]);
@@ -473,9 +473,9 @@ TEST(Coalescing, Any) {
     //arr[0] = allocator.allocate(1000);
     //EXPECT_EQ(arr[0], NULL);
     //EXPECT_EQ(curr[0], allocator.bucket.large[0].arena->curr); /* If it stays the same, the blocks have been merged */ 
-    for (unsigned int i = 0; i < 4; i++) allocator.deallocate(arr[i]); 
+    for (size_t i = 0; i < 4; i++) allocator.deallocate(arr[i]); 
     //EXPECT_EQ(allocator.bucket.large[0].arena->curr, 1);
-    memset(arr, 0, sizeof(int) * 4);
+    memset(arr, 0, sizeof(int*) * 4);
 }
 
 int main(void) {

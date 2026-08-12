@@ -1,9 +1,7 @@
-
 Notes.txt
 callgrind.out.*
+cachegrind.out.*
 asm_output/
-inline.txt
-macros.txt
 cmake_install.cmake
 CMakeCache.txt
 CMakeFiles
@@ -11,5 +9,6 @@ snapshots
 tests/tests.h
 tests/bench.h
 test_*
-bench_*
 Notes*
+*.gcov
+result.txt

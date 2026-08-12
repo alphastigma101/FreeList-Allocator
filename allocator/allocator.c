@@ -1,11 +1,12 @@
 #include "allocator.h"
+#include <limits.h>
 #include <stdalign.h>
-#include <stdatomic.h>
-#include <stdio.h>
+#include <sys/mman.h>
 #include <sys/sysinfo.h>
 #include <string.h>
 #include <stdlib.h>
 #include <sys/types.h>
+#include <time.h>
 #if BENCHMARK_ENV == 1
     FORCE_INLINE void init_benchmark_allocator_t();
     benchmark_allocator_t benchmark_allocator = {0};
@@ -38,7 +39,7 @@ typedef struct offset_entries_t {
 
 typedef struct entry_table_t {
     byte_entries_t** entries;
-    size_t bucket_count;
+    size_t bucket_count; /* disctance of arena->next is determined by this field member. */
 } entry_table_t;
 
 
@@ -48,26 +49,18 @@ typedef struct entry_table_t {
 
 
 FORCE_INLINE entry_table_t* entry_table_init(entry_table_t* table) {
-    if (!table) {
-        table = aligned_alloc(alignof(entry_table_t), sizeof(entry_table_t));
-        if (!table) return NULL;
-        memset(table, 0, sizeof(entry_table_t));
-    }
-    table->entries = ENABLE_SHARED_MEMORY == 1 ? shared_address(NULL, 64 * sizeof(byte_entries_t*), PROT_WRITE | PROT_READ, MAP_NORESERVE, -1, 0) :
-    private_address(NULL, 64 * sizeof(byte_entries_t*), PROT_WRITE | PROT_READ, MAP_NORESERVE, -1, 0);
+    table->entries = shared_address(NULL, 64 * sizeof(byte_entries_t*), PROT_WRITE | PROT_READ, MAP_NORESERVE, -1, 0); 
     if (table->entries == MAP_FAILED) {
         memset(table, 0, sizeof(entry_table_t));
-        free(table->entries);
+        munmap_address(table->entries, 64 * sizeof(byte_entries_t*));
         table->entries = NULL;
-        table = NULL;
         return NULL;
     }
     else {
         int res = madvise(table->entries, 64 * sizeof(byte_entries_t*), MADV_SEQUENTIAL | MADV_MERGEABLE);
         if (res == -1) {
             munmap_address(table->entries, 64 * sizeof(byte_entries_t*));
-            free(table);
-            table = NULL;
+            table->entries = NULL;
             return NULL;
         }
     }
@@ -83,8 +76,9 @@ FORCE_INLINE entry_table_t* entry_table_init(entry_table_t* table) {
     * @return: Nothing
 */
 FORCE_INLINE entry_table_t* resize_table(entry_table_t* table) {
+    if (!table->entries) return NULL;
     size_t new_bucket_count = table->bucket_count * 2;
-    byte_entries_t** new_entries =  shared_address(NULL, new_bucket_count * sizeof(byte_entries_t*), PROT_WRITE | PROT_READ, MAP_SHARED | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+    byte_entries_t** new_entries =  shared_address(NULL, new_bucket_count * sizeof(byte_entries_t*), PROT_WRITE | PROT_READ, MAP_NORESERVE, -1, 0);
     if (new_entries == MAP_FAILED) return NULL;
     else {
         int res = madvise(new_entries, new_bucket_count * sizeof(byte_entries_t*), MADV_SEQUENTIAL | MADV_MERGEABLE);
@@ -102,7 +96,7 @@ FORCE_INLINE entry_table_t* resize_table(entry_table_t* table) {
 }
 
 FORCE_INLINE byte_entries_t* create_byte_entry(const size_t bytes, const unsigned char inuse, void* ptr) {
-    byte_entries_t* bnode = ENABLE_SHARED_MEMORY == 0X01 ? shared_address(NULL, sizeof(byte_entries_t), PROT_WRITE | PROT_READ, MAP_NORESERVE, -1, 0) : aligned_alloc(alignof(byte_entries_t), sizeof(byte_entries_t));
+    byte_entries_t* bnode = shared_address(NULL, sizeof(byte_entries_t), PROT_WRITE | PROT_READ, INT_MAX, -1, 0);
     if (bnode) {
         memset(bnode, 0, sizeof(byte_entries_t)); 
         bnode->ptr = ptr; 
@@ -116,7 +110,7 @@ FORCE_INLINE byte_entries_t* create_byte_entry(const size_t bytes, const unsigne
 }
 
 FORCE_INLINE offset_entries_t* create_offset_entry(const size_t offset, const unsigned char inuse, void* ptr) {
-    offset_entries_t* onode = ENABLE_SHARED_MEMORY == 0X01 ? shared_address(NULL, sizeof(offset_entries_t), PROT_WRITE | PROT_READ, MAP_NORESERVE, -1, 0) : aligned_alloc(alignof(offset_entries_t), sizeof(offset_entries_t));
+    offset_entries_t* onode = shared_address(NULL, sizeof(offset_entries_t), PROT_WRITE | PROT_READ, INT_MAX, -1, 0);
     if (onode) {
         memset(onode, 0, sizeof(offset_entries_t)); 
         onode->ptr = ptr; 
@@ -140,7 +134,7 @@ FORCE_INLINE offset_entries_t* create_offset_entry(const size_t offset, const un
 */
 FORCE_INLINE void set(entry_table_t* table, const size_t idx, const size_t offset, const size_t bytes, const unsigned char inuse, void* ptr) {
     if (offset == 0 || bytes == 0) return;
-    else if (!table || !table->entries) table = entry_table_init(table);
+    else if (!table->entries) table = entry_table_init(table);
     else if (idx >= table->bucket_count) table = resize_table(table);
 
     byte_entries_t* bnode = create_byte_entry(bytes, inuse, ptr);
@@ -155,30 +149,48 @@ FORCE_INLINE void set(entry_table_t* table, const size_t idx, const size_t offse
     return;
 }
 
+/**
+    * @description: Free function that gets the bytes node based on the bytes and the inuse 
+    * @param table: the table that might have the desired byte node
+    * @param idx: the numerical value used for indexing into `entries`
+    * @param bytes: The requested bytes 
+    * @param inuse: The desired flag which can be 0x0 or 0x01 
+*/
 FORCE_INLINE byte_entries_t* get_entry_t_by_bytes(entry_table_t* table, const size_t idx, const size_t bytes, const unsigned char inuse) {
-    if (!table || !table->entries) return NULL;
-    else if (idx >= table->bucket_count) return NULL; 
+    if (__builtin_expect(!table->entries, 0)) return NULL;
+    else if (__builtin_expect(idx >= table->bucket_count, 0)) return NULL;
     
     byte_entries_t* n = NULL;
-    if (table->entries) n = table->entries[idx];
-    
-    while (n) {
-        //if (n->next) __builtin_prefetch(n->next, 0, 1);
-        unsigned int matches = (n->bytes == bytes) & (n->inuse == inuse);
-        if (matches) return n;
+    if (table->entries[idx]) n = table->entries[idx];
+    else return NULL;
+
+    __builtin_prefetch(n, 0, 1);
+    while (__builtin_expect(n != NULL, 1)) {
+        __builtin_prefetch(n->next, 0, 1);
+        if ((n->bytes == bytes) && (n->inuse == inuse)) return n;
         n = n->next;
     }
     return NULL;
 }
 
+/**
+    * @description: Free function that gets the bytes node based on the bytes and the inuse 
+    * @param table: the table that might have the desired byte node
+    * @param idx: the numerical value used for indexing into `entries`
+    * @param offset: The requested offset 
+    * @param inuse: The desired flag which can be 0x0 or 0x01 
+*/
 FORCE_INLINE offset_entries_t* get_entry_t_by_offset(entry_table_t* table, const size_t idx, const size_t offset, const unsigned char inuse) {
-    if (!table || !table->entries) return NULL;
-    else if (idx >= table->bucket_count) return NULL;
+    if (__builtin_expect(!table->entries, 0)) return NULL;
+    else if (__builtin_expect(idx >= table->bucket_count, 0)) return NULL;
     
     byte_entries_t* bnode = NULL;
-    if (table->entries) bnode = table->entries[idx];
-    while (bnode) {
-        //__builtin_prefetch(bnode->next, 0, 1);
+    if (table->entries[idx]) bnode = table->entries[idx];
+    else return NULL;
+
+    __builtin_prefetch(bnode, 0, 1);
+    while (__builtin_expect(bnode != NULL, 1)) {
+        __builtin_prefetch(bnode->next, 0, 1);
         offset_entries_t* onode = bnode->offset;
         if (onode->offset == offset && onode->inuse == inuse) return onode;
         bnode = bnode->next;
@@ -196,13 +208,19 @@ FORCE_INLINE offset_entries_t* get_entry_t_by_offset(entry_table_t* table, const
     * @return: Return's nothing
 */
 FORCE_INLINE void update(entry_table_t* table, const size_t idx, const size_t offset, const size_t bytes, const unsigned char inuse) {
-    if (!table || !table->entries) return;
-    else if ((offset == 0) && (bytes == 0)) return;
-    else if (idx >= table->bucket_count) return;
+    if (!table->entries) return;
+    else if (offset == 0 && bytes == 0) return;
+    else if (__builtin_expect(idx >= table->bucket_count, 0)) return;
 
-    byte_entries_t* bnode = table->entries[idx];
-    while (bnode) {
-        if (bnode->offset->offset == offset) {
+    byte_entries_t* bnode = NULL;
+    if (table->entries[idx]) bnode = table->entries[idx];
+    else return;
+
+    while (__builtin_expect(bnode != NULL, 1)) {
+        __builtin_prefetch(bnode->offset, 0, 1);
+        __builtin_prefetch(bnode->next, 0, 1);
+        const offset_entries_t* onode = bnode->offset;
+        if (onode->offset == offset) {
             bnode->inuse = inuse;
             bnode->offset->inuse = inuse;
             break;
@@ -221,14 +239,18 @@ FORCE_INLINE void update(entry_table_t* table, const size_t idx, const size_t of
     * @return: Return's nothing
 */
 FORCE_INLINE void destroy(entry_table_t* table, const size_t idx, const size_t offset, const size_t bytes) {
-    if ((offset == 0) || (bytes == 0)) return;
-    else if (!table || !table->entries || idx > table->bucket_count) return;
+    if (offset == 0 || bytes == 0) return;
+    else if (!table->entries || idx > table->bucket_count) return;
+
+    byte_entries_t* cur = NULL;
+    if (table->entries[idx]) cur = table->entries[idx];
+    else return;
 
     byte_entries_t* prev = NULL;
-    byte_entries_t* cur = table->entries[idx];
     byte_entries_t* bn = NULL;
 
-    while (cur) {
+    while (__builtin_expect(cur != NULL, 1)) {
+        __builtin_prefetch(cur->next, 0, 1);
         if ((cur->offset->offset == offset) && (cur->bytes == bytes)) { bn = cur; break; }
         prev = cur;
         cur = cur->next;
@@ -242,31 +264,32 @@ FORCE_INLINE void destroy(entry_table_t* table, const size_t idx, const size_t o
     memset(bn, 0, offsetof(byte_entries_t, next));
     memset((char*)bn + offsetof(byte_entries_t, next) + sizeof(byte_entries_t*), 0,
            sizeof(byte_entries_t) - offsetof(byte_entries_t, next) - sizeof(byte_entries_t*));
-    ENABLE_SHARED_MEMORY == 0X01 ? munmap_address(bn, sizeof(byte_entries_t*)) : free(bn);
+    munmap_address(bn, sizeof(byte_entries_t*));
 
     if (on) {
         memset(on, 0, offsetof(offset_entries_t, next));
         memset((char*)on + offsetof(offset_entries_t, next) + sizeof(offset_entries_t*), 0,
                sizeof(offset_entries_t) - offsetof(offset_entries_t, next) - sizeof(offset_entries_t*));
-        ENABLE_SHARED_MEMORY == 0X01 ? munmap_address(on, sizeof(offset_entries_t*)) : free(on);
+        munmap_address(on, sizeof(offset_entries_t*));
     }
 }
 
 FORCE_INLINE void clean(entry_table_t *table) {
-    if (!table) return;
     if (table->entries) {
         for (size_t i = 0; i < table->bucket_count; i++) {
             byte_entries_t* n = table->entries[i];
-            while (n && n->ptr) {
+            while (__builtin_expect(n != NULL, 1) && __builtin_expect(n->ptr != NULL, 1)) {
+                __builtin_prefetch(n->next, 0, 1);
+                __builtin_prefetch(n->offset, 0, 1);
                 byte_entries_t* next = n->next;
                 offset_entries_t* on = n->offset;
 
                 memset(n, 0, sizeof(byte_entries_t));
-                ENABLE_SHARED_MEMORY == 1 ? munmap_address(n, sizeof(byte_entries_t)) : free(n);
+                munmap_address(n, sizeof(byte_entries_t));
 
                 if (on) {
                     memset(on, 0, sizeof(offset_entries_t));
-                    ENABLE_SHARED_MEMORY == 1 ? munmap_address(on, sizeof(offset_entries_t)) : free(on);
+                    munmap_address(on, sizeof(offset_entries_t));
                 }
                 n = next;
             }
@@ -286,12 +309,12 @@ FORCE_INLINE void table_free_pages(entry_table_t* table) {
 }
 
 FORCE_INLINE void debug_entry_table_t(const unsigned char mode, entry_table_t* table, const size_t idx) {
-    if (!table || !table->entries) return;
+    if (!table->entries) return;
     else if (idx >= table->bucket_count) return;
     
     if (mode == 0x0) {
         byte_entries_t* bn = table->entries[idx];
-        while (bn->next != NULL) {
+        while (__builtin_expect(bn->next != NULL, 1)) {
             if (bn->offset->offset) {
                 printf("Offset value is: %zu\n", bn->offset->offset);
                 printf("Inuse Value is: %#0x\n", bn->inuse);
@@ -300,9 +323,9 @@ FORCE_INLINE void debug_entry_table_t(const unsigned char mode, entry_table_t* t
         }
     }
     else if (mode == 0x01) {
-        if (idx > table->bucket_count) return;
+        if (idx >= table->bucket_count) return;
         byte_entries_t* n = table->entries[idx];
-        while (n) {
+        while (__builtin_expect(n != NULL, 1)) {
             printf("Offset value is: %zu\n", n->bytes);
             n = n->next;
         }
@@ -310,14 +333,14 @@ FORCE_INLINE void debug_entry_table_t(const unsigned char mode, entry_table_t* t
 }
 
 typedef struct blocks_t {
-    entry_table_t     table;
-    struct blocks_t** chain;
-    struct blocks_t* next;
-    void*            ptr;
-    size_t           bytes;
-    size_t           offset;
-    size_t           size;
-    unsigned char    inuse;
+    _Atomic(entry_table_t)      table;
+    struct blocks_t** chain;    /* TODO: We can tag/untag chain[i] instead of using inuse. */
+    _Atomic(struct blocks_t*)   next;
+    _Atomic(void*)              ptr;
+    _Atomic(size_t)             bytes;
+    _Atomic(size_t)             offset;
+    _Atomic(size_t)             size;
+    _Atomic(unsigned char)      inuse;
 } blocks_t;
 
 /////////////////////////
@@ -326,34 +349,41 @@ typedef struct blocks_t {
 
 FORCE_INLINE void init_blocks_t(blocks_t* blocks) {
     blocks->size = 64;
-    blocks->chain = ENABLE_SHARED_MEMORY == 1 ? shared_address(NULL, blocks->size * sizeof(blocks_t*), PROT_WRITE | PROT_READ, MAP_NORESERVE, -1, 0) :
-     aligned_alloc(alignof(blocks_t*), blocks->size * sizeof(blocks_t*));
+    blocks->chain = shared_address(NULL, blocks->size * sizeof(blocks_t*), PROT_WRITE | PROT_READ, MAP_NORESERVE, -1, 0);
     if (blocks->chain == MAP_FAILED) return;
-    else if (ENABLE_SHARED_MEMORY) {
+    else {
         int res = madvise(blocks->chain, blocks->size * sizeof(blocks_t*), MADV_SEQUENTIAL | MADV_MERGEABLE);
-        if (res == -1) return;
+        if (res == -1) {
+            if (blocks->chain) munmap_address(blocks->chain, blocks->size * sizeof(blocks_t*));
+            blocks->chain = NULL;
+            return;
+        }
     }
     memset(blocks->chain, 0, blocks->size * sizeof(blocks_t*));
     return;
 }
 
+
 FORCE_INLINE blocks_t* create_block_t() {
-    blocks_t* block = ENABLE_SHARED_MEMORY == 1 ? shared_address(NULL, sizeof(blocks_t), PROT_WRITE | PROT_READ, MAP_NORESERVE, -1, 0) : aligned_alloc(alignof(blocks_t), sizeof(blocks_t));
-    if (!block) return NULL;
+    blocks_t* block = shared_address(NULL, sizeof(blocks_t), PROT_WRITE | PROT_READ, INT_MAX, -1, 0);
+    if (block == MAP_FAILED) return NULL;
     memset(block, 0, sizeof(blocks_t));
     return block;
 }
 
+/**
+    * @description: Free function that resizes `blocks->chain` by doubling it
+    * @param blocks: A pointer type consisting of free adjacent blocks that are in use or not inuse.
+    * @return: Nothing
+*/
 FORCE_INLINE void resize_blocks(blocks_t* blocks) {
     if (!blocks->chain) return; 
     const size_t old = blocks->size;
     const size_t new = (blocks->size * 2) * sizeof(blocks_t*);
     
-    blocks_t** chain = ENABLE_SHARED_MEMORY == 1 ? 
-        shared_address(NULL, new * sizeof(blocks_t*), PROT_WRITE | PROT_READ, MAP_NORESERVE, -1, 0) :
-        aligned_alloc(alignof(blocks_t*), new * sizeof(blocks_t*));
+    blocks_t** chain = shared_address(NULL, new * sizeof(blocks_t*), PROT_WRITE | PROT_READ, MAP_NORESERVE, -1, 0);
     if (chain == MAP_FAILED) return;
-    else if (ENABLE_SHARED_MEMORY) {
+    else {
         int res = madvise(chain, new * sizeof(blocks_t*), MADV_SEQUENTIAL | MADV_MERGEABLE);
         if (res == -1) {
             if (chain) { munmap_address(chain, new * sizeof(blocks_t*)); chain = NULL; }
@@ -369,13 +399,25 @@ FORCE_INLINE void resize_blocks(blocks_t* blocks) {
     return;
 }
 
+/**
+    * @description: Free function that checks to see if any free entries can be merged or not before merging
+    * @param table: User defined type that contains a table of entries that are inuse or not inuse
+    * @param idx: The location where the search should begin at.
+    * @param bytes: The requested bytes the user desires
+    * @return: Returns 0x01 if successfull, otherwise 0x0
+*/
 FORCE_INLINE unsigned char is_mergeable(entry_table_t* table, const size_t idx, const size_t bytes) {
-    if (bytes == 0 || !table || !table->entries) return 0x0;
-    else if (idx > table->bucket_count) return 0x0;
+    if (bytes == 0 || !table->entries) return 0x0;
+    else if (idx >= table->bucket_count) return 0x0;
 
-    byte_entries_t* seed = table->entries[idx];
-    while (seed) {
+    byte_entries_t* seed = NULL;
+    if (table->entries[idx]) seed = table->entries[idx];
+    else return 0x0;
+
+    while (__builtin_expect(seed != NULL, 1)) {
+        __builtin_prefetch(seed->next, 0, 1);
         if (seed->inuse == 0x0 && seed->offset) {
+            __builtin_prefetch(seed->offset, 0, 1);
             if (seed->offset->offset) {
                 size_t accumulated = seed->bytes;
                 size_t probe_offset = seed->offset->offset + seed->bytes;
@@ -397,9 +439,14 @@ FORCE_INLINE void merge(blocks_t* blocks, entry_table_t* table, const size_t idx
     if (!blocks->chain) init_blocks_t(blocks);
     else if (idx > blocks->size) resize_blocks(blocks);
 
-    byte_entries_t* seed = table->entries[idx];
-    while (seed) {
+    byte_entries_t* seed = NULL;
+    if (table->entries[idx]) seed = table->entries[idx];
+    else return;
+
+    while (__builtin_expect(seed != NULL, 1)) {
+        __builtin_prefetch(seed->next, 0, 1);
         if (seed->inuse == 0x0) {
+            __builtin_prefetch(seed->offset, 0, 1);
             size_t accumulated = seed->bytes;
             size_t probe_offset = seed->offset->offset + seed->bytes;
             while (accumulated < bytes) {
@@ -414,61 +461,60 @@ FORCE_INLINE void merge(blocks_t* blocks, entry_table_t* table, const size_t idx
     }
     if (!seed) return;
 
+    __builtin_prefetch(seed->offset, 0, 1);
+    const size_t merge_start_offset = seed->offset->offset;
     size_t total = 0;
-    size_t cur_offset = seed->offset->offset;
-    blocks_t* head = NULL;
-    blocks_t* tail = NULL;
+    size_t cur_offset = merge_start_offset;
+    void* merged_ptr = NULL;
 
     while (total < bytes) {
         offset_entries_t* oe = get_entry_t_by_offset(table, idx, cur_offset, 0x0);
         if (!oe) break;
+        __builtin_prefetch(oe->bytes, 0, 1);
         byte_entries_t* piece_entry = oe->bytes;
         size_t piece_bytes = piece_entry->bytes;
         size_t need = bytes - total;
 
-        blocks_t* node = create_block_t();
-        if (!node) break;
-        node->offset = cur_offset;
-        node->inuse = 0x01;
-        node->next = NULL;
+        if (!merged_ptr) merged_ptr = piece_entry->ptr;
 
         if (piece_bytes > need) {
             size_t leftover_bytes = piece_bytes - need;
             size_t leftover_offset = cur_offset + need;
             void* leftover_ptr = (char*)piece_entry->ptr + need;
 
-            node->ptr = piece_entry->ptr;
-            node->bytes = need;
-
             destroy(table, idx, cur_offset, piece_bytes);
             set(table, idx, leftover_offset, leftover_bytes, 0x0, leftover_ptr);
 
             total += need;
+            cur_offset += need;
         } else {
-            node->ptr = piece_entry->ptr;
-            node->bytes = piece_bytes;
+            destroy(table, idx, cur_offset, piece_bytes);
 
             total += piece_bytes;
             cur_offset += piece_bytes;
-
-            destroy(table, idx, node->offset, piece_bytes);
         }
-
-        if (!head) head = node; else tail->next = node;
-        tail = node;
     }
 
-    if (!head) return;
-    tail->next = blocks->chain[idx];
-    blocks->chain[idx] = head;
+    if (total < bytes) return;
+
+    blocks_t* node = create_block_t();
+    if (!node) return;
+    
+    node->offset = merge_start_offset;
+    node->inuse = 0x01;
+    node->ptr = merged_ptr;
+    node->bytes = bytes;
+    node->next = blocks->chain[idx];
+    blocks->chain[idx] = node;
 }
 
 FORCE_INLINE void update_block_t_by_offset(blocks_t* blocks, const size_t idx, const size_t offset, const unsigned char inuse) {
-    if (!blocks) return;
+    if (offset == 0) return;
     else if (!blocks->chain || !blocks->chain[idx]) return;
 
-    blocks_t* seed = blocks->chain[idx];
-    while (seed) {
+    blocks_t* seed = seed = blocks->chain[idx];
+    while (__builtin_expect(seed != NULL, 1)) {
+        __builtin_prefetch(seed->next, 0, 1);
         if ((seed->offset == offset) && (seed->inuse == inuse)) {
             seed->inuse = 0x0;
             return;
@@ -478,11 +524,12 @@ FORCE_INLINE void update_block_t_by_offset(blocks_t* blocks, const size_t idx, c
 }
 
 FORCE_INLINE blocks_t* get_block_t_by_offset(blocks_t* blocks, const size_t idx, const size_t offset, const unsigned char inuse) {
-    if (!blocks) return NULL;
+    if (offset == 0) return NULL;
     else if (!blocks->chain || !blocks->chain[idx]) return NULL;
 
     blocks_t* seed = blocks->chain[idx];
-    while (seed) {
+    while (__builtin_expect(seed != NULL, 1)) {
+        __builtin_prefetch(seed->next, 0, 1);
         if ((seed->offset == offset) && (seed->inuse == inuse)) return seed;
         seed = seed->next;
     }
@@ -497,11 +544,11 @@ FORCE_INLINE void blocks_t_free_pages(blocks_t* blocks) {
 
 FORCE_INLINE void block_t_dctor(blocks_t* blocks) {
     blocks_t* seed = blocks;
-    while (seed) {
+    while (__builtin_expect(seed != NULL, 1)) {
         blocks_t* node = seed->next;
         if (seed) {
             memset(seed, 0, sizeof(blocks_t));
-            ENABLE_SHARED_MEMORY == 1 ? munmap_address(seed, sizeof(blocks_t)) : free(seed);
+            munmap_address(seed, sizeof(blocks_t));
         }
         seed = node;
     }
@@ -718,8 +765,8 @@ FORCE_INLINE void bucket_t_dctor() {
     while (small < BUCKET_SMALL_CAP) {
         arena_t* arena = allocator.bucket.small[small].arena;
         bucket_t slot = allocator.bucket.small[small];
-        entry_table_t table = atomic_load_explicit(&slot.blocks.table, memory_order_relaxed);
-        if (table.entries) clean(&table);
+        //entry_table_t table = atomic_load_explicit(&slot.blocks.table, memory_order_relaxed);
+        if (slot.blocks.table.entries) clean(&slot.blocks.table);
         if (arena) {
             if (arena->chunk) munmap_address(arena->chunk, ARENA_SIZE + 1);
             munmap_address(arena, sizeof(arena_t));
@@ -732,8 +779,8 @@ FORCE_INLINE void bucket_t_dctor() {
     while (medium < BUCKET_MEDIUM_CAP) {
         //arena_t* arena = allocator.bucket.medium[medium].arena;
         bucket_t slot = allocator.bucket.medium[medium];
-        entry_table_t table = atomic_load_explicit(&slot.blocks.table, memory_order_relaxed);
-        if (table.entries) clean(&table);
+        //entry_table_t table = atomic_load_explicit(&slot.blocks.table, memory_order_relaxed);
+        if (slot.blocks.table.entries) clean(&slot.blocks.table);
         /*if (arena != NULL) {
             if (arena->chunk) munmap_address(arena->chunk, ARENA_SIZE + 1);
             munmap_address(arena, sizeof(arena_t));
@@ -746,8 +793,8 @@ FORCE_INLINE void bucket_t_dctor() {
     while (large < BUCKET_LARGE_CAP) {
         arena_t* arena = allocator.bucket.large[large].arena;
         bucket_t slot = allocator.bucket.large[large];
-        entry_table_t table = atomic_load_explicit(&slot.blocks.table, memory_order_relaxed);
-        if (table.entries) clean(&table);
+        //entry_table_t table = atomic_load_explicit(&slot.blocks.table, memory_order_relaxed);
+        if (slot.blocks.table.entries) clean(&slot.blocks.table);
         if (arena) {
             if (arena->chunk) munmap_address(arena->chunk, ARENA_SIZE + 1);
             munmap_address(arena, sizeof(arena_t));
@@ -1151,7 +1198,7 @@ FORCE_INLINE void* coalescing(const size_t bytes) {
         if (b->arena && b->flag == 0x0 && b->arena->flag == 0x0) {
             if (is_mergeable(&b->blocks.table, i, bytes) == 0x01) {
                 merge(&b->blocks, &b->blocks.table, i, bytes);
-                if (b->blocks.chain[i]) return b->blocks.chain[i]->ptr;
+                if (b->blocks.chain[i] && b->blocks.chain[i]->bytes == bytes) return b->blocks.chain[i]->ptr;
             }
         }
     }
@@ -1182,11 +1229,11 @@ FORCE_INLINE void* coalescing(const size_t bytes) {
 FORCE_INLINE void debug_allocator(const size_t bytes) {
     printf("allocator.allocate: Error, failed to allocate memory for %zu\n", bytes);
     printf("Printing out information....\n");
-    printf("Allocator arena state values are: arena = [ %p ], next = [ %p ], res = [ %p ], curr = [ %d ], prev = [  %d ], flag = [ %#0x ]\n", 
+    printf("Allocator arena state values are: arena = [ %p ], next = [ %p ], res = [ %p ], curr = [ %zu ], prev = [ %zu ], flag = [ %#0x ]\n", 
         allocator.arena, allocator.arena->next, allocator.arena->res, allocator.arena->curr, allocator.arena->prev, allocator.arena->flag);
     for (unsigned int i = 0; i < BUCKET_SMALL_CAP; i++) {
         if (allocator.bucket.small[i].arena) {
-            printf("Allocator Bucket Small [ %d ] state values are: arena = [ %p ], next = [ %p ], res = [ %p ], curr = [ %d ], prev = [  %d ], flag = [ %#0x ] bucket_flag = [ %#0x ]\n", 
+            printf("Allocator Bucket Small [ %d ] state values are: arena = [ %p ], next = [ %p ], res = [ %p ], curr = [ %zu ], prev = [  %zu ], flag = [ %#0x ] bucket_flag = [ %#0x ]\n", 
             i, allocator.bucket.small[i].arena, allocator.bucket.small[i].arena->next, allocator.bucket.small[i].arena->res, allocator.bucket.small[i].arena->curr, allocator.bucket.small[i].arena->prev, allocator.bucket.small[i].arena->flag, allocator.bucket.small[i].flag);
             if (allocator.bucket.small[i].blocks.table.entries) {
                 printf("Entries at [ %d ] values are:\n", i);
@@ -1196,7 +1243,7 @@ FORCE_INLINE void debug_allocator(const size_t bytes) {
     }
     for (size_t i = 0; i < BUCKET_MEDIUM_CAP; i++) {
         if (allocator.bucket.medium[i].arena) {
-            printf("Allocator Bucket Medium [ %zu ] state values are: arena = [ %p ], next = [ %p ], res = [ %p ], curr = [ %d ], prev = [  %d ], flag = [ %#0x ] bucket_flag = [ %#0x ]\n", 
+            printf("Allocator Bucket Medium [ %zu ] state values are: arena = [ %p ], next = [ %p ], res = [ %p ], curr = [ %zu ], prev = [  %zu ], flag = [ %#0x ] bucket_flag = [ %#0x ]\n", 
             i, allocator.bucket.medium[i].arena, allocator.bucket.medium[i].arena->next, allocator.bucket.medium[i].arena->res, allocator.bucket.medium[i].arena->curr, allocator.bucket.medium[i].arena->prev, allocator.bucket.medium[i].arena->flag, allocator.bucket.medium[i].flag);
             if (allocator.bucket.medium[i].blocks.table.entries) {
                 printf("Entries at [ %zu ] values are:\n", i);
@@ -1206,7 +1253,7 @@ FORCE_INLINE void debug_allocator(const size_t bytes) {
     }
     for (unsigned int i = 0; i < BUCKET_LARGE_CAP; i++) {
         if (allocator.bucket.large[i].arena) {
-            printf("Allocator Bucket Large [ %d ] state values are: arena = [ %p ], next = [ %p ], res = [ %p ], curr = [ %d ], prev = [  %d ], flag = [ %#0x ] bucket_flag = [ %#0x ]\n", 
+            printf("Allocator Bucket Large [ %d ] state values are: arena = [ %p ], next = [ %p ], res = [ %p ], curr = [ %zu ], prev = [  %zu ], flag = [ %#0x ] bucket_flag = [ %#0x ]\n", 
             i, allocator.bucket.large[i].arena, allocator.bucket.large[i].arena->next, allocator.bucket.large[i].arena->res, allocator.bucket.large[i].arena->curr, allocator.bucket.large[i].arena->prev, allocator.bucket.large[i].arena->flag, allocator.bucket.large[i].flag);
             if (allocator.bucket.large[i].blocks.table.entries) {
                 printf("Entries at [ %d ] values are:\n", i);
@@ -1234,13 +1281,7 @@ void* allocate(size_t bytes) {
     int_fast16_t end = 0;
     bucket_t* slot = NULL;
     
-    while(!atomic_load_explicit(&allocator.huge->done, memory_order_acquire)){}; 
-    threads_t* thread_t_sync = find_thread_t(allocator.pool, ALLOC_THREAD_POOL_SIZE);
-    if (thread_t_sync) {
-        atomic_store_explicit(&allocator.huge->done, 0, memory_order_release);
-        routine_metadata(thread_t_sync, 1, &allocator.huge->done);
-        create_thread(thread_t_sync, thread_update_thread_pool);        
-    } else update_thread_pool(allocator.pool, ALLOC_THREAD_POOL_SIZE);
+    update_thread_pool(allocator.pool, ALLOC_THREAD_POOL_SIZE);
 
     if (bytes <= BUCKET_LARGE_CAP) slot = find_free_slot(bytes);
     else {
@@ -1305,22 +1346,16 @@ void* allocate(size_t bytes) {
 FORCE_INLINE void deallocate(void* ptr) {
     if (!ptr) return;
 
-    while(!atomic_load_explicit(&allocator.huge->done, memory_order_acquire)){}; 
-    threads_t* thread_t_sync = find_thread_t(allocator.pool, ALLOC_THREAD_POOL_SIZE);
-    if (thread_t_sync) {
-        atomic_store_explicit(&allocator.huge->done, 0, memory_order_release);
-        routine_metadata(thread_t_sync, 1, &allocator.huge->done);
-        create_thread(thread_t_sync, thread_update_thread_pool);
-    } else update_thread_pool(allocator.pool, ALLOC_THREAD_POOL_SIZE);
+    update_thread_pool(allocator.pool, ALLOC_THREAD_POOL_SIZE);
 
     bucket_t* slot = NULL;
     slot = find_slot(ptr);
     if (!slot) {
         if (!allocator.huge || !allocator.huge->region) return;
 
-        const size_t size = allocator.huge->slots[allocator.huge->slot_cap - 1].capacity;
+        const size_t size = allocator.huge->slots[(allocator.huge->slot_cap / sizeof(huge_slot_t)) - 1].capacity;
         uintptr_t p = (uintptr_t)ptr, base = (uintptr_t)allocator.huge->region;
-        if (p < base || p >= base + (uintptr_t)allocator.huge->allocator_cap - 1) return;
+        if (p < base || p >= base + (uintptr_t)size) return;
         else if ((p - base) % size != 0) return;
 
         size_t idx = (size_t)((p - base) / HUGE_PAGE_SIZE);
@@ -1473,7 +1508,7 @@ FORCE_INLINE void allocator_huge_resize_slots(huge_slot_t* slot, const size_t si
     if (!slot) return;
 
     memset(slot, 1, size);
-    memset(slot, size, offsetof(huge_slot_t, capacity) * size);
+    //memset(slot, size, offsetof(huge_slot_t, capacity) * size);
     memcpy(slot, old_ptr, old);
     size < ALLOC_THRESHOLD ? free(old_ptr) : munmap_address(old_ptr, old);
     allocator.huge->slot_cap = size;

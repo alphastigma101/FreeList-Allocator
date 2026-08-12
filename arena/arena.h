@@ -9,9 +9,9 @@ typedef struct arena_t {
     struct              arena_t* next; 
     unsigned char*      chunk; 
     void*               res;
-    unsigned short      curr;
-    unsigned short      prev;
-    unsigned short      size;
+    size_t              curr;
+    size_t              prev;
+    size_t              size;
     unsigned char       flag;
 } arena_t;
 

@@ -18,6 +18,7 @@
 #include "../logger/buffer.h"
 #include <stdalign.h>
 #include <stdarg.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
@@ -174,6 +175,7 @@ inline void* private_address(void *addr, size_t len, int prot, int flags, int fi
 }
 
 inline void* remap_address(void* addr, size_t old_len, size_t new_len) {
+    if (old_len == new_len) return NULL;
     void* res = mremap(addr, old_len, new_len, MREMAP_MAYMOVE);
     if (res == MAP_FAILED) return NULL;
     return res;
@@ -198,6 +200,7 @@ inline void munmap_address(void* addr, size_t len) {
 FORCE_INLINE void init_threads_t_stack(threads_t* tp, const size_t idx);
 FORCE_INLINE threads_t init_locks_t(threads_t* t, const size_t idx, const unsigned char mode);
 FORCE_INLINE threads_t init_attr_t(threads_t* t, const size_t idx, const unsigned char attr);
+FORCE_INLINE threads_t threads_t_state(threads_t* t, const size_t idx, const unsigned char state);
 size_t __ss = {0}; /* Abbreviated as stack size and is used in create_attrs and clean_threads */
 
 
@@ -376,6 +379,22 @@ FORCE_INLINE void init_threads_t_stack(threads_t* tp, const size_t idx) {
             }
         }
     }
+}
+
+FORCE_INLINE threads_t threads_t_state(threads_t* t, const size_t idx, const unsigned char state) {
+    if (state) {
+        printf("Still under development\n");
+        
+    }
+    int detachstate = THREAD_STATE == 1 ? PTHREAD_CREATE_JOINABLE : THREAD_STATE == 0 ? PTHREAD_CREATE_DETACHED : -1;
+    int rc = pthread_attr_setdetachstate(idx != SIZE_MAX ? &t[idx].attr->thread_attr : &t->attr->thread_attr, detachstate);
+    if (rc) {
+        printf("pthread_attr_setdetachstate failed: %s (errno: %d)\n", strerror(rc), rc);
+        printf("detachstate value is: [ %d ]\n\t THREAD_STATE Macro numerical values are: (0, 1)", detachstate);
+        printf("\n\t Where 0 == PTHREAD_CREATE_DETACHED, and 1 == PTHREAD_CREATE_JOINABLE\n");
+    }
+
+    return idx != SIZE_MAX ? t[idx] : *t;
 }
 
 /**

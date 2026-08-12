@@ -245,7 +245,7 @@ if (CMAKE_BUILD_TYPE STREQUAL "BenchMarking")
     set(BENCH_HARDENING_LINK_FLAGS -pie -Wl,-z,relro -Wl,-z,now -Wl,-z,noexecstack)
 
     # Warnings. -Wall -Wextra is the baseline. -Wshadow, -Wconversion, and
-    # -Wsign-conversion catch real bug classes (this codebase mixes size_t /
+    # -Wsign-conversion catch real bug classes (this codebase used to mix size_t /
     # unsigned int / int extensively). -Wformat=2 and -Wnull-dereference
     # catch common, serious mistakes. -Wpedantic is deliberately OMITTED:
     # this codebase relies on GNU extensions throughout (statement
@@ -281,10 +281,10 @@ if (CMAKE_BUILD_TYPE STREQUAL "BenchMarking")
     endif()
 
     # ============================================================
-    # bench_allocator
+    # test_allocator
     # ============================================================
-    add_executable(bench_allocator)
-    target_compile_options(bench_allocator PRIVATE
+    add_executable(test_allocator)
+    target_compile_options(test_allocator PRIVATE
         ${BENCH_OPT_FLAGS} ${BENCH_SECTION_FLAGS} ${BENCH_HARDENING_FLAGS}
         ${BENCH_WARNING_FLAGS} ${BENCH_SANITIZE_FLAGS}
     )
@@ -298,11 +298,11 @@ if (CMAKE_BUILD_TYPE STREQUAL "BenchMarking")
     # but silently fails to properly catch or diagnose others (stack and
     # global overflows, use-after-return) -- exactly the classes of bug
     # most likely to show up in hand-written, pointer-heavy allocator code.
-    target_link_options(bench_allocator PRIVATE
+    target_link_options(test_allocator PRIVATE
         ${BENCH_OPT_FLAGS} ${BENCH_SECTION_LINK_FLAGS} ${BENCH_HARDENING_LINK_FLAGS}
         ${BENCH_SANITIZE_FLAGS} -g -pthread
     )
-    target_compile_definitions(bench_allocator
+    target_compile_definitions(test_allocator
         PRIVATE
             BENCHMARK_ENV=${BENCHMARK_ENV}
             MUTEX_ATTR=${MUTEX_ATTR}
@@ -314,7 +314,7 @@ if (CMAKE_BUILD_TYPE STREQUAL "BenchMarking")
             ITEM_SIZE=${ITEM_SIZE}
             CLEANER_TIME=${CLEANER_TIME}
     )
-    target_sources(bench_allocator
+    target_sources(test_allocator
         PRIVATE
             allocator/allocator.c
             arena/arena.c
@@ -343,18 +343,18 @@ if (CMAKE_BUILD_TYPE STREQUAL "BenchMarking")
     )
 
     # ============================================================
-    # bench_logger
+    # test_logger
     # ============================================================
-    add_executable(bench_logger)
-    target_compile_options(bench_logger PRIVATE
+    add_executable(test_logger)
+    target_compile_options(test_logger PRIVATE
         ${BENCH_OPT_FLAGS} ${BENCH_SECTION_FLAGS} ${BENCH_HARDENING_FLAGS}
         ${BENCH_WARNING_FLAGS} ${BENCH_SANITIZE_FLAGS}
     )
-    target_link_options(bench_logger PRIVATE
+    target_link_options(test_logger PRIVATE
         ${BENCH_OPT_FLAGS} ${BENCH_SECTION_LINK_FLAGS} ${BENCH_HARDENING_LINK_FLAGS}
         ${BENCH_SANITIZE_FLAGS}
     )
-    target_compile_definitions(bench_logger
+    target_compile_definitions(test_logger
         PRIVATE
             BENCHMARK_ENV=${BENCHMARK_ENV}
             LOGGING=${LOGGING}
@@ -362,7 +362,7 @@ if (CMAKE_BUILD_TYPE STREQUAL "BenchMarking")
             ITEM_SIZE=${ITEM_SIZE}
             CLEANER_TIME=${CLEANER_TIME}
     )
-    target_sources(bench_logger
+    target_sources(test_logger
         PRIVATE
             logger/logger.c
             logger/buffer.c
@@ -379,18 +379,18 @@ if (CMAKE_BUILD_TYPE STREQUAL "BenchMarking")
     )
 
     # ============================================================
-    # bench_threads
+    # test_threads
     # ============================================================
-    add_executable(bench_threads)
-    target_compile_options(bench_threads PRIVATE
+    add_executable(test_threads)
+    target_compile_options(test_threads PRIVATE
         ${BENCH_OPT_FLAGS} ${BENCH_SECTION_FLAGS} ${BENCH_HARDENING_FLAGS}
         ${BENCH_WARNING_FLAGS} ${BENCH_SANITIZE_FLAGS}
     )
-    target_link_options(bench_threads PRIVATE
+    target_link_options(test_threads PRIVATE
         ${BENCH_OPT_FLAGS} ${BENCH_SECTION_LINK_FLAGS} ${BENCH_HARDENING_LINK_FLAGS}
         ${BENCH_SANITIZE_FLAGS} -pthread
     )
-    target_compile_definitions(bench_threads
+    target_compile_definitions(test_threads
         PRIVATE
             BENCHMARK_ENV=${BENCHMARK_ENV}
             MUTEX_ATTR=${MUTEX_ATTR}
@@ -398,7 +398,7 @@ if (CMAKE_BUILD_TYPE STREQUAL "BenchMarking")
             USTP=${USTP}
             INHERITSCHED=${INHERITSCHED}
     )
-    target_sources(bench_threads
+    target_sources(test_threads
         PRIVATE
             threads/threads.c
             benchmark/threading_benchmark.c
@@ -417,6 +417,145 @@ endif()
 
 if (CMAKE_BUILD_TYPE STREQUAL "Profile")
 
+    # ============================================================
+    # Shared coverage-instrumented flags for every Profile executable
+    # ============================================================
+
+    # -O0 here (not -O2/-flto like BenchMarking) is deliberate: gcov/gcovr
+    # coverage accuracy depends on a close 1:1 mapping between source lines
+    # and emitted instructions. Optimization inlines, reorders, and
+    # eliminates code, which makes per-line hit counts misleading or
+    # outright wrong for lines the compiler folded away or duplicated.
+    # -g is required for gcov to map counters back to source lines at all.
+    set(PROFILE_OPT_FLAGS -O0 -g)
+
+    # --coverage is GCC/Clang shorthand for -fprofile-arcs -ftest-coverage
+    # together: -fprofile-arcs injects the branch counters and drives the
+    # runtime .gcda output; -ftest-coverage emits the .gcno control-flow
+    # map at compile time that gcov/gcovr need to turn those counters into
+    # a report. --coverage also links in libgcov automatically -- same
+    # "instrumentation flags need to be on both compile and link steps"
+    # rule the BenchMarking block's own comment calls out for -fsanitize.
+    set(PROFILE_COVERAGE_FLAGS -fprofile-arcs -ftest-coverage)
+
+    # Same warning baseline as BenchMarking, kept consistent across build types.
+    set(PROFILE_WARNING_FLAGS
+        -Wall -Wextra -Wshadow -Wconversion -Wsign-conversion
+        -Wformat=2 -Wnull-dereference -Wdouble-promotion -Werror
+    )
+
+    # ============================================================
+    # test_allocator
+    # ============================================================
+    add_executable(test_allocator)
+    target_compile_options(test_allocator PRIVATE
+        ${PROFILE_OPT_FLAGS} ${PROFILE_WARNING_FLAGS} ${PROFILE_COVERAGE_FLAGS}
+    )
+    target_link_options(test_allocator PRIVATE
+        ${PROFILE_OPT_FLAGS} ${PROFILE_COVERAGE_FLAGS} -pthread
+    )
+    target_compile_definitions(test_allocator
+        PRIVATE
+            MUTEX_ATTR=${MUTEX_ATTR}
+            THREAD_STATE=${THREAD_STATE}
+            USTP=${USTP}
+            INHERITSCHED=${INHERITSCHED}
+            LOGGING=${LOGGING}
+            TESTING=${TESTING}
+            ITEM_SIZE=${ITEM_SIZE}
+            CLEANER_TIME=${CLEANER_TIME}
+    )
+    target_sources(test_allocator
+        PRIVATE
+            allocator/allocator.c
+            arena/arena.c
+            bitmap/bitmap.c
+            threads/threads.c
+            logger/logger.c
+            logger/buffer.c
+            tests/allocator_test.c
+        PUBLIC
+            FILE_SET allocatorHeaders
+            TYPE HEADERS
+            BASE_DIRS
+                allocator
+                bitmap
+                logger
+                threads
+                arena
+                tests
+            FILES
+                allocator/allocator.h 
+                arena/arena.h
+                bitmap/bitmap.h
+                logger/buffer.h
+                logger/logger.h
+                threads/threads.h
+    )
+
+    # ============================================================
+    # test_logger
+    # ============================================================
+    add_executable(test_logger)
+    target_compile_options(test_logger PRIVATE
+        ${PROFILE_OPT_FLAGS} ${PROFILE_WARNING_FLAGS} ${PROFILE_COVERAGE_FLAGS}
+    )
+    target_link_options(test_logger PRIVATE
+        ${PROFILE_OPT_FLAGS} ${PROFILE_COVERAGE_FLAGS}
+    )
+    target_compile_definitions(test_logger
+        PRIVATE
+            LOGGING=${LOGGING}
+            TESTING=${TESTING}
+            ITEM_SIZE=${ITEM_SIZE}
+            CLEANER_TIME=${CLEANER_TIME}
+    )
+    target_sources(test_logger
+        PRIVATE
+            logger/logger.c
+            logger/buffer.c
+            tests/logger_test.c
+        PUBLIC
+            FILE_SET loggerHeaders
+            TYPE HEADERS
+            BASE_DIRS
+                logger
+                tests
+            FILES
+                logger/logger.h
+                logger/buffer.h
+    )
+
+    # ============================================================
+    # test_threads
+    # ============================================================
+    add_executable(test_threads)
+    target_compile_options(test_threads PRIVATE
+        ${PROFILE_OPT_FLAGS} ${PROFILE_WARNING_FLAGS} ${PROFILE_COVERAGE_FLAGS}
+    )
+    target_link_options(test_threads PRIVATE
+        ${PROFILE_OPT_FLAGS} ${PROFILE_COVERAGE_FLAGS} -pthread
+    )
+    target_compile_definitions(test_threads
+        PRIVATE
+            MUTEX_ATTR=${MUTEX_ATTR}
+            THREAD_STATE=${THREAD_STATE}
+            USTP=${USTP}
+            INHERITSCHED=${INHERITSCHED}
+    )
+    target_sources(test_threads
+        PRIVATE
+            threads/threads.c
+            tests/multithreading_test.c
+        PUBLIC
+            FILE_SET poolHeaders
+            TYPE HEADERS
+            BASE_DIRS
+                threads
+                tests
+            FILES
+                threads/threads.h
+    )
 
 endif()
 
