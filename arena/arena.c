@@ -1,5 +1,5 @@
 #include "arena.h"
-#include <threads.h>
+#include <stdalign.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdnoreturn.h>
@@ -13,10 +13,6 @@
 #include <stdnoreturn.h>
 #include <string.h>
 #include <stdlib.h>
-#include <limits.h>
-#include <sys/mman.h>
-#include <thread>
-#include <threads.h>
 */
 
 _Thread_local arena_t* thread_arena = NULL;
@@ -28,6 +24,7 @@ _Thread_local arena_t* thread_arena = NULL;
 	@param: align can be either a power of two or not. 
 	@return: Return the proper alignment of the memory address  
 */
+[[gnu::hot]]
 uintptr_t alignment(uintptr_t ptr, size_t align) {
     if (align == 0) return ptr;
     if ((align & (align - 1)) != 0) {
@@ -48,7 +45,7 @@ inline arena_t* init_arena_t() {
     if (arena == MAP_FAILED) return NULL;
     int res = res = madvise(arena, sizeof(arena_t), MADV_MERGEABLE);
     if (res == -1) {
-        if (arena) munmap_address(arena, sizeof(arena_t));
+        if (arena) munmap_address(arena, sizeof(arena_t), __FILE__,  __LINE__);
         return NULL;
     }
     memset(arena, 0, sizeof(arena_t));
@@ -58,20 +55,19 @@ inline arena_t* init_arena_t() {
     else arena->chunk = private_address(NULL, ARENA_SIZE + 1, PROT_WRITE | PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS , -1, 0); 
     
     if (arena->chunk == MAP_FAILED) {
-        munmap_address(arena, sizeof(arena_t));
+        munmap_address(arena, sizeof(arena_t), __FILE__,  __LINE__);
         arena = NULL;
         return NULL;
     }
     else {
         res = madvise(arena->chunk, ARENA_SIZE + 1, MADV_SEQUENTIAL);
         if (res == -1) {
-            if (arena->chunk) munmap_address(arena->chunk, ARENA_SIZE + 1);
+            if (arena->chunk) munmap_address(arena->chunk, ARENA_SIZE + 1, __FILE__,  __LINE__);
             arena->chunk = NULL;
-            munmap_address(arena, sizeof(arena_t));
+            munmap_address(arena, sizeof(arena_t), __FILE__,  __LINE__);
             arena = NULL;
             return NULL;
         }
-        memset(arena->chunk, 0, ARENA_SIZE + 1);
     }
 
     arena->curr = 1;
@@ -79,12 +75,13 @@ inline arena_t* init_arena_t() {
     return arena;
 }
 
+//__declspec(thread)
 inline arena_t* init_thread_ptr_arena_t(const unsigned char mode) {
     thread_arena = mode == 0x0 ? shared_address(NULL, sizeof(arena_t), PROT_WRITE | PROT_READ, MAP_SHARED | MAP_ANONYMOUS, -1, 0) : private_address(NULL, sizeof(arena_t), PROT_WRITE | PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     if (thread_arena == MAP_FAILED) return NULL;
     int res = res = madvise(thread_arena, sizeof(arena_t), MADV_MERGEABLE);
     if (res == -1) {
-        if (thread_arena) munmap_address(thread_arena, sizeof(arena_t));
+        if (thread_arena) munmap_address(thread_arena, sizeof(arena_t), __FILE__,  __LINE__);
         return NULL;
     }
     memset(thread_arena, 0, sizeof(arena_t));
@@ -94,16 +91,16 @@ inline arena_t* init_thread_ptr_arena_t(const unsigned char mode) {
     else thread_arena->chunk = private_address(NULL, ARENA_SIZE + 1, PROT_WRITE | PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS , -1, 0); 
     
     if (thread_arena->chunk == MAP_FAILED) {
-        munmap_address(thread_arena, sizeof(arena_t));
+        munmap_address(thread_arena, sizeof(arena_t), __FILE__,  __LINE__);
         thread_arena = NULL;
         return NULL;
     }
     else {
         res = madvise(thread_arena->chunk, ARENA_SIZE + 1, MADV_SEQUENTIAL);
         if (res == -1) {
-            if (thread_arena->chunk) munmap_address(thread_arena->chunk, ARENA_SIZE + 1);
+            if (thread_arena->chunk) munmap_address(thread_arena->chunk, ARENA_SIZE + 1, __FILE__,  __LINE__);
             thread_arena->chunk = NULL;
-            munmap_address(thread_arena, sizeof(arena_t));
+            munmap_address(thread_arena, sizeof(arena_t), __FILE__,  __LINE__);
             thread_arena = NULL;
             return NULL;
         }
@@ -121,7 +118,7 @@ inline arena_t* init_ptr_arena_t(arena_t* arena) {
         if (arena == MAP_FAILED) return NULL;
         int res = res = madvise(arena, sizeof(arena_t), MADV_MERGEABLE);
         if (res == -1) {
-            if (arena) munmap_address(arena, sizeof(arena_t));
+            if (arena) munmap_address(arena, sizeof(arena_t), __FILE__,  __LINE__);
             return NULL;
         }
         memset(arena, 0, sizeof(arena_t));
@@ -130,20 +127,19 @@ inline arena_t* init_ptr_arena_t(arena_t* arena) {
     else arena->chunk = private_address(NULL, ARENA_SIZE + 1, PROT_WRITE | PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS , -1, 0); 
     
     if (arena->chunk == MAP_FAILED) {
-        munmap_address(arena, sizeof(arena_t));
+        munmap_address(arena, sizeof(arena_t), __FILE__,  __LINE__);
         arena = NULL;
         return NULL;
     }
     else {
         int res = madvise(arena->chunk, ARENA_SIZE + 1, MADV_SEQUENTIAL);
         if (res == -1) {
-            if (arena->chunk) munmap_address(arena->chunk, ARENA_SIZE + 1);
+            if (arena->chunk) munmap_address(arena->chunk, ARENA_SIZE + 1, __FILE__,  __LINE__);
             arena->chunk = NULL;
-            munmap_address(arena, sizeof(arena_t));
+            munmap_address(arena, sizeof(arena_t), __FILE__,  __LINE__);
             arena = NULL;
             return NULL;
         }
-        memset(arena->chunk, 0, ARENA_SIZE + 1);
     }
 
     arena->curr = 1;
@@ -156,7 +152,8 @@ inline arena_t* init_ptr_arena_t(arena_t* arena) {
 arena_t* push(arena_t* arena, size_t bytes) {
     if (bytes == 0) return arena;
     else if (bytes > ARENA_SIZE) return NULL;
-
+    
+    if ((bytes & (bytes - 1)) != 0) bytes = alignment(bytes, alignof(max_align_t));
     uintptr_t raw = (uintptr_t)arena->chunk + (uintptr_t)(arena->curr == 0 ? 1 : arena->curr);
     uintptr_t offset = alignment(raw, bytes);
     offset -= (uintptr_t)arena->chunk;

@@ -168,6 +168,7 @@
 #endif
 
 #define FORCE_COMPILER_ALIGNED(n) __attribute__((aligned(n)))
+#define OVERLOAD __attribute__((overloadable)) /* Allows function overloading, but every function declaration must have it. */
 #define FORCE_PACK __attribute__((packed))
 #define FORCE_INLINE __attribute__((always_inline)) static inline
 
@@ -240,6 +241,9 @@ extern size_t thread_pool_index(threads_t* tp, threads_t* t);
 */
 extern void update_thread_pool(threads_t *tp, const size_t size);
 
+
+extern void* threads_t_query(void* param); /* used with conditional variables to sleep the threads */
+
 /**
  * @brief Spawns a single managed thread executing the target function. Requires tp->metadata to be initialized
 */
@@ -296,6 +300,6 @@ extern void clean_threads(threads_t* t);
 extern void* shared_address(void *addr, size_t len, int prot, int flags, int fildes, unsigned char off);
 extern void* private_address(void *addr, size_t len, int prot, int flags, int fildes, unsigned char off);
 extern void* remap_address(void* addr, size_t old_len, size_t new_len);
-extern void munmap_address(void* addr, size_t len);
+extern void munmap_address(void* addr, size_t len, const char* file, const int line);
 
 #endif

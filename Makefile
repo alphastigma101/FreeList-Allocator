@@ -117,6 +117,19 @@ depend:
 .PHONY : depend
 
 #=============================================================================
+# Target rules for targets named test_arena
+
+# Build rule for target.
+test_arena: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 test_arena
+.PHONY : test_arena
+
+# fast build rule for target.
+test_arena/fast:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_arena.dir/build.make CMakeFiles/test_arena.dir/build
+.PHONY : test_arena/fast
+
+#=============================================================================
 # Target rules for targets named test_allocator
 
 # Build rule for target.
@@ -184,6 +197,7 @@ arena/arena.o: arena/arena.c.o
 
 # target to build an object file
 arena/arena.c.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_arena.dir/build.make CMakeFiles/test_arena.dir/arena/arena.c.o
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_allocator.dir/build.make CMakeFiles/test_allocator.dir/arena/arena.c.o
 .PHONY : arena/arena.c.o
 
@@ -192,6 +206,7 @@ arena/arena.i: arena/arena.c.i
 
 # target to preprocess a source file
 arena/arena.c.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_arena.dir/build.make CMakeFiles/test_arena.dir/arena/arena.c.i
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_allocator.dir/build.make CMakeFiles/test_allocator.dir/arena/arena.c.i
 .PHONY : arena/arena.c.i
 
@@ -200,6 +215,7 @@ arena/arena.s: arena/arena.c.s
 
 # target to generate assembly for a file
 arena/arena.c.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_arena.dir/build.make CMakeFiles/test_arena.dir/arena/arena.c.s
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_allocator.dir/build.make CMakeFiles/test_allocator.dir/arena/arena.c.s
 .PHONY : arena/arena.c.s
 
@@ -208,6 +224,7 @@ bitmap/bitmap.o: bitmap/bitmap.c.o
 
 # target to build an object file
 bitmap/bitmap.c.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_arena.dir/build.make CMakeFiles/test_arena.dir/bitmap/bitmap.c.o
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_allocator.dir/build.make CMakeFiles/test_allocator.dir/bitmap/bitmap.c.o
 .PHONY : bitmap/bitmap.c.o
 
@@ -216,6 +233,7 @@ bitmap/bitmap.i: bitmap/bitmap.c.i
 
 # target to preprocess a source file
 bitmap/bitmap.c.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_arena.dir/build.make CMakeFiles/test_arena.dir/bitmap/bitmap.c.i
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_allocator.dir/build.make CMakeFiles/test_allocator.dir/bitmap/bitmap.c.i
 .PHONY : bitmap/bitmap.c.i
 
@@ -224,6 +242,7 @@ bitmap/bitmap.s: bitmap/bitmap.c.s
 
 # target to generate assembly for a file
 bitmap/bitmap.c.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_arena.dir/build.make CMakeFiles/test_arena.dir/bitmap/bitmap.c.s
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_allocator.dir/build.make CMakeFiles/test_allocator.dir/bitmap/bitmap.c.s
 .PHONY : bitmap/bitmap.c.s
 
@@ -232,6 +251,7 @@ logger/buffer.o: logger/buffer.c.o
 
 # target to build an object file
 logger/buffer.c.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_arena.dir/build.make CMakeFiles/test_arena.dir/logger/buffer.c.o
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_allocator.dir/build.make CMakeFiles/test_allocator.dir/logger/buffer.c.o
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_logger.dir/build.make CMakeFiles/test_logger.dir/logger/buffer.c.o
 .PHONY : logger/buffer.c.o
@@ -241,6 +261,7 @@ logger/buffer.i: logger/buffer.c.i
 
 # target to preprocess a source file
 logger/buffer.c.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_arena.dir/build.make CMakeFiles/test_arena.dir/logger/buffer.c.i
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_allocator.dir/build.make CMakeFiles/test_allocator.dir/logger/buffer.c.i
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_logger.dir/build.make CMakeFiles/test_logger.dir/logger/buffer.c.i
 .PHONY : logger/buffer.c.i
@@ -250,6 +271,7 @@ logger/buffer.s: logger/buffer.c.s
 
 # target to generate assembly for a file
 logger/buffer.c.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_arena.dir/build.make CMakeFiles/test_arena.dir/logger/buffer.c.s
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_allocator.dir/build.make CMakeFiles/test_allocator.dir/logger/buffer.c.s
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_logger.dir/build.make CMakeFiles/test_logger.dir/logger/buffer.c.s
 .PHONY : logger/buffer.c.s
@@ -305,6 +327,30 @@ tests/allocator_test.c.s:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_allocator.dir/build.make CMakeFiles/test_allocator.dir/tests/allocator_test.c.s
 .PHONY : tests/allocator_test.c.s
 
+tests/arena_test.o: tests/arena_test.c.o
+.PHONY : tests/arena_test.o
+
+# target to build an object file
+tests/arena_test.c.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_arena.dir/build.make CMakeFiles/test_arena.dir/tests/arena_test.c.o
+.PHONY : tests/arena_test.c.o
+
+tests/arena_test.i: tests/arena_test.c.i
+.PHONY : tests/arena_test.i
+
+# target to preprocess a source file
+tests/arena_test.c.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_arena.dir/build.make CMakeFiles/test_arena.dir/tests/arena_test.c.i
+.PHONY : tests/arena_test.c.i
+
+tests/arena_test.s: tests/arena_test.c.s
+.PHONY : tests/arena_test.s
+
+# target to generate assembly for a file
+tests/arena_test.c.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_arena.dir/build.make CMakeFiles/test_arena.dir/tests/arena_test.c.s
+.PHONY : tests/arena_test.c.s
+
 tests/logger_test.o: tests/logger_test.c.o
 .PHONY : tests/logger_test.o
 
@@ -358,6 +404,7 @@ threads/threads.o: threads/threads.c.o
 
 # target to build an object file
 threads/threads.c.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_arena.dir/build.make CMakeFiles/test_arena.dir/threads/threads.c.o
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_allocator.dir/build.make CMakeFiles/test_allocator.dir/threads/threads.c.o
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_threads.dir/build.make CMakeFiles/test_threads.dir/threads/threads.c.o
 .PHONY : threads/threads.c.o
@@ -367,6 +414,7 @@ threads/threads.i: threads/threads.c.i
 
 # target to preprocess a source file
 threads/threads.c.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_arena.dir/build.make CMakeFiles/test_arena.dir/threads/threads.c.i
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_allocator.dir/build.make CMakeFiles/test_allocator.dir/threads/threads.c.i
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_threads.dir/build.make CMakeFiles/test_threads.dir/threads/threads.c.i
 .PHONY : threads/threads.c.i
@@ -376,6 +424,7 @@ threads/threads.s: threads/threads.c.s
 
 # target to generate assembly for a file
 threads/threads.c.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_arena.dir/build.make CMakeFiles/test_arena.dir/threads/threads.c.s
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_allocator.dir/build.make CMakeFiles/test_allocator.dir/threads/threads.c.s
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/test_threads.dir/build.make CMakeFiles/test_threads.dir/threads/threads.c.s
 .PHONY : threads/threads.c.s
@@ -389,6 +438,7 @@ help:
 	@echo "... edit_cache"
 	@echo "... rebuild_cache"
 	@echo "... test_allocator"
+	@echo "... test_arena"
 	@echo "... test_logger"
 	@echo "... test_threads"
 	@echo "... allocator/allocator.o"
@@ -409,6 +459,9 @@ help:
 	@echo "... tests/allocator_test.o"
 	@echo "... tests/allocator_test.i"
 	@echo "... tests/allocator_test.s"
+	@echo "... tests/arena_test.o"
+	@echo "... tests/arena_test.i"
+	@echo "... tests/arena_test.s"
 	@echo "... tests/logger_test.o"
 	@echo "... tests/logger_test.i"
 	@echo "... tests/logger_test.s"

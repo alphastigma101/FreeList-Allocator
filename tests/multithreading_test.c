@@ -73,7 +73,7 @@ static void* traversal(struct function_t* meta) {
         }
         size_t before = *pos;
         (*pos)++;
-        EXPECT_EQ(*pos - before, 1);
+        EXPECT_EQ(*pos - before, (size_t)1);
         pthread_mutex_unlock(mutex);
     }
     return NULL;
@@ -235,7 +235,7 @@ TEST(LockThreadPool, NumericValue) {
 
     EXPECT_EQ(main_value, 1000);
     EXPECT_EQ(*i, 1002);
-    munmap_address(i, sizeof(int));
+    munmap_address(i, sizeof(int), __FILE__,  __LINE__);
     join_thread(&threads[0], NULL);
 }
 
@@ -285,8 +285,8 @@ TEST(LockThreadPool, StringTraversal) {
         join_thread(&threads[i], NULL);
     }
 
-    munmap_address(one, len1 + 1);
-    munmap_address(two, len2 + 1);
+    munmap_address(one, len1 + 1, __FILE__,  __LINE__);
+    munmap_address(two, len2 + 1, __FILE__,  __LINE__);
 }
 
 TEST(LockFreeThreadPool, StringTraversal) {
@@ -378,7 +378,7 @@ TEST(LFTPExternal, Queue) {
 
     join_thread(&threads[0], NULL);
     join_thread(&threads[1], NULL);
-    EXPECT_EQ(QUEUE_SIZE(&queue), 100);
+    EXPECT_EQ(QUEUE_SIZE(&queue), (size_t)100);
     QUEUE_DESTROY(&queue);
 }
 

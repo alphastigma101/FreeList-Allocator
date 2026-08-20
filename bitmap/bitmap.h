@@ -12,6 +12,7 @@ typedef struct bitmap_t {
 
 
 extern void init_bitmap_t(bitmap_t* bitmap, const size_t size);
+extern void bitmap_t_resize(bitmap_t* bitmap, const size_t size);
 extern void clean_bitmap(bitmap_t* bitmap);
 
 #endif 

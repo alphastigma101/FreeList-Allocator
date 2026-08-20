@@ -78,10 +78,10 @@ if (CMAKE_BUILD_TYPE STREQUAL "Testing")
 
     add_executable(test_allocator)
     if (DEFINED __SANITIZE_THREAD__ AND  __SANITIZE_THREAD__ STREQUAL "1")
-        target_link_options(test_allocator PRIVATE -fsanitize=thread,undefined -pthread)
+        target_link_options(test_allocator PRIVATE -fsanitize=thread,undefined -pthread -latomic)
         target_compile_options(test_allocator PRIVATE -fsanitize=thread,undefined)
     else()
-        target_link_options(test_allocator PRIVATE -fsanitize=address,undefined,leak -pthread)
+        target_link_options(test_allocator PRIVATE -fsanitize=address,undefined,leak -pthread -latomic)
     endif()
     target_compile_definitions(test_allocator 
         PRIVATE 
@@ -147,9 +147,9 @@ if (CMAKE_BUILD_TYPE STREQUAL "Testing")
 
     add_executable(test_threads)
     if (DEFINED __SANITIZE_THREAD__ AND  __SANITIZE_THREAD__ STREQUAL "1")
-        target_link_options(test_threads PRIVATE -fsanitize=thread,undefined -pthread)
+        target_link_options(test_threads PRIVATE -fsanitize=thread,undefined -pthread -latomic)
     else()
-        target_link_options(test_threads PRIVATE -fsanitize=address,undefined,leak -pthread)
+        target_link_options(test_threads PRIVATE -fsanitize=address,undefined,leak -pthread -latomic)
     endif()
     target_compile_definitions(test_threads 
         PRIVATE 
@@ -300,7 +300,7 @@ if (CMAKE_BUILD_TYPE STREQUAL "BenchMarking")
     # most likely to show up in hand-written, pointer-heavy allocator code.
     target_link_options(test_allocator PRIVATE
         ${BENCH_OPT_FLAGS} ${BENCH_SECTION_LINK_FLAGS} ${BENCH_HARDENING_LINK_FLAGS}
-        ${BENCH_SANITIZE_FLAGS} -g -pthread
+        ${BENCH_SANITIZE_FLAGS} -g -pthread -latomic 
     )
     target_compile_definitions(test_allocator
         PRIVATE
@@ -388,7 +388,7 @@ if (CMAKE_BUILD_TYPE STREQUAL "BenchMarking")
     )
     target_link_options(test_threads PRIVATE
         ${BENCH_OPT_FLAGS} ${BENCH_SECTION_LINK_FLAGS} ${BENCH_HARDENING_LINK_FLAGS}
-        ${BENCH_SANITIZE_FLAGS} -pthread
+        ${BENCH_SANITIZE_FLAGS} -pthread -latomic
     )
     target_compile_definitions(test_threads
         PRIVATE
@@ -437,6 +437,8 @@ if (CMAKE_BUILD_TYPE STREQUAL "Profile")
     # "instrumentation flags need to be on both compile and link steps"
     # rule the BenchMarking block's own comment calls out for -fsanitize.
     set(PROFILE_COVERAGE_FLAGS -fprofile-arcs -ftest-coverage)
+    # Other flags that should be used: 
+        # -fsanitize-coverage
 
     # Same warning baseline as BenchMarking, kept consistent across build types.
     set(PROFILE_WARNING_FLAGS
@@ -452,7 +454,7 @@ if (CMAKE_BUILD_TYPE STREQUAL "Profile")
         ${PROFILE_OPT_FLAGS} ${PROFILE_WARNING_FLAGS} ${PROFILE_COVERAGE_FLAGS}
     )
     target_link_options(test_allocator PRIVATE
-        ${PROFILE_OPT_FLAGS} ${PROFILE_COVERAGE_FLAGS} -pthread
+        ${PROFILE_OPT_FLAGS} ${PROFILE_COVERAGE_FLAGS} -pthread -latomic
     )
     target_compile_definitions(test_allocator
         PRIVATE

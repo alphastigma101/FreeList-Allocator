@@ -71,14 +71,14 @@ inline void routine_metadata(threads_t* t, const size_t length, ...) {
                     int res = madvise(routine->args, length * sizeof(void*), MADV_SEQUENTIAL | MADV_MERGEABLE);
                     if (res == -1) {
                         memset(routine->args, 0, length * sizeof(void*));
-                        if (routine->args) munmap_address(routine->args, length * sizeof(void*));
+                        if (routine->args) munmap_address(routine->args, length * sizeof(void*), __FILE__,  __LINE__);
                         routine->args = NULL;
                         return;
                     }
                 }
             }
             else if (routine->size > ALLOC_THRESHOLD && length < ALLOC_THRESHOLD) {
-                munmap_address(routine->args, length * sizeof(void*));
+                munmap_address(routine->args, length * sizeof(void*), __FILE__,  __LINE__);
                 routine->args = NULL;
                 routine->args = malloc(length * sizeof(void*));
             }
@@ -174,6 +174,8 @@ inline void* private_address(void *addr, size_t len, int prot, int flags, int fi
     return result;
 }
 
+[[gnu::hot]]
+[[gnu::nonnull(1)]] /* Compiler might perform optimizations. Disable it using fno-delete-null-pointer-checks */
 inline void* remap_address(void* addr, size_t old_len, size_t new_len) {
     if (old_len == new_len) return NULL;
     void* res = mremap(addr, old_len, new_len, MREMAP_MAYMOVE);
@@ -186,14 +188,16 @@ inline void* remap_address(void* addr, size_t old_len, size_t new_len) {
  * @param addr Pointer returned by shared_address/private_address
  * @note You must track the length separately or store it in the mapped region
 */
-inline void munmap_address(void* addr, size_t len) {
-    if (addr == NULL || addr == MAP_FAILED) {
-        fprintf(stderr, "clean_address: invalid address\n");
+[[gnu::hot]]
+[[gnu::nonnull(1, 3)]]
+inline void munmap_address(void* addr, size_t len, const char* file, const int line) {
+    if (addr == MAP_FAILED) {
+        fprintf(stderr, "clean_address: [ invalid address ] file [ %s ] line [ %d ]\n", file, line);
         return;
     }
     
     if (munmap(addr, len) != 0) {
-        fprintf(stderr, "clean_address: munmap failed: %s\n", strerror(errno));
+        fprintf(stderr, "clean_address: munmap failed: [ %s ] file: [ %s ] line: [ %d ]", strerror(errno), file, line);
     }
 }
 
@@ -427,7 +431,7 @@ void create_thread_pool(threads_t* tp, const size_t size, const unsigned char mo
                 else {
                     int res = madvise(tp,size * sizeof(threads_t), MADV_SEQUENTIAL | MADV_MERGEABLE);
                     if (res == -1) {
-                        if (tp) munmap_address(tp, size * sizeof(threads_t));
+                        if (tp) munmap_address(tp, size * sizeof(threads_t), __FILE__,  __LINE__);
                         tp = NULL;
                         return;
                     }
@@ -445,7 +449,7 @@ void create_thread_pool(threads_t* tp, const size_t size, const unsigned char mo
                 else {
                     int res = madvise(tp,size * sizeof(threads_t), MADV_SEQUENTIAL | MADV_MERGEABLE);
                     if (res == -1) {
-                        if (tp) munmap_address(tp, size * sizeof(threads_t));
+                        if (tp) munmap_address(tp, size * sizeof(threads_t), __FILE__,  __LINE__);
                         tp = NULL;
                         return;
                     }
@@ -487,7 +491,7 @@ void create_thread_pool_range(threads_t* tp, const unsigned char mode, const uns
                 else {
                     int res = madvise(tp, end * sizeof(threads_t), MADV_SEQUENTIAL | MADV_MERGEABLE);
                     if (res == -1) {
-                        if (tp) munmap_address(tp, end * sizeof(threads_t));
+                        if (tp) munmap_address(tp, end * sizeof(threads_t), __FILE__,  __LINE__);
                         tp = NULL;
                         return;
                     }
@@ -505,7 +509,7 @@ void create_thread_pool_range(threads_t* tp, const unsigned char mode, const uns
                 else {
                     int res = madvise(tp, end * sizeof(threads_t), MADV_SEQUENTIAL | MADV_MERGEABLE);
                     if (res == -1) {
-                        if (tp) munmap_address(tp, end * sizeof(threads_t));
+                        if (tp) munmap_address(tp, end * sizeof(threads_t), __FILE__,  __LINE__);
                         tp = NULL;
                         return;
                     }
@@ -603,7 +607,7 @@ void clean_threads(threads_t* t) {
                 mprotect(t->attr->stackaddr, total_with_guard, PROT_READ | PROT_WRITE);
                 memset(t->attr->stackaddr, 0, total_with_guard);
             }
-            __ss > ALLOC_THRESHOLD ? munmap_address(t->attr->stackaddr, total_with_guard) : free(t->attr->stackaddr);
+            __ss > ALLOC_THRESHOLD ? munmap_address(t->attr->stackaddr, total_with_guard, __FILE__,  __LINE__) : free(t->attr->stackaddr);
             t->attr->stackaddr = NULL;
         }
         pthread_attr_destroy(&t->attr->thread_attr);
@@ -624,7 +628,7 @@ void clean_threads(threads_t* t) {
     if (routine) {
         if (routine->args) { 
             memset(routine->args, 0, routine->size * sizeof(void*));
-            routine->size > ALLOC_THRESHOLD ? munmap_address(routine->args, routine->size * sizeof(void*)) : free(routine->args); 
+            routine->size > ALLOC_THRESHOLD ? munmap_address(routine->args, routine->size * sizeof(void*), __FILE__,  __LINE__) : free(routine->args); 
             routine->args = NULL; 
         }
         memset(routine, 0, sizeof(function_t));

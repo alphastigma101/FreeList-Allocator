@@ -58,7 +58,7 @@ typedef struct queue_t {
             (result) = atomic_load_explicit(&node->data, memory_order_relaxed);  \
             atomic_store_explicit(&_qd->head, node->next, memory_order_relaxed); \
             if (!atomic_load_explicit(&_qd->head, memory_order_relaxed)) _qd->tail = NULL; \
-            if (node) munmap_address(node, sizeof(queue_node_t)); \
+            if (node) munmap_address(node, sizeof(queue_node_t), __FILE__,  __LINE__); \
             node = NULL; \
             atomic_fetch_sub_explicit(&_qd->size, 1, memory_order_relaxed); \
         } else { \

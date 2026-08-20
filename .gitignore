@@ -12,3 +12,4 @@ test_*
 Notes*
 *.gcov
 result.txt
+memstat.h

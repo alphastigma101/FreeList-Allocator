@@ -87,13 +87,25 @@
 typedef struct allocator_t {
     bitmap_t            bitmap;
     struct bucket {
-        struct bucket_t*       small;
-        struct bucket_t*       medium;
-        struct bucket_t*       large;
+        #if RAM_TIER_ULTRA_CONSTRAINED
+            struct bucket_t*       small;
+        #else
+            struct bucket_t*       small;
+            #if RAM_TIER_EMBEDDED
+                struct bucket_t*       medium;
+            #else 
+                struct bucket_t*       medium;
+                #if !RAM_TIER_ULTRA_CONSTRAINED && !RAM_TIER_EMBEDDED
+                    struct bucket_t*       large;
+                #endif
+            #endif
+        #endif
     } bucket;
     void*               (*allocate)(size_t);
     void                (*deallocate)(void*);
-    struct huge_block_allocator_t* huge;
+    #if !RAM_TIER_ULTRA_CONSTRAINED && !RAM_TIER_EMBEDDED
+        struct huge_block_allocator_t* huge;
+    #endif
     arena_t*            arena;
     threads_t*          pool;
 } allocator_t;
