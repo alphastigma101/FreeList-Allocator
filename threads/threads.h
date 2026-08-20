@@ -168,7 +168,6 @@
 #endif
 
 #define FORCE_COMPILER_ALIGNED(n) __attribute__((aligned(n)))
-#define OVERLOAD __attribute__((overloadable)) /* Allows function overloading, but every function declaration must have it. */
 #define FORCE_PACK __attribute__((packed))
 #define FORCE_INLINE __attribute__((always_inline)) static inline
 

@@ -68,6 +68,9 @@ FORCE_INLINE size_t hash_mix(size_t x) {
     * @param idx: idx can be: [0, BITMAP_SIZE - 1] or [0, (BITMAP_SIZE + MAX_HUGE_SLOTS) - 1]
     * @return: Nothing
 */
+[[gnu::hot]]
+[[gnu::flatten]]
+[[gnu::aligned(DEFAULT_ALIGNMENT)]]
 FORCE_INLINE void entry_table_init(entry_table_t* table, const size_t idx) {
     const unsigned char is_regular = (!RAM_TIER_ULTRA_CONSTRAINED && !RAM_TIER_EMBEDDED) || (idx < BITMAP_SIZE);
 
@@ -122,6 +125,8 @@ FORCE_INLINE void entry_table_init(entry_table_t* table, const size_t idx) {
     entry_table_inner_init(table, idx, 0x01);
 }
 
+[[gnu::flatten]]
+[[gnu::aligned(DEFAULT_ALIGNMENT)]]
 FORCE_INLINE void entry_table_inner_init(entry_table_t* table, size_t idx, const unsigned char mode) {
     if (mode == 0x0 && table->offset_entries[idx]) return;
     else if (mode == 0x01 && table->byte_entries[idx]) return;
@@ -160,6 +165,8 @@ FORCE_INLINE void entry_table_inner_init(entry_table_t* table, size_t idx, const
     * @param idx: The mode to choose to resize the field 
     * @return: Nothing 
 */
+[[gnu::flatten]]
+[[gnu::aligned(DEFAULT_ALIGNMENT)]]
 FORCE_INLINE void entry_table_resize_inner(entry_table_t* table, const size_t idx, const unsigned char mode) {
     size_t new_inner_count = ((table->inner_count[idx] * 2) > idx) ? table->inner_count[idx] * 2 : (table->inner_count[idx] + idx) * 2;
     if (mode == 0x0) {
@@ -202,6 +209,8 @@ FORCE_INLINE void entry_table_resize_inner(entry_table_t* table, const size_t id
     * @note: It resizes itself by the multiple of a numerical value that's a power of 2 i.e 64
     * @return: Nothing
 */
+[[gnu::flatten]]
+[[gnu::aligned(DEFAULT_ALIGNMENT)]]
 FORCE_INLINE void entry_table_resize_table(entry_table_t* table, const unsigned char mode) {
     if (mode == 0x0 && !table->offset_entries) return;
     else if (mode == 0x01 && !table->byte_entries) return;
@@ -243,6 +252,7 @@ FORCE_INLINE void entry_table_resize_table(entry_table_t* table, const unsigned 
     }
 }
 
+[[gnu::aligned(DEFAULT_ALIGNMENT)]]
 FORCE_INLINE byte_entries_t* create_byte_entry(const size_t bytes, const unsigned char inuse, void* ptr) {
     byte_entries_t* bnode = aligned_alloc(alignof(byte_entries_t), sizeof(byte_entries_t));
     if (bnode) {
@@ -257,6 +267,8 @@ FORCE_INLINE byte_entries_t* create_byte_entry(const size_t bytes, const unsigne
     return NULL;
 }
 
+[[gnu::hot]]
+[[gnu::aligned(DEFAULT_ALIGNMENT)]]
 FORCE_INLINE offset_entries_t* create_offset_entry(const size_t offset, const unsigned char inuse) {
     offset_entries_t* onode = aligned_alloc(alignof(offset_entries_t), sizeof(offset_entries_t));
     if (onode) {
@@ -279,6 +291,7 @@ FORCE_INLINE offset_entries_t* create_offset_entry(const size_t offset, const un
     * @param inuse: Mark the entry as 0x0 not in use or 0x01 as in use 
     * @return: Return's nothing
 */
+[[gnu::aligned(DEFAULT_ALIGNMENT)]]
 FORCE_INLINE void set(_Atomic(entry_table_t)* atomic_table, const size_t idx, const size_t offset, const size_t bytes, const unsigned char inuse, void* ptr) {
     if (offset == 0 || bytes == 0) return;
     
@@ -319,6 +332,7 @@ FORCE_INLINE void set(_Atomic(entry_table_t)* atomic_table, const size_t idx, co
     * @param bytes: The requested bytes 
     * @param inuse: The desired flag which can be 0x0 or 0x01 
 */
+[[gnu::aligned(DEFAULT_ALIGNMENT)]]
 FORCE_INLINE byte_entries_t* get_entry_t_by_bytes(_Atomic(entry_table_t)* atomic_table, const size_t idx, const size_t bytes, const unsigned char inuse) {
     const entry_table_t table = atomic_load_explicit(atomic_table, memory_order_relaxed);
     if (__builtin_expect(!table.byte_entries, 0)) return NULL;
@@ -344,6 +358,7 @@ FORCE_INLINE byte_entries_t* get_entry_t_by_bytes(_Atomic(entry_table_t)* atomic
     * @param offset: The requested offset 
     * @param inuse: The desired flag which can be 0x0 or 0x01 
 */
+[[gnu::aligned(DEFAULT_ALIGNMENT)]]
 FORCE_INLINE offset_entries_t* get_entry_t_by_offset(_Atomic(entry_table_t)* atomic_table, const size_t idx, const size_t offset, const unsigned char inuse) {
     const entry_table_t table = atomic_load_explicit(atomic_table, memory_order_relaxed);
     if (__builtin_expect(!table.offset_entries, 0)) return NULL;
@@ -371,6 +386,7 @@ FORCE_INLINE offset_entries_t* get_entry_t_by_offset(_Atomic(entry_table_t)* ato
     * @param inuse: Mark the entry as 0x0 not in use or 0x01 as in use 
     * @return: Return's nothing
 */
+[[gnu::aligned(DEFAULT_ALIGNMENT)]]
 FORCE_INLINE void update(_Atomic(entry_table_t)* atomic_table, const size_t idx, const size_t offset, const size_t bytes, const unsigned char inuse) {
     if (offset == 0 || bytes == 0) return;
 
@@ -404,6 +420,9 @@ FORCE_INLINE void update(_Atomic(entry_table_t)* atomic_table, const size_t idx,
     * @param inuse: Mark the entry as 0x0 not in use or 0x01 as in use 
     * @return: Return's nothing
 */
+[[gnu::hot]]
+[[gnu::flatten]]
+[[gnu::aligned(DEFAULT_ALIGNMENT)]]
 FORCE_INLINE void destroy(_Atomic(entry_table_t)* atomic_table, const size_t idx, const size_t offset, const size_t bytes) {
     entry_table_t table = atomic_load_explicit(atomic_table, memory_order_relaxed);
     if (offset == 0 || bytes == 0) return;
@@ -459,6 +478,7 @@ FORCE_INLINE void destroy(_Atomic(entry_table_t)* atomic_table, const size_t idx
     atomic_store_explicit(atomic_table, table, memory_order_relaxed);
 }
 
+[[gnu::aligned(DEFAULT_ALIGNMENT)]]
 FORCE_INLINE void clean(entry_table_t *table) {
     if (table->byte_entries && table->offset_entries) {
         for (size_t i = 0; i < table->bucket_count; i++) {
@@ -506,6 +526,7 @@ FORCE_INLINE void clean(entry_table_t *table) {
     memset(table, 0, sizeof(entry_table_t));
 }
 
+[[gnu::aligned(DEFAULT_ALIGNMENT)]]
 FORCE_INLINE void table_entry_free_inner_pages(entry_table_t* table, const size_t idx) {
     if (!table->offset_entries && !table->byte_entries) return table_entry_free_pages(table);
     else if (idx >= table->bucket_count) return;
@@ -520,6 +541,7 @@ FORCE_INLINE void table_entry_free_inner_pages(entry_table_t* table, const size_
     }
 }
 
+[[gnu::aligned(DEFAULT_ALIGNMENT)]]
 FORCE_INLINE void table_entry_free_pages(entry_table_t* table) {
     if (table->byte_entries) {
         const size_t byte_size = (table->bucket_count / 2) * sizeof(byte_entries_t**);
@@ -581,6 +603,8 @@ typedef struct blocks_t {
 ////////////////////////
 
 
+[[gnu::flatten]]
+[[gnu::aligned(DEFAULT_ALIGNMENT)]]
 FORCE_INLINE void init_blocks_t(blocks_t* blocks) {
     blocks->size = 64;
     blocks->chain = shared_address(NULL, blocks->size * sizeof(blocks_t*), PROT_WRITE | PROT_READ, MAP_NORESERVE, -1, 0);
@@ -596,6 +620,7 @@ FORCE_INLINE void init_blocks_t(blocks_t* blocks) {
     return;
 }
 
+[[gnu::aligned(DEFAULT_ALIGNMENT)]]
 FORCE_INLINE blocks_t* create_block_t() {
     blocks_t* block = aligned_alloc(alignof(blocks_t), sizeof(blocks_t));
     if (!block) return NULL;
@@ -608,6 +633,8 @@ FORCE_INLINE blocks_t* create_block_t() {
     * @param blocks: A pointer type consisting of free adjacent blocks that are in use or not inuse.
     * @return: Nothing
 */
+[[gnu::flatten]]
+[[gnu::aligned(DEFAULT_ALIGNMENT)]]
 FORCE_INLINE void resize_blocks(blocks_t* blocks) {
     if (!blocks->chain) return; 
     const size_t old = blocks->size;
@@ -638,6 +665,8 @@ FORCE_INLINE void resize_blocks(blocks_t* blocks) {
     * @param bytes: The requested bytes the user desires
     * @return: Returns 0x01 if successfull, otherwise 0x0
 */
+[[gnu::flatten]]
+[[gnu::aligned(DEFAULT_ALIGNMENT)]]
 FORCE_INLINE unsigned char is_mergeable(_Atomic(entry_table_t)* atomic_table, const size_t idx, const size_t bytes) {
     const entry_table_t table = atomic_load_explicit(atomic_table, memory_order_relaxed);
     if (bytes == 0 || !table.byte_entries) return 0x0;
@@ -670,6 +699,9 @@ FORCE_INLINE unsigned char is_mergeable(_Atomic(entry_table_t)* atomic_table, co
     return 0x0;
 }
 
+[[gnu::hot]]
+[[gnu::flatten]]
+[[gnu::aligned(DEFAULT_ALIGNMENT)]]
 FORCE_INLINE void merge(blocks_t* blocks, const size_t idx, const size_t bytes) {
     if (!blocks->chain) init_blocks_t(blocks);
     else if (idx >= blocks->size) resize_blocks(blocks);
@@ -755,6 +787,7 @@ FORCE_INLINE void merge(blocks_t* blocks, const size_t idx, const size_t bytes) 
     blocks->chain[idx] = node;
 }
 
+[[gnu::aligned(DEFAULT_ALIGNMENT)]]
 FORCE_INLINE void update_block_t_by_offset(blocks_t* blocks, const size_t idx, const size_t offset, const unsigned char inuse) {
     if (offset == 0) return;
     else if (!blocks->chain || !blocks->chain[idx]) return;
@@ -770,6 +803,7 @@ FORCE_INLINE void update_block_t_by_offset(blocks_t* blocks, const size_t idx, c
     }
 }
 
+[[gnu::aligned(DEFAULT_ALIGNMENT)]]
 FORCE_INLINE blocks_t* get_block_t_by_offset(blocks_t* blocks, const size_t idx, const size_t offset, const unsigned char inuse) {
     if (offset == 0) return NULL;
     else if (!blocks->chain || !blocks->chain[idx]) return NULL;
@@ -783,12 +817,14 @@ FORCE_INLINE blocks_t* get_block_t_by_offset(blocks_t* blocks, const size_t idx,
     return NULL;
 }
 
+[[gnu::aligned(DEFAULT_ALIGNMENT)]]
 FORCE_INLINE void blocks_t_free_pages(blocks_t* blocks) {
     if (!blocks->chain) return;
     int res = madvise(blocks->chain, blocks->size * sizeof(blocks_t*), MADV_DONTNEED);
     if (res == -1) return;
 }
 
+[[gnu::aligned(DEFAULT_ALIGNMENT)]]
 FORCE_INLINE void block_t_dctor(blocks_t* blocks) {
     blocks_t* seed = blocks;
     while (__builtin_expect(seed != NULL, 1)) {
@@ -829,6 +865,7 @@ FORCE_INLINE size_t find_bucket_index(bucket_t* slot);
     * @return: Returns a slot right after checking the bucket's bitmap.
     * @note: if nothing is returned, that means all of the slots from small, medium and large are occupied. 
 */
+[[gnu::aligned(DEFAULT_ALIGNMENT)]]
 FORCE_INLINE bucket_t* find_free_slot(size_t sz) {
     size_t idx = SIZE_MAX;
     
@@ -875,6 +912,9 @@ FORCE_INLINE bucket_t* find_free_slot(size_t sz) {
     * @note: If nothing was found, that means the 'ptr' memory address is from a memory address that is not associated with the arena. 
              Or an address that was allocated on the heap. 
 */
+[[gnu::aligned(DEFAULT_ALIGNMENT)]]
+[[gnu::pure]]
+[[gnu::nonnull(1)]]
 FORCE_INLINE bucket_t* find_slot(void* ptr) {
     uintptr_t p = (uintptr_t)ptr;
 
@@ -928,6 +968,7 @@ FORCE_INLINE bucket_t* find_slot(void* ptr) {
     return NULL;
 }
 
+[[gnu::aligned(DEFAULT_ALIGNMENT)]]
 FORCE_INLINE size_t find_bucket_index(bucket_t* slot) {
     if (!slot) return SIZE_MAX;
     if (slot >= allocator.bucket.small && slot < allocator.bucket.small + BUCKET_SMALL_CAP) return (size_t)(slot - allocator.bucket.small);
@@ -941,6 +982,7 @@ FORCE_INLINE size_t find_bucket_index(bucket_t* slot) {
     * @param slot: Pointer variable that possibly comes from one of the bucket's memory regions
     * @return: Returns either BUCKET_SMALL_CAP, BUCKET_MEDIUM_CAP, or BUCKET_LARGE_CAP, or returns 0
 */
+[[gnu::aligned(DEFAULT_ALIGNMENT)]]
 FORCE_INLINE size_t find_bucket_size(const bucket_t* slot) {
     uintptr_t addr = (uintptr_t)slot;
     uintptr_t small_start  = (uintptr_t)allocator.bucket.small;
@@ -962,6 +1004,7 @@ FORCE_INLINE size_t find_bucket_size(const bucket_t* slot) {
         It is used with deallocation function
     * @param b: A specific bucket that will now have been updated 
 */
+[[gnu::aligned(DEFAULT_ALIGNMENT)]]
 FORCE_INLINE void push_to_bucket(bucket_t* slot, size_t offset) {
     size_t idx = find_bucket_index(slot);
     if (idx == SIZE_MAX) return;
@@ -979,6 +1022,7 @@ FORCE_INLINE void push_to_bucket(bucket_t* slot, size_t offset) {
     * @param address: An atomic void* type that will be swapped by `t1` if there if there is a match.  
     * @return: Returns null if bucket field is null or if bucket == slot->arena->chunk  
 */
+[[gnu::aligned(DEFAULT_ALIGNMENT)]]
 FORCE_INLINE void* pop_from_bucket(bucket_t* slot, const size_t bytes) {
     const size_t idx = find_bucket_index(slot);
     if (idx == SIZE_MAX) return NULL;
@@ -1008,6 +1052,7 @@ FORCE_INLINE void* pop_from_bucket(bucket_t* slot, const size_t bytes) {
 }
 
 [[gnu::cold]]
+[[gnu::aligned(DEFAULT_ALIGNMENT)]]
 FORCE_INLINE void bucket_t_dctor() {
     size_t small = 0;
     size_t medium = 0;
@@ -1061,6 +1106,7 @@ FORCE_INLINE void bucket_t_dctor() {
     * @param slot: A raw pointer that has been allocated on the heap that is apart of the allocator.bucket
     * @return Nothing
 */
+[[gnu::aligned(DEFAULT_ALIGNMENT)]]
 FORCE_INLINE void __rewind(bucket_t* slot) {
     const size_t idx = find_bucket_index(slot);
     if (idx == SIZE_MAX) return;
@@ -1102,6 +1148,7 @@ FORCE_INLINE void __rewind(bucket_t* slot) {
 FORCE_INLINE void allocator_huge_update_slots(const size_t start, const size_t end); /* Defined in Allocator section */
 FORCE_INLINE void* thread_update_thread_pool(struct function_t* meta); 
 
+[[gnu::aligned(DEFAULT_ALIGNMENT)]]
 FORCE_INLINE void* thread_update_thread_pool(struct function_t* meta) {
     void** args = routine_metadata_arguments(meta);
     if (!args) pthread_exit(NULL);
@@ -1113,6 +1160,7 @@ FORCE_INLINE void* thread_update_thread_pool(struct function_t* meta) {
     pthread_exit(NULL);
 }
 
+[[gnu::aligned(DEFAULT_ALIGNMENT)]]
 FORCE_INLINE void* thread_create_thread_pool_range(struct function_t* meta) {
     void** args = routine_metadata_arguments(meta);
     if (!args) pthread_exit(NULL);
@@ -1126,6 +1174,7 @@ FORCE_INLINE void* thread_create_thread_pool_range(struct function_t* meta) {
     pthread_exit(NULL);
 }
 
+[[gnu::aligned(DEFAULT_ALIGNMENT)]]
 FORCE_INLINE void* thread_update_block_t_by_offset(struct function_t* meta) {
     void** args = routine_metadata_arguments(meta);
     if (!args) pthread_exit(NULL);
@@ -1141,6 +1190,7 @@ FORCE_INLINE void* thread_update_block_t_by_offset(struct function_t* meta) {
     pthread_exit(NULL);
 }
 
+[[gnu::aligned(DEFAULT_ALIGNMENT)]]
 FORCE_INLINE void* thread_rewind(struct function_t* meta) {
     void** args = routine_metadata_arguments(meta);
     if (!args) pthread_exit(NULL);
@@ -1153,6 +1203,7 @@ FORCE_INLINE void* thread_rewind(struct function_t* meta) {
     pthread_exit(NULL);
 }
 
+[[gnu::aligned(DEFAULT_ALIGNMENT)]]
 FORCE_INLINE void* thread_allocator_huge_update_slots(struct function_t* meta) {
     void** args = routine_metadata_arguments(meta);
     if (!args) pthread_exit(NULL);
@@ -1192,6 +1243,7 @@ void* allocate(const size_t bytes);
 void deallocate(void* ptr);
 
 [[gnu::cold]]
+[[gnu::aligned(DEFAULT_ALIGNMENT)]]
 FORCE_INLINE void allocator_init_arena_t(void) {
     allocator.arena = init_arena_t();
     if (!allocator.arena) {
@@ -1210,6 +1262,7 @@ FORCE_INLINE void allocator_init_arena_t(void) {
 }
 
 [[gnu::cold]]
+[[gnu::aligned(DEFAULT_ALIGNMENT)]]
 // TODO: Need to make sure that MADV_MERGEABLE enabled does not consume a lot of processing power; use with care.
 FORCE_INLINE void allocator_init_buckets_t(void) {
     int res = 0;
@@ -1302,6 +1355,7 @@ FORCE_INLINE void allocator_init_buckets_t(void) {
 }
 
 [[gnu::cold]]
+[[gnu::aligned(DEFAULT_ALIGNMENT)]]
 FORCE_INLINE void allocator_init_threads_t(void) {
     int res = 0;
     if (!allocator.pool) {
@@ -1345,6 +1399,7 @@ FORCE_INLINE void allocator_init_threads_t(void) {
 
 [[gnu::flatten]] /* inlines callee functions if possible */
 [[gnu::malloc, gnu::malloc(deallocate, 1)]]
+[[gnu::aligned(DEFAULT_ALIGNMENT)]]
 GCC_OPTIMIZE_O0 void* allocator_byte_request(size_t bytes) {
     if (bytes == 0 || !allocator.huge) return NULL;
     else if (!allocator.huge->region) return NULL;
@@ -1359,7 +1414,7 @@ GCC_OPTIMIZE_O0 void* allocator_byte_request(size_t bytes) {
     char* address = NULL;
     if (allocator.huge->allocator_cap < bytes) {
         const size_t old_len = allocator.huge->allocator_cap; 
-        const size_t new_len = alignment(allocator.huge->allocator_cap * bytes, alignof(HUGE_PAGE_SIZE));
+        const size_t new_len = alignment(allocator.huge->allocator_cap * bytes, alignof(max_align_t));
         allocator_huge_resize_chunk(allocator.huge->region, old_len, new_len);
     }
 
@@ -1395,6 +1450,7 @@ GCC_OPTIMIZE_O0 void* allocator_byte_request(size_t bytes) {
 
 [[gnu::flatten]] /* inlines callee functions if possible */
 [[gnu::pure]]
+[[gnu::aligned(DEFAULT_ALIGNMENT)]]
 FORCE_INLINE void* coalescing(size_t bytes) {
     if ((bytes & (bytes - 1)) != 0)  bytes = alignment(bytes, alignof(max_align_t));
     
@@ -1430,6 +1486,7 @@ FORCE_INLINE void* coalescing(size_t bytes) {
     return NULL;
 }
 
+[[gnu::aligned(DEFAULT_ALIGNMENT)]]
 FORCE_INLINE void debug_allocator(const size_t bytes) {
     printf("allocator.allocate: Error, failed to allocate memory for %zu\n", bytes);
     printf("Printing out information....\n");
@@ -1489,6 +1546,7 @@ FORCE_INLINE void debug_allocator(const size_t bytes) {
 [[gnu::hot]]
 [[gnu::malloc, gnu::malloc(deallocate, 1)]]
 [[gnu::flatten]] /* inlines callee functions if possible */
+[[gnu::aligned(DEFAULT_ALIGNMENT)]] /* Align it to a byte-boundry, so it can fit into the cache without an issue */
 GCC_OPTIMIZE_O0 void* allocate(size_t bytes) {
     char* address = NULL; /* TODO: Transform this into a static atomic type. */
     size_t idx = SIZE_MAX, aligned_bytes = SIZE_MAX;
@@ -1565,6 +1623,7 @@ GCC_OPTIMIZE_O0 void* allocate(size_t bytes) {
 [[gnu::hot]]
 [[gnu::flatten]] /* inlines callee functions if possible */
 [[gnu::nonnull(1)]] /* Compiler might perform optimizations. Disable it using fno-delete-null-pointer-checks */
+[[gnu::aligned(DEFAULT_ALIGNMENT)]] /* Align it to a byte-boundry, so it can fit into the cache without an issue */
 GCC_OPTIMIZE_O0 void deallocate(void* ptr) {
 
     update_thread_pool(allocator.pool, ALLOC_THREAD_POOL_SIZE);
@@ -1657,6 +1716,7 @@ GCC_OPTIMIZE_O0 void deallocate(void* ptr) {
 
 [[gnu::cold]]
 [[gnu::flatten]]
+[[gnu::aligned(DEFAULT_ALIGNMENT)]] /* Align it to a byte-boundry, so it can fit into the cache without an issue */
 inline void init_allocator_t() {
     #if BENCHMARK_ENV == 1
         init_benchmark_allocator_t();
@@ -1679,6 +1739,7 @@ inline void init_allocator_t() {
 }
 
 #if BENCHMARK_ENV == 1
+    [[gnu::aligned(DEFAULT_ALIGNMENT)]] /* Align it to a byte-boundry, so it can fit into the cache without an issue */
     FORCE_INLINE void init_benchmark_allocator_t() {
         /* Entry functions */
         benchmark_allocator.get_entry_t_by_bytes     = get_entry_t_by_bytes;
@@ -1712,6 +1773,7 @@ inline void init_allocator_t() {
     * @param bytes: The requested amount of bytes 
     * @return returns 0x01 if successful, otherwise, 0x0
 */
+[[gnu::aligned(DEFAULT_ALIGNMENT)]] /* Align it to a byte-boundry, so it can fit into the cache without an issue */
 FORCE_INLINE unsigned char overcommit(const size_t bytes) {
     struct sysinfo info;
     if (sysinfo(&info) != 0) return 0x0;
@@ -1721,6 +1783,7 @@ FORCE_INLINE unsigned char overcommit(const size_t bytes) {
 
 [[gnu::flatten]]
 [[gnu::nonnull(1)]]
+[[gnu::aligned(DEFAULT_ALIGNMENT)]] /* Align it to a byte-boundry, so it can fit into the cache without an issue */
 FORCE_INLINE void allocator_huge_resize_slots(huge_slot_t* slot, const size_t size) {
 
     size_t old = slot->capacity;
@@ -1746,6 +1809,7 @@ FORCE_INLINE void allocator_huge_resize_slots(huge_slot_t* slot, const size_t si
 
 [[gnu::flatten]]
 [[gnu::nonnull(1)]]
+[[gnu::aligned(DEFAULT_ALIGNMENT)]] /* Align it to a byte-boundry, so it can fit into the cache without an issue */
 FORCE_INLINE void allocator_huge_resize_chunk(char* chunk, const size_t old_len, const size_t new_len) { 
     chunk = remap_address(chunk, old_len, new_len);
     if (!chunk) return;
@@ -1755,6 +1819,7 @@ FORCE_INLINE void allocator_huge_resize_chunk(char* chunk, const size_t old_len,
 [[gnu::hot]]
 [[gnu::flatten]]
 [[gnu::nonnull(1)]]
+[[gnu::aligned(DEFAULT_ALIGNMENT)]] /* Align it to a byte-boundry, so it can fit into the cache without an issue */
 FORCE_INLINE void* allocator_huge_push_to_slot(huge_slot_t* slot, const size_t index, const size_t end, size_t bytes) {
     char* address = NULL;
     uintptr_t raw = (uintptr_t)allocator.huge->region + (uintptr_t)(slot->space == 0 ? 1 : slot->space);
@@ -1772,6 +1837,7 @@ FORCE_INLINE void* allocator_huge_push_to_slot(huge_slot_t* slot, const size_t i
     }
 }
 
+[[gnu::aligned(DEFAULT_ALIGNMENT)]] /* Align it to a byte-boundry, so it can fit into the cache without an issue */
 FORCE_INLINE void allocator_huge_update_slots(const size_t start, const size_t end) {
     for (size_t i = start; i < end; i++) { 
         allocator.huge->slots[i].space = 1;
@@ -1781,6 +1847,7 @@ FORCE_INLINE void allocator_huge_update_slots(const size_t start, const size_t e
 
 [[gnu::cold]]
 [[gnu::flatten]]
+[[gnu::aligned(DEFAULT_ALIGNMENT)]] /* Align it to a byte-boundry, so it can fit into the cache without an issue */
 FORCE_INLINE void init_huge_allocator(void) {
     init_bitmap_t(&allocator.huge->bitmap, MAX_HUGE_SLOTS);
     allocator.huge->region = shared_address(NULL, (size_t)MAX_HUGE_SLOTS * HUGE_PAGE_SIZE, PROT_WRITE | PROT_READ,  MAP_HUGETLB | ((size_t)__builtin_ctzll(HUGE_PAGE_SIZE) << 26) | MAP_NORESERVE, -1, 0);
@@ -1818,6 +1885,7 @@ FORCE_INLINE void init_huge_allocator(void) {
 
 [[gnu::cold]]
 [[gnu::destructor]]
+[[gnu::aligned(DEFAULT_ALIGNMENT)]] /* Align it to a byte-boundry, so it can fit into the cache without an issue */
 FORCE_INLINE void allocator_dctor() {
     while(!atomic_load_explicit(&allocator.huge->done, memory_order_acquire)){}
     for (size_t i = 0;  i < ALLOC_THREAD_POOL_SIZE; i++) clean_threads(&allocator.pool[i]);

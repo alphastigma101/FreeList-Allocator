@@ -47,10 +47,11 @@ typedef struct function_t {
 // FUNCTION_T SECTION //
 ///////////////////////
 
-
+[[gnu::aligned(DEFAULT_ALIGNMENT)]] /* Align it to a byte-boundry, so it can fit into the cache without an issue */
 inline void** routine_metadata_arguments(struct function_t* meta) { return meta->args; }
 
 [[gnu::hot]]
+[[gnu::aligned(DEFAULT_ALIGNMENT)]] /* Align it to a byte-boundry, so it can fit into the cache without an issue */
 inline void routine_metadata(threads_t* t, const size_t length, ...) {
     function_t* routine = atomic_load_explicit(&t->routine, memory_order_relaxed);
     if (!routine) {
@@ -99,6 +100,7 @@ inline void routine_metadata(threads_t* t, const size_t length, ...) {
 }
 
 [[gnu::hot]]
+[[gnu::aligned(DEFAULT_ALIGNMENT)]] /* Align it to a byte-boundry, so it can fit into the cache without an issue */
 FORCE_INLINE unsigned char thread_t_routine_tagged(_Atomic(struct function_t*)* meta) {
     function_t* cur = atomic_load_explicit(meta, memory_order_relaxed);
     if (IS_ADDRESS_TAGGED(cur)) return 0x01;
@@ -106,6 +108,7 @@ FORCE_INLINE unsigned char thread_t_routine_tagged(_Atomic(struct function_t*)* 
 }
 
 [[gnu::hot]]
+[[gnu::aligned(DEFAULT_ALIGNMENT)]] /* Align it to a byte-boundry, so it can fit into the cache without an issue */
 inline void thread_t_routine_untag(_Atomic(struct function_t*)* meta) {
     if (thread_t_routine_tagged(meta)) {
         function_t* cur = atomic_load_explicit(meta, memory_order_relaxed);
@@ -115,6 +118,7 @@ inline void thread_t_routine_untag(_Atomic(struct function_t*)* meta) {
 }
 
 [[gnu::hot]]
+[[gnu::aligned(DEFAULT_ALIGNMENT)]] /* Align it to a byte-boundry, so it can fit into the cache without an issue */
 inline void thread_t_routine_tag(_Atomic(struct function_t*)* meta) {
     if (!thread_t_routine_tagged(meta)) {
         function_t* untagged = atomic_load_explicit(meta, memory_order_relaxed);
@@ -134,6 +138,8 @@ inline void thread_t_routine_tag(_Atomic(struct function_t*)* meta) {
  * @note: Pass in INT_MAX if no other flags are needed
  * @return Pointer to mapped region, or MAP_FAILED on error
 */
+[[gnu::hot]]
+[[gnu::aligned(DEFAULT_ALIGNMENT)]] /* Align it to a byte-boundry, so it can fit into the cache without an issue */
 inline void* shared_address(void *addr, size_t len, int prot, int flags, int fildes, unsigned char off) {
     off_t offset = (off_t)off * sysconf(_SC_PAGE_SIZE);
     
@@ -160,6 +166,8 @@ inline void* shared_address(void *addr, size_t len, int prot, int flags, int fil
  * @note: Pass in INT_MAX if no other flags are needed
  * @return Pointer to mapped region, or MAP_FAILED on error
 */
+[[gnu::hot]]
+[[gnu::aligned(DEFAULT_ALIGNMENT)]] /* Align it to a byte-boundry, so it can fit into the cache without an issue */
 inline void* private_address(void *addr, size_t len, int prot, int flags, int fildes, unsigned char off) {
     
     void* result = NULL;
@@ -176,6 +184,7 @@ inline void* private_address(void *addr, size_t len, int prot, int flags, int fi
 
 [[gnu::hot]]
 [[gnu::nonnull(1)]] /* Compiler might perform optimizations. Disable it using fno-delete-null-pointer-checks */
+[[gnu::aligned(DEFAULT_ALIGNMENT)]] /* Align it to a byte-boundry, so it can fit into the cache without an issue */
 inline void* remap_address(void* addr, size_t old_len, size_t new_len) {
     if (old_len == new_len) return NULL;
     void* res = mremap(addr, old_len, new_len, MREMAP_MAYMOVE);
@@ -190,6 +199,7 @@ inline void* remap_address(void* addr, size_t old_len, size_t new_len) {
 */
 [[gnu::hot]]
 [[gnu::nonnull(1, 3)]]
+[[gnu::aligned(DEFAULT_ALIGNMENT)]] /* Align it to a byte-boundry, so it can fit into the cache without an issue */
 inline void munmap_address(void* addr, size_t len, const char* file, const int line) {
     if (addr == MAP_FAILED) {
         fprintf(stderr, "clean_address: [ invalid address ] file [ %s ] line [ %d ]\n", file, line);
@@ -221,6 +231,7 @@ size_t __ss = {0}; /* Abbreviated as stack size and is used in create_attrs and 
                 If mode is 0x0 and attr is 0x0, attr will not be initialized
 */
 [[gnu::hot]]
+[[gnu::aligned(DEFAULT_ALIGNMENT)]] /* Align it to a byte-boundry, so it can fit into the cache without an issue */
 threads_t init_threads_t(const unsigned char mode, const unsigned char attr, const unsigned char locked, const unsigned char stack) {
     threads_t t = {0};
     if (mode == 0x0 && attr == 0x01) {
@@ -246,6 +257,7 @@ threads_t init_threads_t(const unsigned char mode, const unsigned char attr, con
     return t;
 }
 
+[[gnu::aligned(DEFAULT_ALIGNMENT)]] /* Align it to a byte-boundry, so it can fit into the cache without an issue */
 FORCE_INLINE threads_t init_locks_t(threads_t* t, const size_t idx, const unsigned char mode) {
     int rc;
 
@@ -294,6 +306,7 @@ FORCE_INLINE threads_t init_locks_t(threads_t* t, const size_t idx, const unsign
     return idx != SIZE_MAX ? t[idx] : *t;
 }
 
+[[gnu::aligned(DEFAULT_ALIGNMENT)]] /* Align it to a byte-boundry, so it can fit into the cache without an issue */
 FORCE_INLINE threads_t init_attr_t(threads_t* t, const size_t idx, const unsigned char attr) {
     struct sched_param schedparam;
     int rc;
@@ -347,6 +360,7 @@ FORCE_INLINE threads_t init_attr_t(threads_t* t, const size_t idx, const unsigne
     return idx != SIZE_MAX ? t[idx] : *t;
 }
 
+[[gnu::aligned(DEFAULT_ALIGNMENT)]] /* Align it to a byte-boundry, so it can fit into the cache without an issue */
 FORCE_INLINE void init_threads_t_stack(threads_t* tp, const size_t idx) {
     int rc;
     size_t page_size = (size_t)sysconf(_SC_PAGESIZE);
@@ -385,6 +399,7 @@ FORCE_INLINE void init_threads_t_stack(threads_t* tp, const size_t idx) {
     }
 }
 
+[[gnu::aligned(DEFAULT_ALIGNMENT)]] /* Align it to a byte-boundry, so it can fit into the cache without an issue */
 FORCE_INLINE threads_t threads_t_state(threads_t* t, const size_t idx, const unsigned char state) {
     if (state) {
         printf("Still under development\n");
@@ -410,6 +425,7 @@ FORCE_INLINE threads_t threads_t_state(threads_t* t, const size_t idx, const uns
     * @param stack: 0x0 to disable integration of stack with guard for each thread, otherwise 0x01
 */
 [[gnu::hot]]
+[[gnu::aligned(DEFAULT_ALIGNMENT)]] /* Align it to a byte-boundry, so it can fit into the cache without an issue */
 void create_thread_pool(threads_t* tp, const size_t size, const unsigned char mode, const unsigned char attr, const unsigned char locked, const unsigned char stack) {
     
     if (!tp && mode == 0x0) {
@@ -470,6 +486,7 @@ void create_thread_pool(threads_t* tp, const size_t size, const unsigned char mo
 }
 
 [[gnu::hot]]
+[[gnu::aligned(DEFAULT_ALIGNMENT)]] /* Align it to a byte-boundry, so it can fit into the cache without an issue */
 void create_thread_pool_range(threads_t* tp, const unsigned char mode, const unsigned char attr, const unsigned char locked, const unsigned char stack, const size_t start, const size_t end) {
     
     if (!tp && mode == 0x0) {
@@ -529,6 +546,7 @@ void create_thread_pool_range(threads_t* tp, const unsigned char mode, const uns
     return;
 }
 
+[[gnu::aligned(DEFAULT_ALIGNMENT)]] /* Align it to a byte-boundry, so it can fit into the cache without an issue */
 inline void update_thread_pool(threads_t *tp, const size_t size) {
     pthread_t self = pthread_self();
     for (size_t i = 0; i < size; i++) {
@@ -539,6 +557,11 @@ inline void update_thread_pool(threads_t *tp, const size_t size) {
     }
 }
 
+[[gnu::aligned(DEFAULT_ALIGNMENT)]] /* Align it to a byte-boundry, so it can fit into the cache without an issue */
+inline void* threads_t_query(void* param) {
+    return param;
+}
+
 /** 
     * @description: Free function that creates a thread and makes it runnable by calling pthread_create. 
     * @param tp: tp is a thread user defined type. It should be initialized by init_threads before this is called.
@@ -547,6 +570,7 @@ inline void update_thread_pool(threads_t *tp, const size_t size) {
     * @note: There are cases where the new thread can spawn in and be terminated before pthread_create is done, so checking ESRCH error code using the thread id is crucial.
             Also, thread id pthread_t is a opaque object meaning it can be a numeric value or a struct. Do not initialize it at all 
 */
+[[gnu::aligned(DEFAULT_ALIGNMENT)]] /* Align it to a byte-boundry, so it can fit into the cache without an issue */
 inline void create_thread(threads_t* tp, void* func) {
     pthread_t self = pthread_self();
     if (!pthread_equal(tp->thread_id, self)) {
@@ -559,6 +583,8 @@ inline void create_thread(threads_t* tp, void* func) {
     }
 }
 
+
+[[gnu::aligned(DEFAULT_ALIGNMENT)]] /* Align it to a byte-boundry, so it can fit into the cache without an issue */
 inline void join_thread(threads_t* t, void** rtn) {
     pthread_t self = pthread_self();
     if (!pthread_equal(t->thread_id, self)) {
@@ -579,6 +605,7 @@ inline void join_thread(threads_t* t, void** rtn) {
     }
 }
 
+[[gnu::aligned(DEFAULT_ALIGNMENT)]] /* Align it to a byte-boundry, so it can fit into the cache without an issue */
 inline threads_t* find_thread_t(threads_t* tp, const size_t size) {
     for (size_t i = 0; i < size; i++) {
         if (!thread_t_routine_tagged(&tp[i].routine)) return &tp[i];
@@ -586,11 +613,13 @@ inline threads_t* find_thread_t(threads_t* tp, const size_t size) {
     return NULL;
 }
 
+[[gnu::aligned(DEFAULT_ALIGNMENT)]] /* Align it to a byte-boundry, so it can fit into the cache without an issue */
 inline size_t thread_pool_index(threads_t* tp, threads_t* t) {
     if (!tp || !t) return SIZE_MAX;
     return (size_t)(t - tp);
 }
 
+[[gnu::aligned(DEFAULT_ALIGNMENT)]] /* Align it to a byte-boundry, so it can fit into the cache without an issue */
 void clean_threads(threads_t* t) {
     if (thread_t_routine_tagged(&t->routine)) {
         printf("Warning: Address of thread_t: [ %p ] has not been joined!\n ", (void*)t);
@@ -637,7 +666,7 @@ void clean_threads(threads_t* t) {
     }
 }
 
-
+[[gnu::aligned(DEFAULT_ALIGNMENT)]] /* Align it to a byte-boundry, so it can fit into the cache without an issue */
 void debug_threads(const threads_t tp) {
     printf("Targeted thread address: [ %p ]\n", &tp);
     if (tp.lock) {
