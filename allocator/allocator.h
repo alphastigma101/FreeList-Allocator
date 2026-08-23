@@ -1,18 +1,3 @@
-/**
- * @file  allocator.h
- * @brief Utility macros for the custom arena/bucket allocator.
- *
- * All macros operate on the global `allocator` instance unless an explicit
- * allocator pointer is supplied.  The naming convention follows the pattern:
- *
- *   ALLOC_<NOUN>_<VERB>   – operates on a structural member
- *   ALLOC_<VERB>          – top-level allocator operation
- *
- * Bucket tiers are sized as follows:
- *   small  : [1  – 64]   bytes   →  bucket.small[64]
- *   medium : [65 – 512]  bytes   →  bucket.medium[128]
- *   large  : [513 – ∞]   bytes   →  bucket.large[256]
-*/
 #ifndef _ALLOCATOR_H_
 #define _ALLOCATOR_H_
 #include "../arena/arena.h"
@@ -28,6 +13,10 @@
 #ifndef BUCKET_LARGE_CAP
     #define BUCKET_LARGE_CAP 256U
 #endif
+
+_Static_assert(((BUCKET_SMALL_CAP  & (BUCKET_SMALL_CAP  - 1)) == 0), "BUCKET_SMALL_CAP: It must be a power of 2");
+_Static_assert(((BUCKET_MEDIUM_CAP & (BUCKET_MEDIUM_CAP - 1)) == 0), "BUCKET_MEDIUM_CAP: It must be a power of 2");
+_Static_assert(((BUCKET_LARGE_CAP  & (BUCKET_LARGE_CAP  - 1)) == 0), "BUCKET_LARGE_CAP: It must be a power of 2");
 
 /* RAM tier heuristic based on arch/vendor macros -- a best-effort
  * classification, NOT a real memory measurement. Three tiers:
@@ -77,8 +66,11 @@
 /* Set the dynamic array size of huge slots, if allocator.huge is ever to be used */
 #ifndef MAX_HUGE_SLOTS
     #define MAX_HUGE_SLOTS 4096U
-#endif 
+#endif
 
+_Static_assert(((MAX_HUGE_SLOTS    & (MAX_HUGE_SLOTS    - 1)) == 0), "MAX_HUGE_SLOTS: It must be a power of 2");
+_Static_assert(MAX_HUGE_SLOTS > BUCKET_LARGE_CAP,                    "MAX_HUGE_SLOTS: It must be greater than BUCKET_LARGE_CAP");
+_Static_assert(((HUGE_PAGE_SIZE    & (HUGE_PAGE_SIZE    - 1)) == 0), "HUGE_PAGE_SIZE: It must be a power of 2");
 
 /**
    * @description: Free List allocator highly optimized.
@@ -154,5 +146,6 @@ extern void init_allocator_t();
     #define ALLOC_THREAD_POOL_SIZE  10U
 #endif
 
+_Static_assert(ALLOC_THREAD_POOL_SIZE != 0 && ALLOC_THREAD_POOL_SIZE > 0, "ALLOC_THREAD_POOL_SIZE: It must be greater than 0 and not equal to it");
 
 #endif

@@ -30,8 +30,9 @@ typedef struct {
 } alloc_huge_entry_t;
 static alloc_huge_entry_t* h_arr = NULL;
 
-
 typedef struct metadata_t {
+    size_t entry_table_size;
+    size_t block_chain_size;
     int expected_amount_of_resizes;
 } metadata_t;
 static metadata_t meta = {0};
@@ -606,17 +607,40 @@ TEST(Allocate, HUGE) {
     meta.expected_amount_of_resizes = 0;
     
     size_t index = 0;
-    for (size_t i = 512; i < MAX_HUGE_SLOTS; i+=2, index++) {
-        accumulated = accumulated + i; 
+    size_t actual_bitmap_index = 0;
+    size_t bitmap_index_next = 1, current_bitmap_index = allocator.bitmap.bitmap_test(allocator.bitmap, 0, allocator.bitmap.n_bytes);    
+    for (size_t i = 512; meta.expected_amount_of_resizes <= 3; i+=2, index++) {
+        if (accumulated + i < space) accumulated = accumulated + i; 
+        
         if (accumulated >= space) {
+            EXPECT_LT(current_bitmap_index, bitmap_index_next);
             EXPECT_LE(allocator.huge->slot_cap, space);
+            
+            bitmap_index_next = bitmap_index_next + 1;
+            actual_bitmap_index = actual_bitmap_index + 1;
+            current_bitmap_index = allocator.bitmap.bitmap_test(allocator.bitmap, actual_bitmap_index, allocator.bitmap.n_bytes);
+            
             resize_allocator_huge_entries(h_arr, space, space * 2);
             space = space * 2;       
             meta.expected_amount_of_resizes++;
+            accumulated = 0;
+        }
+        else {
+            /* Force duplicated entries */
+            #pragma GCC unroll 3
+            for (int j = 0; j < 3; j++, index++) {
+                if (accumulated + i < space) {
+                    h_arr[index].ptr = allocator.allocate(i);
+                    h_arr[index].bytes = alignment(i, alignof(max_align_t));
+                    accumulated = accumulated + i;
+                } else break;
+            }
         }
 
-        h_arr[index].ptr = allocator.allocate(i);
-        h_arr[index].bytes = alignment(i, alignof(max_align_t));
+        if (accumulated < space) {
+            h_arr[index].ptr = allocator.allocate(i);
+            h_arr[index].bytes = alignment(i, alignof(max_align_t));
+        }
     }
 }
 
@@ -625,11 +649,12 @@ TEST(Free, HUGE) {
     size_t index = 0;
     alloc_huge_entry_t* huge = &h_arr[index];
     EXPECT_NE(huge, NULL);
-    
+    int amount_of_deallocations = 0;
     while (!huge) {
         allocator.deallocate(huge->ptr);
         
         index++;
+        amount_of_deallocations++;
         huge = &h_arr[index];
     }
 

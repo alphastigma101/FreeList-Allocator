@@ -199,9 +199,15 @@ typedef struct lock_t {
     unsigned char                  type;
 } lock_t;
 
+typedef struct cond_t {
+    pthread_cond_t                 cond_v;
+    void*                          cond;
+} cond_t;
+
 typedef struct threads_t {
     attr_t*                        attr; 
     lock_t*                        lock;
+    cond_t*                        cond;
     pthread_t                      thread_id;
     _Atomic(struct function_t*)    routine;                                
 } threads_t;

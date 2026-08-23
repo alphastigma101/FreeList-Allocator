@@ -219,6 +219,13 @@ if (CMAKE_BUILD_TYPE STREQUAL "BenchMarking")
         )
     endif()
 
+    # Optimization-report flags -- confirmed these flags need -O2 (or at least
+    # real optimization) to mean anything.
+    # -fsave-optimization-record is equilavent to `-fopt-info-all` and is still a experimental flag as of 2026  
+    set(BENCH_OPTIMIZATION_REPORT_FLAGS
+        -fsave-optimization-record
+    )
+
     # Dead-code / duplicate-code elimination -- the most direct, reliable fix
     # for static-inline duplication specifically. -ffunction-sections and
     # -fdata-sections put each function/global in its own linker section;
@@ -264,6 +271,12 @@ if (CMAKE_BUILD_TYPE STREQUAL "BenchMarking")
         -Wformat=2 -Wnull-dereference -Wdouble-promotion -Werror
     )
 
+    # -flto-report needs -flto present at BOTH compile and link to produce
+    # anything (confirmed: empty at compile-only, full WPA/LTRANS stats
+    # once actually linked with -flto) -- this build already has
+    # -flto=auto, so it's a genuine fit here specifically.
+    set(BENCH_LTO_REPORT_LINK_FLAGS -flto-report)
+
     # Sanitizers -- OPT-IN, not default. Sanitizers and accurate
     # benchmarking are in direct tension: ASan alone typically costs 2-3x
     # wall-clock overhead, which would badly distort every timing number
@@ -286,7 +299,7 @@ if (CMAKE_BUILD_TYPE STREQUAL "BenchMarking")
     add_executable(test_allocator)
     target_compile_options(test_allocator PRIVATE
         ${BENCH_OPT_FLAGS} ${BENCH_SECTION_FLAGS} ${BENCH_HARDENING_FLAGS}
-        ${BENCH_WARNING_FLAGS} ${BENCH_SANITIZE_FLAGS}
+        ${BENCH_WARNING_FLAGS} ${BENCH_SANITIZE_FLAGS} ${BENCH_OPTIMIZATION_REPORT_FLAGS}
     )
     # -fsanitize must be passed to BOTH compile and link steps, not link
     # alone -- verified directly: a stack-buffer-overflow built with
@@ -300,7 +313,7 @@ if (CMAKE_BUILD_TYPE STREQUAL "BenchMarking")
     # most likely to show up in hand-written, pointer-heavy allocator code.
     target_link_options(test_allocator PRIVATE
         ${BENCH_OPT_FLAGS} ${BENCH_SECTION_LINK_FLAGS} ${BENCH_HARDENING_LINK_FLAGS}
-        ${BENCH_SANITIZE_FLAGS} -g -pthread -latomic 
+        ${BENCH_SANITIZE_FLAGS} -pthread -latomic 
     )
     target_compile_definitions(test_allocator
         PRIVATE
@@ -348,7 +361,7 @@ if (CMAKE_BUILD_TYPE STREQUAL "BenchMarking")
     add_executable(test_logger)
     target_compile_options(test_logger PRIVATE
         ${BENCH_OPT_FLAGS} ${BENCH_SECTION_FLAGS} ${BENCH_HARDENING_FLAGS}
-        ${BENCH_WARNING_FLAGS} ${BENCH_SANITIZE_FLAGS}
+        ${BENCH_WARNING_FLAGS} ${BENCH_SANITIZE_FLAGS} ${BENCH_OPTIMIZATION_REPORT_FLAGS}
     )
     target_link_options(test_logger PRIVATE
         ${BENCH_OPT_FLAGS} ${BENCH_SECTION_LINK_FLAGS} ${BENCH_HARDENING_LINK_FLAGS}
@@ -384,7 +397,7 @@ if (CMAKE_BUILD_TYPE STREQUAL "BenchMarking")
     add_executable(test_threads)
     target_compile_options(test_threads PRIVATE
         ${BENCH_OPT_FLAGS} ${BENCH_SECTION_FLAGS} ${BENCH_HARDENING_FLAGS}
-        ${BENCH_WARNING_FLAGS} ${BENCH_SANITIZE_FLAGS}
+        ${BENCH_WARNING_FLAGS} ${BENCH_SANITIZE_FLAGS} ${BENCH_OPTIMIZATION_REPORT_FLAGS}
     )
     target_link_options(test_threads PRIVATE
         ${BENCH_OPT_FLAGS} ${BENCH_SECTION_LINK_FLAGS} ${BENCH_HARDENING_LINK_FLAGS}
@@ -445,6 +458,17 @@ if (CMAKE_BUILD_TYPE STREQUAL "Profile")
         -Wall -Wextra -Wshadow -Wconversion -Wsign-conversion
         -Wformat=2 -Wnull-dereference -Wdouble-promotion -Werror
     )
+
+    # -fstack-usage: per-function stack usage, one <source>.su file per
+    #   compiled file, no filename collisions across a multi-file target.
+    # -fcallgraph-info=su,da: call graph with stack usage (su) and dynamic
+    #   allocation (da) embedded directly into each node -- one <source>.ci
+    #   file per source, same auto-naming safety as -fstack-usage.
+    set(PROFILE_OPTIMIZATION_REPORT_FLAGS
+        -fstack-usage
+        -fcallgraph-info=da
+    )
+
 
     # ============================================================
     # test_allocator

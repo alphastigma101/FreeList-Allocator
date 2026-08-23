@@ -1,8 +1,5 @@
 #include "allocator.h"
 #include <stdalign.h>
-#include <stddef.h>
-#include <stdint.h>
-#include <stdio.h>
 #include <sys/sysinfo.h>
 #include <string.h>
 #include <stdlib.h>
@@ -11,6 +8,7 @@
     FORCE_INLINE void init_benchmark_allocator_t();
     benchmark_allocator_t benchmark_allocator = {0};
 #endif
+
 /*
 #include "allocator.h"
 #include <stdalign.h>
@@ -81,14 +79,24 @@ FORCE_INLINE void entry_table_init(entry_table_t* table, const size_t idx) {
     table->offset_entries = shared_address(NULL, st_entries, PROT_WRITE | PROT_READ, MAP_NORESERVE, -1, 0);
     if (table->offset_entries == MAP_FAILED) { table->offset_entries = NULL; return; }
     else {
-        int res = madvise(table->offset_entries, st_entries, MADV_SEQUENTIAL | MADV_MERGEABLE);
+        int res = madvise(table->offset_entries, st_entries, MADV_SEQUENTIAL);
+        if (res == -1) { munmap_address(table->offset_entries, st_entries, __FILE__,  __LINE__); table->offset_entries = NULL; return; }
+        res = madvise(table->offset_entries, st_entries, MADV_MERGEABLE);
         if (res == -1) { munmap_address(table->offset_entries, st_entries, __FILE__,  __LINE__); table->offset_entries = NULL; return; }
     }
 
     table->byte_entries = shared_address(NULL, outer_count * sizeof(byte_entries_t**), PROT_WRITE | PROT_READ, MAP_NORESERVE, -1, 0);
     if (table->byte_entries == MAP_FAILED) { table->byte_entries = NULL; return; }
     else {
-        int res = madvise(table->byte_entries, outer_count * sizeof(byte_entries_t**), MADV_SEQUENTIAL | MADV_MERGEABLE);
+        int res = madvise(table->byte_entries, outer_count * sizeof(byte_entries_t**), MADV_SEQUENTIAL);
+        if (res == -1) { 
+            munmap_address(table->byte_entries, outer_count * sizeof(byte_entries_t**), __FILE__,  __LINE__);
+            munmap_address(table->offset_entries, st_entries, __FILE__,  __LINE__); 
+            table->offset_entries = NULL; 
+            table->byte_entries = NULL; 
+            return; 
+        }
+        res =  madvise(table->byte_entries, outer_count * sizeof(byte_entries_t**), MADV_MERGEABLE);
         if (res == -1) { 
             munmap_address(table->byte_entries, outer_count * sizeof(byte_entries_t**), __FILE__,  __LINE__);
             munmap_address(table->offset_entries, st_entries, __FILE__,  __LINE__); 
@@ -118,6 +126,16 @@ FORCE_INLINE void entry_table_init(entry_table_t* table, const size_t idx) {
             table->inner_count = NULL;
             return;
         }
+        res = madvise(table->inner_count, st_inner_count, MADV_MERGEABLE);
+        if (res == -1) {
+            munmap_address(table->offset_entries, st_entries, __FILE__,  __LINE__);
+            munmap_address(table->byte_entries, outer_count * sizeof(byte_entries_t**), __FILE__,  __LINE__);
+            munmap_address(table->inner_count, st_inner_count, __FILE__,  __LINE__);
+            table->byte_entries = NULL; 
+            table->offset_entries = NULL;
+            table->inner_count = NULL;
+            return;
+        }
     }
     table->inner_count[idx] = initial_inner;
     table->bucket_count = outer_count;
@@ -135,7 +153,13 @@ FORCE_INLINE void entry_table_inner_init(entry_table_t* table, size_t idx, const
         table->offset_entries[idx] = shared_address(NULL, table->inner_count[idx] * sizeof(byte_entries_t*), PROT_WRITE | PROT_READ, MAP_NORESERVE, -1, 0);
         if (table->offset_entries[idx] == MAP_FAILED) { table->offset_entries[idx] = NULL; return; }
         else {
-            int res = madvise(table->offset_entries[idx], table->inner_count[idx] * sizeof(byte_entries_t*), MADV_SEQUENTIAL | MADV_MERGEABLE);
+            int res = madvise(table->offset_entries[idx], table->inner_count[idx] * sizeof(byte_entries_t*), MADV_SEQUENTIAL);
+            if (res == -1) {
+                munmap_address(table->offset_entries[idx], table->inner_count[idx] * sizeof(byte_entries_t*), __FILE__,  __LINE__);
+                table->offset_entries[idx] = NULL;
+                return;
+            }
+            res = madvise(table->offset_entries[idx], table->inner_count[idx] * sizeof(byte_entries_t*), MADV_MERGEABLE);
             if (res == -1) {
                 munmap_address(table->offset_entries[idx], table->inner_count[idx] * sizeof(byte_entries_t*), __FILE__,  __LINE__);
                 table->offset_entries[idx] = NULL;
@@ -147,7 +171,13 @@ FORCE_INLINE void entry_table_inner_init(entry_table_t* table, size_t idx, const
         table->byte_entries[idx] = shared_address(NULL, table->inner_count[idx] * sizeof(byte_entries_t*), PROT_WRITE | PROT_READ, MAP_NORESERVE, -1, 0);
         if (table->byte_entries[idx] == MAP_FAILED) { table->byte_entries[idx] = NULL; return; }
         else {
-            int res = madvise(table->byte_entries[idx], table->inner_count[idx] * sizeof(byte_entries_t*), MADV_SEQUENTIAL | MADV_MERGEABLE);
+            int res = madvise(table->byte_entries[idx], table->inner_count[idx] * sizeof(byte_entries_t*), MADV_SEQUENTIAL);
+            if (res == -1) {
+                munmap_address(table->byte_entries[idx], table->inner_count[idx] * sizeof(byte_entries_t*), __FILE__,  __LINE__);
+                table->byte_entries[idx] = NULL;
+                return;
+            }
+            res = madvise(table->byte_entries[idx], table->inner_count[idx] * sizeof(byte_entries_t*), MADV_MERGEABLE);
             if (res == -1) {
                 munmap_address(table->byte_entries[idx], table->inner_count[idx] * sizeof(byte_entries_t*), __FILE__,  __LINE__);
                 table->byte_entries[idx] = NULL;
@@ -173,7 +203,12 @@ FORCE_INLINE void entry_table_resize_inner(entry_table_t* table, const size_t id
         offset_entries_t** new_rows = shared_address(NULL, new_inner_count * sizeof(offset_entries_t*), PROT_WRITE | PROT_READ, MAP_NORESERVE, -1, 0);
         if (new_rows == MAP_FAILED) return;
         else {
-            int res = madvise(new_rows, new_inner_count * sizeof(offset_entries_t*), MADV_SEQUENTIAL | MADV_MERGEABLE);
+            int res = madvise(new_rows, new_inner_count * sizeof(offset_entries_t*), MADV_SEQUENTIAL);
+            if (res == -1) {
+                munmap_address(new_rows, new_inner_count * sizeof(offset_entries_t*), __FILE__,  __LINE__);
+                return;
+            }
+            res = madvise(new_rows, new_inner_count * sizeof(offset_entries_t*), MADV_MERGEABLE);
             if (res == -1) {
                 munmap_address(new_rows, new_inner_count * sizeof(offset_entries_t*), __FILE__,  __LINE__);
                 return;
@@ -189,7 +224,12 @@ FORCE_INLINE void entry_table_resize_inner(entry_table_t* table, const size_t id
         byte_entries_t** new_rows = shared_address(NULL, new_inner_count * sizeof(byte_entries_t*), PROT_WRITE | PROT_READ, MAP_NORESERVE, -1, 0);
         if (new_rows == MAP_FAILED) return;
         else {
-            int res = madvise(new_rows, new_inner_count * sizeof(byte_entries_t*), MADV_SEQUENTIAL | MADV_MERGEABLE);
+            int res = madvise(new_rows, new_inner_count * sizeof(byte_entries_t*), MADV_SEQUENTIAL);
+            if (res == -1) {
+                munmap_address(new_rows, new_inner_count * sizeof(byte_entries_t*), __FILE__,  __LINE__);
+                return;
+            }
+            res = madvise(new_rows, new_inner_count * sizeof(byte_entries_t*), MADV_MERGEABLE);
             if (res == -1) {
                 munmap_address(new_rows, new_inner_count * sizeof(byte_entries_t*), __FILE__,  __LINE__);
                 return;
@@ -220,7 +260,12 @@ FORCE_INLINE void entry_table_resize_table(entry_table_t* table, const unsigned 
         offset_entries_t*** new_entries =  shared_address(NULL, new_bucket_count * sizeof(offset_entries_t**), PROT_WRITE | PROT_READ, MAP_NORESERVE, -1, 0);
         if (new_entries == MAP_FAILED) return;
         else {
-            int res = madvise(new_entries, new_bucket_count * sizeof(offset_entries_t**), MADV_SEQUENTIAL | MADV_MERGEABLE);
+            int res = madvise(new_entries, new_bucket_count * sizeof(offset_entries_t**), MADV_SEQUENTIAL);
+            if (res == -1) {
+                munmap_address(new_entries, sizeof(offset_entries_t**) * new_bucket_count, __FILE__,  __LINE__);
+                return;
+            }
+            res = madvise(new_entries, new_bucket_count * sizeof(offset_entries_t**), MADV_MERGEABLE);
             if (res == -1) {
                 munmap_address(new_entries, sizeof(offset_entries_t**) * new_bucket_count, __FILE__,  __LINE__);
                 return;
@@ -237,7 +282,12 @@ FORCE_INLINE void entry_table_resize_table(entry_table_t* table, const unsigned 
         byte_entries_t*** new_entries =  shared_address(NULL, new_bucket_count * sizeof(byte_entries_t**), PROT_WRITE | PROT_READ, MAP_NORESERVE, -1, 0);
         if (new_entries == MAP_FAILED) return;
         else {
-            int res = madvise(new_entries, new_bucket_count * sizeof(byte_entries_t**), MADV_SEQUENTIAL | MADV_MERGEABLE);
+            int res = madvise(new_entries, new_bucket_count * sizeof(byte_entries_t**), MADV_SEQUENTIAL);
+            if (res == -1) {
+                munmap_address(new_entries, sizeof(byte_entries_t**) * new_bucket_count, __FILE__,  __LINE__);
+                return;
+            }
+            res = madvise(new_entries, new_bucket_count * sizeof(byte_entries_t**), MADV_MERGEABLE);
             if (res == -1) {
                 munmap_address(new_entries, sizeof(byte_entries_t**) * new_bucket_count, __FILE__,  __LINE__);
                 return;
@@ -610,7 +660,13 @@ FORCE_INLINE void init_blocks_t(blocks_t* blocks) {
     blocks->chain = shared_address(NULL, blocks->size * sizeof(blocks_t*), PROT_WRITE | PROT_READ, MAP_NORESERVE, -1, 0);
     if (blocks->chain == MAP_FAILED) return;
     else {
-        int res = madvise(blocks->chain, blocks->size * sizeof(blocks_t*), MADV_SEQUENTIAL | MADV_MERGEABLE);
+        int res = madvise(blocks->chain, blocks->size * sizeof(blocks_t*), MADV_SEQUENTIAL);
+        if (res == -1) {
+            if (blocks->chain) munmap_address(blocks->chain, blocks->size * sizeof(blocks_t*), __FILE__,  __LINE__);
+            blocks->chain = NULL;
+            return;
+        }
+        res = madvise(blocks->chain, blocks->size * sizeof(blocks_t*), MADV_MERGEABLE);
         if (res == -1) {
             if (blocks->chain) munmap_address(blocks->chain, blocks->size * sizeof(blocks_t*), __FILE__,  __LINE__);
             blocks->chain = NULL;
@@ -643,7 +699,12 @@ FORCE_INLINE void resize_blocks(blocks_t* blocks) {
     blocks_t** chain = shared_address(NULL, new * sizeof(blocks_t*), PROT_WRITE | PROT_READ, MAP_NORESERVE, -1, 0);
     if (chain == MAP_FAILED) return;
     else {
-        int res = madvise(chain, new * sizeof(blocks_t*), MADV_SEQUENTIAL | MADV_MERGEABLE);
+        int res = madvise(chain, new * sizeof(blocks_t*), MADV_SEQUENTIAL);
+        if (res == -1) {
+            if (chain) { munmap_address(chain, new * sizeof(blocks_t*), __FILE__,  __LINE__); chain = NULL; }
+            return;
+        }
+        res = madvise(chain, new * sizeof(blocks_t*), MADV_MERGEABLE);
         if (res == -1) {
             if (chain) { munmap_address(chain, new * sizeof(blocks_t*), __FILE__,  __LINE__); chain = NULL; }
             return;
@@ -1208,8 +1269,8 @@ FORCE_INLINE void* thread_allocator_huge_update_slots(struct function_t* meta) {
     void** args = routine_metadata_arguments(meta);
     if (!args) pthread_exit(NULL);
     
-    size_t begin = *(size_t*)args[0];
-    size_t end   = *(size_t*)args[1];
+    size_t begin = (size_t)args[0];
+    size_t end   = (size_t)args[1];
     atomic_size_t* done = (atomic_size_t*)args[2];
 
     allocator_huge_update_slots(begin, end);
@@ -1281,7 +1342,21 @@ FORCE_INLINE void allocator_init_buckets_t(void) {
         #else 
             if (allocator.bucket.large == MAP_FAILED) return;
         #endif 
-        res = madvise(allocator.bucket.large, BUCKET_LARGE_CAP * sizeof(bucket_t), MADV_SEQUENTIAL | MADV_MERGEABLE);
+        res = madvise(allocator.bucket.large, BUCKET_LARGE_CAP * sizeof(bucket_t), MADV_SEQUENTIAL);
+        #if LOGGING == 1 || LOGGING == 0
+            if (res == -1) {
+                const int line = __LINE__;
+                #if LOGGING == 0
+                    printer.add(5, __FILE__, line, ANSI_RED "alloc_init: Failed to allocate modify memory region for data member large bucket!\n.... Returning back to caller\n" ANSI_RESET);
+                    printer.print(__FILE__, line);
+                #else 
+                    logger.add(5, __FILE__, line, ANSI_RED "alloc_init: Failed to modify memory region for data member large bucket!\n.... Returning back to caller\n" ANSI_RESET);
+                #endif
+            }
+        #else 
+            if (res == -1) return;
+        #endif
+        res = madvise(allocator.bucket.large, BUCKET_LARGE_CAP * sizeof(bucket_t), MADV_MERGEABLE);
         #if LOGGING == 1 || LOGGING == 0
             if (res == -1) {
                 const int line = __LINE__;
@@ -1309,7 +1384,21 @@ FORCE_INLINE void allocator_init_buckets_t(void) {
         #else 
             if (allocator.bucket.small == MAP_FAILED) return;
         #endif
-        res = madvise(allocator.bucket.small, BUCKET_SMALL_CAP * sizeof(bucket_t), MADV_SEQUENTIAL | MADV_MERGEABLE);
+        res = madvise(allocator.bucket.small, BUCKET_SMALL_CAP * sizeof(bucket_t), MADV_SEQUENTIAL);
+        #if LOGGING == 1 || LOGGING == 0
+            if (res == -1) {
+                const int line =  __LINE__; 
+                #if LOGGING == 0
+                    printer.add(5, __FILE__, line, ANSI_RED "alloc_init: Failed to modify allocator's small bucket memory region with madvise!\n.... Returning back to caller\n" ANSI_RESET);
+                    printer.print(__FILE__, line);
+                #else 
+                    logger.add(5, __FILE__, line, ANSI_RED "alloc_init: Failed to modify allocator's small bucket memory region with madvise!\n.... Returning back to caller\n" ANSI_RESET);
+                #endif
+            }
+        #else 
+            if (res == -1) return;
+        #endif
+        res = madvise(allocator.bucket.small, BUCKET_SMALL_CAP * sizeof(bucket_t), MADV_MERGEABLE);
         #if LOGGING == 1 || LOGGING == 0
             if (res == -1) {
                 const int line =  __LINE__; 
@@ -1337,7 +1426,21 @@ FORCE_INLINE void allocator_init_buckets_t(void) {
         #else 
             if (allocator.bucket.medium == MAP_FAILED) return;
         #endif
-        res = madvise(allocator.bucket.medium, BUCKET_MEDIUM_CAP * sizeof(bucket_t), MADV_SEQUENTIAL | MADV_MERGEABLE);
+        res = madvise(allocator.bucket.medium, BUCKET_MEDIUM_CAP * sizeof(bucket_t), MADV_SEQUENTIAL);
+        #if LOGGING == 1 || LOGGING == 0
+            if (res == -1) {
+                const int line = __LINE__; 
+                #if LOGGING == 0
+                    printer.add(5, __FILE__, line, ANSI_RED "alloc_init: Failed to modify allocator's medium bucket memory region with madvise!\n.... Returning back to caller\n" ANSI_RESET);
+                    printer.print(__FILE__, line);
+                #else 
+                    logger.add(5, __FILE__, line, ANSI_RED "alloc_init: Failed to modify allocator's medium bucket memory region with madvise!\n.... Returning back to caller\n" ANSI_RESET);
+                #endif
+            }
+        #else 
+            if (res == -1) return;
+        #endif
+        res = madvise(allocator.bucket.medium, BUCKET_MEDIUM_CAP * sizeof(bucket_t), MADV_MERGEABLE);
         #if LOGGING == 1 || LOGGING == 0
             if (res == -1) {
                 const int line = __LINE__; 
@@ -1373,7 +1476,21 @@ FORCE_INLINE void allocator_init_threads_t(void) {
         #else 
             if (allocator.pool == MAP_FAILED) return;
         #endif
-        res = madvise(allocator.pool, ALLOC_THREAD_POOL_SIZE * sizeof(threads_t), MADV_SEQUENTIAL | MADV_MERGEABLE);
+        res = madvise(allocator.pool, ALLOC_THREAD_POOL_SIZE * sizeof(threads_t), MADV_SEQUENTIAL);
+        #if LOGGING == 1 || LOGGING == 0
+            if (res == -1) {
+                const int line = __LINE__;
+                #if LOGGING == 0
+                    printer.add(5, __FILE__, line, ANSI_RED "alloc_init: Failed to modify memory region of allocator internal threads with madvise!\n.... Returning back to caller\n" ANSI_RESET);
+                    printer.print(__FILE__, line);
+                #else 
+                    logger.add(5, __FILE__, line, ANSI_RED "alloc_init: Failed to modify memory region of allocator internal threads with madvise!\n.... Returning back to caller\n" ANSI_RESET);
+                #endif
+            }
+        #else 
+            if (res == -1) return;
+        #endif
+        res = madvise(allocator.pool, ALLOC_THREAD_POOL_SIZE * sizeof(threads_t), MADV_MERGEABLE);
         #if LOGGING == 1 || LOGGING == 0
             if (res == -1) {
                 const int line = __LINE__;
@@ -1405,7 +1522,7 @@ GCC_OPTIMIZE_O0 void* allocator_byte_request(size_t bytes) {
     else if (!allocator.huge->region) return NULL;
     else if ((bytes & (bytes - 1)) != 0) bytes = alignment(bytes, alignof(max_align_t));
 
-    while (!atomic_load_explicit(&allocator.huge->done, memory_order_acquire));
+    while (!atomic_load_explicit(&allocator.huge->done, memory_order_acquire)){};
     
     size_t pages_needed = (size_t)((bytes + HUGE_PAGE_SIZE - 1) / HUGE_PAGE_SIZE);
     if (pages_needed == 0) return NULL;
@@ -1413,8 +1530,10 @@ GCC_OPTIMIZE_O0 void* allocator_byte_request(size_t bytes) {
     
     char* address = NULL;
     if (allocator.huge->allocator_cap < bytes) {
-        const size_t old_len = allocator.huge->allocator_cap; 
-        const size_t new_len = alignment(allocator.huge->allocator_cap * bytes, alignof(max_align_t));
+        const size_t old_len = allocator.huge->allocator_cap;
+        size_t new_len = old_len;
+        while (new_len < bytes) new_len *= 2;
+        new_len = alignment(new_len, HUGE_PAGE_SIZE);
         allocator_huge_resize_chunk(allocator.huge->region, old_len, new_len);
     }
 
@@ -1550,7 +1669,7 @@ FORCE_INLINE void debug_allocator(const size_t bytes) {
 GCC_OPTIMIZE_O0 void* allocate(size_t bytes) {
     char* address = NULL; /* TODO: Transform this into a static atomic type. */
     size_t idx = SIZE_MAX, aligned_bytes = SIZE_MAX;
-    int_fast16_t end = 0;
+    size_t end = 0;
     bucket_t* slot = NULL;
 
     update_thread_pool(allocator.pool, ALLOC_THREAD_POOL_SIZE);
@@ -1596,7 +1715,7 @@ GCC_OPTIMIZE_O0 void* allocate(size_t bytes) {
                 slot->arena = push(slot->arena, bytes);
                 if (slot->arena->flag == 0x01) {
                     slot->flag = 0x01;
-                    allocator.bitmap = allocator.bitmap.bitmap_set(allocator.bitmap, idx, 0, (size_t)end);
+                    allocator.bitmap = allocator.bitmap.bitmap_set(allocator.bitmap, idx, 0, end);
                     arena_t* full = slot->arena;
                     arena_t* fresh = init_arena_t();
                     fresh->next = full;
@@ -1790,7 +1909,13 @@ FORCE_INLINE void allocator_huge_resize_slots(huge_slot_t* slot, const size_t si
     huge_slot_t* n_slot = size < ALLOC_THRESHOLD ? aligned_alloc(alignof(huge_slot_t), size * sizeof(huge_slot_t)) : shared_address(NULL, (size_t)MAX_HUGE_SLOTS * sizeof(huge_slot_t), PROT_WRITE | PROT_READ, MAP_NORESERVE, -1, 0); ;
     if (!n_slot) return;
     else {
-        int res = madvise(n_slot,  size * sizeof(huge_slot_t), MADV_SEQUENTIAL | MADV_MERGEABLE);
+        int res = madvise(n_slot,  size * sizeof(huge_slot_t), MADV_SEQUENTIAL);
+        if (res == -1) { 
+            if (n_slot) munmap_address(n_slot, size, __FILE__, __LINE__);
+            n_slot = NULL;
+            return; 
+        }
+        res = madvise(n_slot,  size * sizeof(huge_slot_t),MADV_MERGEABLE);
         if (res == -1) { 
             if (n_slot) munmap_address(n_slot, size, __FILE__, __LINE__);
             n_slot = NULL;
@@ -1816,6 +1941,14 @@ FORCE_INLINE void allocator_huge_resize_chunk(char* chunk, const size_t old_len,
     allocator.huge->allocator_cap = new_len;
 }
 
+/**
+    * @description: Free function similar to that of `arena` `push`, it will push the bytes to the stack, but if full, it will recrusive call `allocate`
+                    afer marking the slot as occupied
+    * @param slot: a pointer to user defined type
+    * @param index: An index that came from bitmap
+    * @param end: slot's capacity 
+    * @param bytes: the requested bytes 
+*/
 [[gnu::hot]]
 [[gnu::flatten]]
 [[gnu::nonnull(1)]]
@@ -1850,34 +1983,55 @@ FORCE_INLINE void allocator_huge_update_slots(const size_t start, const size_t e
 [[gnu::aligned(DEFAULT_ALIGNMENT)]] /* Align it to a byte-boundry, so it can fit into the cache without an issue */
 FORCE_INLINE void init_huge_allocator(void) {
     init_bitmap_t(&allocator.huge->bitmap, MAX_HUGE_SLOTS);
-    allocator.huge->region = shared_address(NULL, (size_t)MAX_HUGE_SLOTS * HUGE_PAGE_SIZE, PROT_WRITE | PROT_READ,  MAP_HUGETLB | ((size_t)__builtin_ctzll(HUGE_PAGE_SIZE) << 26) | MAP_NORESERVE, -1, 0);
+    allocator.huge->region = shared_address(NULL, (size_t)HUGE_PAGE_SIZE, PROT_WRITE | PROT_READ,MAP_NORESERVE, -1, 0);
     if (allocator.huge->region == MAP_FAILED) { allocator.huge->region = NULL; return; }
+    else {
+        int res = madvise(allocator.huge->region, (size_t)HUGE_PAGE_SIZE, MADV_HUGEPAGE);
+        if (res == -1) {
+            if (allocator.huge->region) munmap_address(allocator.huge->region, HUGE_PAGE_SIZE, __FILE__, __LINE__);
+            allocator.huge->region = NULL;
+            return;
+        }
+    }
     
     while(!atomic_load_explicit(&allocator.huge->done, memory_order_acquire)){}
-    allocator.huge->allocator_cap = (size_t)MAX_HUGE_SLOTS * HUGE_PAGE_SIZE;
+    allocator.huge->allocator_cap = (size_t)HUGE_PAGE_SIZE;
     
     allocator.huge->slots = shared_address(NULL, (size_t)MAX_HUGE_SLOTS * sizeof(huge_slot_t), PROT_WRITE | PROT_READ, MAP_NORESERVE, -1, 0); 
     if (allocator.huge->slots == MAP_FAILED) { 
-        if (allocator.huge->region) munmap_address(allocator.huge->region, (size_t)MAX_HUGE_SLOTS * HUGE_PAGE_SIZE, __FILE__,  __LINE__); 
+        if (allocator.huge->region) munmap_address(allocator.huge->region, (size_t)HUGE_PAGE_SIZE, __FILE__,  __LINE__); 
         allocator.huge->region = NULL;
         allocator.huge->slots = NULL; 
         return; 
     } else {
-        int res = madvise(allocator.huge->slots, (size_t)MAX_HUGE_SLOTS * sizeof(huge_slot_t), MADV_SEQUENTIAL | MADV_MERGEABLE);
+
+        int res = madvise(allocator.huge->slots, (size_t)MAX_HUGE_SLOTS * sizeof(huge_slot_t), MADV_SEQUENTIAL);
         if (res == -1) {
-            munmap_address(allocator.huge->region, (size_t)MAX_HUGE_SLOTS * HUGE_PAGE_SIZE, __FILE__,  __LINE__);
+            munmap_address(allocator.huge->region, (size_t)HUGE_PAGE_SIZE, __FILE__,  __LINE__);
             if (allocator.huge->slots) munmap_address(allocator.huge->slots, (size_t)MAX_HUGE_SLOTS * sizeof(huge_slot_t), __FILE__,  __LINE__);
             allocator.huge->region = NULL;
             allocator.huge->slots = NULL;
             return;
         }
+        res = madvise(allocator.huge->slots, (size_t)MAX_HUGE_SLOTS * sizeof(huge_slot_t), MADV_MERGEABLE);
+        if (res == -1) {
+            munmap_address(allocator.huge->region, (size_t)HUGE_PAGE_SIZE, __FILE__,  __LINE__);
+            if (allocator.huge->slots) munmap_address(allocator.huge->slots, (size_t)MAX_HUGE_SLOTS * sizeof(huge_slot_t), __FILE__,  __LINE__);
+            allocator.huge->region = NULL;
+            allocator.huge->slots = NULL;
+            return;
+        }
+
     }
 
     atomic_store_explicit(&allocator.huge->done, 0, memory_order_release);
     threads_t* t1 = find_thread_t(allocator.pool, ALLOC_THREAD_POOL_SIZE);
     if (!t1) allocator_huge_update_slots(0, MAX_HUGE_SLOTS);
     else {
-        routine_metadata(t1, 3, (void*)((uintptr_t)0), (void*)((uintptr_t)MAX_HUGE_SLOTS), &allocator.huge->done);
+        atomic_size_t begin, end;
+        atomic_store_explicit(&begin, 0, memory_order_relaxed);
+        atomic_store_explicit(&end, MAX_HUGE_SLOTS, memory_order_relaxed);
+        routine_metadata(t1, 3, (void*)(atomic_load_explicit(&begin, memory_order_relaxed)), (void*)(atomic_load_explicit(&end, memory_order_relaxed)), &allocator.huge->done);
         create_thread(t1, thread_allocator_huge_update_slots);
     }
     allocator.huge->slot_cap = MAX_HUGE_SLOTS;
