@@ -57,7 +57,6 @@ typedef struct entry_table_t {
     byte_entries_t*** byte_entries;
     size_t*          inner_count;
     size_t           bucket_count; /* distance of arena->next is determined by this field member. */
-    size_t           depth; /* gets incremented to use other slots */
 } entry_table_t;
 
 typedef struct blocks_t {
@@ -119,6 +118,7 @@ static inline void init_allocator_huge_entries(alloc_huge_entry_t* huge, const s
     huge = aligned_alloc(alignof(alloc_huge_entry_t), size * sizeof(alloc_huge_entry_t));
     if (!huge) return;
     memset(huge, 0, size * sizeof(alloc_huge_entry_t));
+    h_arr = huge;
 }
 
 static inline void init_allocator_small_entries(alloc_entry_t* small, const size_t size) {
@@ -136,7 +136,7 @@ static inline void resize_allocator_huge_entries(alloc_huge_entry_t* huge, const
     void* old = huge;
     memset(huge, 0, old_size * sizeof(alloc_huge_entry_t));
     free(old);
-    huge = h_new;
+    h_arr = h_new;
 }
 
 static inline void resize_allocator_small_entries(alloc_huge_entry_t* small, const size_t old_size, const size_t new_size) {
@@ -604,13 +604,13 @@ TEST(Allocate, HUGE) {
     init_allocator_huge_entries(h_arr, MAX_HUGE_SLOTS);
 
     size_t space = MAX_HUGE_SLOTS, accumulated = 0;
-    meta.expected_amount_of_resizes = 0;
+    int amount_of_slots = 0;
     
     size_t index = 0;
     size_t actual_bitmap_index = 0;
     size_t bitmap_index_next = 1, current_bitmap_index = allocator.bitmap.bitmap_test(allocator.bitmap, 0, allocator.bitmap.n_bytes);    
-    for (size_t i = 512; meta.expected_amount_of_resizes <= 3; i+=2, index++) {
-        if (accumulated + i < space) accumulated = accumulated + i; 
+    for (size_t i = 512; amount_of_slots <= 3; i+=2, index++, amount_of_slots++) {
+        if (accumulated < space) accumulated = accumulated + i; 
         
         if (accumulated >= space) {
             EXPECT_LT(current_bitmap_index, bitmap_index_next);
@@ -622,7 +622,6 @@ TEST(Allocate, HUGE) {
             
             resize_allocator_huge_entries(h_arr, space, space * 2);
             space = space * 2;       
-            meta.expected_amount_of_resizes++;
             accumulated = 0;
         }
         else {
@@ -646,27 +645,48 @@ TEST(Allocate, HUGE) {
 
 
 TEST(Free, HUGE) {
-    size_t index = 0;
-    alloc_huge_entry_t* huge = &h_arr[index];
+    alloc_huge_entry_t* huge = &h_arr[0];
     EXPECT_NE(huge, NULL);
-    int amount_of_deallocations = 0;
-    while (!huge) {
+
+    size_t index = 0, accumulated = 0;
+    while (!huge || accumulated != MAX_HUGE_SLOTS) {
         allocator.deallocate(huge->ptr);
-        
+        accumulated = accumulated + huge->bytes;
         index++;
-        amount_of_deallocations++;
         huge = &h_arr[index];
     }
-
-    void* old = h_arr;
-    memset(h_arr, 0, index);
-    free(old);
 }
 
 TEST(Coalescing, HUGE) {
     
 }
 
+TEST(Allocator, Overload) {
+    //size_t small = BUCKET_SMALL_CAP, medium = BUCKET_MEDIUM_CAP, large = BUCKET_LARGE_CAP;
+    //bucket_t b_small = allocator.bucket.small[small - 1], b_medium = allocator.bucket.medium[medium - 1], b_large = allocator.bucket.large[large - 1];
+    //huge_slot_t h_slot = allocator.huge->slots[allocator.huge->allocator_cap - 1];
+    // 1. Fill up all of the buckets such as small, medium, and large
+    // 2. Fill up allocator huge all the way
+
+}
+
+TEST(Allocator, HugeResize) {
+    // We are going to test and see the code for resizing is valid and works for huge 
+    // Either A) we can find the closest slot that is full, unmark it, and resize that, or B) resize the slots
+    // Going with option B as it seems more fitting based on how everything is built right now 8/23/26.  
+}
+
+TEST(Allocator, FREELIST) {
+    // A Brand new feature that works for `bytes < LARGE_BUCKET_CAP`, since instead of using a raw memory pointer that points to arena. 
+    // It will only will work iff a specific region of buckets is full. 
+        // We are going to use a function that returns a thread_local 
+    // It will:
+        // require a handful of functions and a data member field called `depth`.
+        // In order for this to work, we need to go with option A) which is: we can find the closest slot that is full, unmark it, and resize the slot
+        // But instead of resizing it, we create a new arena node, move the full to the back, increment the data member field.
+    // `find_slot` will be used. Since we have T0, if `depth` is not zero, we find a thread and thread through the nodes. If there is a match found by T1
+        // We need to signal to T0 to stop and return the atomic type. Otherwise, continue. 
+}
 
 
 

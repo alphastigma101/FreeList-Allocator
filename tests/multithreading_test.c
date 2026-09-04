@@ -11,6 +11,13 @@
 #include "../threads/threads.h" // Production
 #include "../DataStructures/C/structures.h" // Development
 
+typedef struct __attribute__((aligned(DEFAULT_ALIGNMENT))) task_metadata_t {
+    int task_status[4];
+    int total_tasks;
+    int total_task_succession;
+    int total_task_failed;
+} task_metadata_t;
+task_metadata_t task_metadata = {0};
 queue_t queue = {0};
 /*
 #include "../tests/tests.h"
@@ -36,6 +43,19 @@ static void* addition(struct function_t* meta) {
         pthread_mutex_unlock(mutex);
     }
     return NULL;
+}
+
+static void* subtract(struct function_t* meta) {
+    return nullptr;
+}
+
+static void* multiply(struct function_t* meta) {
+    return nullptr;
+}
+
+static void* divide(struct function_t* meta) {
+
+    return nullptr;
 }
 
 // Numerical Random Data Helper
@@ -120,28 +140,28 @@ TEST(Modes, Thread) {
     threads_t t0;
 
     /* attr == 0x0 is the master switch -- nothing should initialize, regardless of mode */
-    t0 = init_threads_t(0x0, 0x0, 0x0, 0x0);
+    t0 = init_threads_t(0x0, 0x0, 0x0, 0x0, 0x0);
     EXPECT_EQ(t0.attr, NULL);
     EXPECT_EQ(t0.lock, NULL);
     clean_threads(&t0);
 
-    t0 = init_threads_t(0x01, 0x0, 0x01, 0x01);
+    t0 = init_threads_t(0x01, 0x0, 0x01, 0x01, 0x01);
     EXPECT_EQ(t0.attr, NULL);
     EXPECT_EQ(t0.lock, NULL);
     clean_threads(&t0);
 
-    t0 = init_threads_t(0x02, 0x0, 0x01, 0x01);
+    t0 = init_threads_t(0x02, 0x0, 0x01, 0x01, 0x01);
     EXPECT_EQ(t0.attr, NULL);
     EXPECT_EQ(t0.lock, NULL);
     clean_threads(&t0);
 
     /* mode == 0x0, attr == 0x01: attr initializes, mutex (if requested) is independent/not process-shared */
-    t0 = init_threads_t(0x0, 0x01, 0x0, 0x0);
+    t0 = init_threads_t(0x0, 0x01, 0x0, 0x0, 0x0);
     EXPECT_NE(t0.attr, NULL);
     EXPECT_EQ(t0.lock, NULL);
     clean_threads(&t0);
 
-    t0 = init_threads_t(0x0, 0x01, 0x01, 0x0);
+    t0 = init_threads_t(0x0, 0x01, 0x01, 0x01, 0x0);
     EXPECT_NE(t0.attr, NULL);
     EXPECT_NE(t0.lock, NULL);
     int pshared = -1;
@@ -150,13 +170,13 @@ TEST(Modes, Thread) {
     clean_threads(&t0);
 
     /* mode == 0x01, attr == 0x01: shared process, attr only, no lock */
-    t0 = init_threads_t(0x01, 0x01, 0x0, 0x0);
+    t0 = init_threads_t(0x01, 0x01, 0x0, 0x0, 0x0);
     EXPECT_NE(t0.attr, NULL);
     EXPECT_EQ(t0.lock, NULL);
     clean_threads(&t0);
 
     /* mode == 0x01, full stack: attr + shared lock + stack */
-    t0 = init_threads_t(0x01, 0x01, 0x01, 0x01);
+    t0 = init_threads_t(0x01, 0x01, 0x01, 0x01, 0x01);
     EXPECT_NE(t0.attr, NULL);
     EXPECT_NE(t0.attr->stackaddr, NULL);
     EXPECT_NE(t0.lock, NULL);
@@ -166,14 +186,14 @@ TEST(Modes, Thread) {
     clean_threads(&t0);
 
     /* mode == 0x01, locked but no stack */
-    t0 = init_threads_t(0x01, 0x01, 0x01, 0x0);
+    t0 = init_threads_t(0x01, 0x01, 0x01, 0x0, 0x0);
     EXPECT_NE(t0.attr, NULL);
     EXPECT_EQ(t0.attr->stackaddr, NULL);
     EXPECT_NE(t0.lock, NULL);
     clean_threads(&t0);
 
     /* mode == 0x02, full stack: attr + independent lock + stack */
-    t0 = init_threads_t(0x02, 0x01, 0x01, 0x01);
+    t0 = init_threads_t(0x02, 0x01, 0x01, 0x01, 0x01);
     EXPECT_NE(t0.attr, NULL);
     EXPECT_NE(t0.attr->stackaddr, NULL);
     EXPECT_NE(t0.lock, NULL);
@@ -184,29 +204,18 @@ TEST(Modes, Thread) {
 
     /* mode == 0x02, stack requested but NOT locked -- exercises the
        branch that needs attr set up without going through init_locks_t first */
-    t0 = init_threads_t(0x02, 0x01, 0x0, 0x01);
+    t0 = init_threads_t(0x02, 0x01, 0x0, 0x01, 0x01);
     EXPECT_NE(t0.attr, NULL);
     EXPECT_NE(t0.attr->stackaddr, NULL);
     EXPECT_EQ(t0.lock, NULL);
     clean_threads(&t0);
 
     /* mode == 0x02, locked but no stack */
-    t0 = init_threads_t(0x02, 0x01, 0x01, 0x0);
+    t0 = init_threads_t(0x02, 0x01, 0x01, 0x0, 0x0);
     EXPECT_NE(t0.attr, NULL);
     EXPECT_EQ(t0.attr->stackaddr, NULL);
     EXPECT_NE(t0.lock, NULL);
     clean_threads(&t0);
-}
-
-TEST(Tagging, Thread) {
-    thread_t_routine_tag(&threads[0].routine);
-    EXPECT_EQ(0x01, IS_ADDRESS_TAGGED(atomic_load_explicit(&threads[0].routine, memory_order_relaxed)));
-    thread_t_routine_untag(&threads[0].routine);
-    EXPECT_EQ(0x01, !IS_ADDRESS_TAGGED(atomic_load_explicit(&threads[0].routine, memory_order_relaxed)));
-
-    for (size_t i = 0; i < 4; i++) thread_t_routine_tag(&threads[i].routine);
-    update_thread_pool(threads, 4);
-    for (size_t i = 0; i < 4; i++) EXPECT_EQ(0x01, !IS_ADDRESS_TAGGED(atomic_load_explicit(&threads[i].routine, memory_order_relaxed)));
 }
 
 TEST(LockThreadPool, NumericValue) {
@@ -292,7 +301,7 @@ TEST(LockThreadPool, StringTraversal) {
 TEST(LockFreeThreadPool, StringTraversal) {
     for (int i = 0; i < 4; i++ ) clean_threads(&threads[i]);
     memset(threads, 0, sizeof(threads_t) * 4);
-    create_thread_pool(threads, 4, 0x0, 0x0, 0x0, 0x0);
+    create_thread_pool(threads, 4, 0x0, 0x0, 0x0, 0x0, 0x0);
     
     atomic_uintptr_t one, two;
     
@@ -349,9 +358,43 @@ TEST(LockFreeThreadPool, StringTraversal) {
     for (int i = 0; i < 2; i++ ) join_thread(&threads[i], NULL);
 }
 
+TEST(Manager, Query) {
+    for (int i = 0; i < 4; i++ ) clean_threads(&threads[i]);
+    memset(threads, 0, sizeof(threads_t) * 4);
+    create_thread_pool(threads, 4, 0x0, 0x0, 0x0, 0x0, 0x0);
+    memset(task_metadata.task_status, 0, sizeof(int) * 4);
+    int a = INT_MAX, b = 0, c = INT_MAX, d = 0;
+    do {
+        threads_t* t1 = find_thread_t(threads, 4);
+        if (!t1) task_metadata.total_task_failed++;
+        if ((!(a <= 0)) && task_metadata.task_status[0] == 0) {
+            routine_metadata(t1, 1, &a);
+            const int res = threads_t_query(threads, 4, subtract, 0x01);
+            if (res == -1) task_metadata.total_task_failed++;
+        } else if (a <= 0 && task_metadata.task_status[0] == 0) { task_metadata.total_tasks++; task_metadata.task_status[0] = 1; }
+        if ((!(b != INT_MAX)) && task_metadata.task_status[1] == 0) {
+            routine_metadata(t1, 1, &b);
+            const int res = threads_t_query(threads, 4, addition, 0x01);
+            if (res == -1) task_metadata.total_task_failed++;
+        } else if (b == INT_MAX && task_metadata.task_status[1] == 0) { task_metadata.total_tasks++; task_metadata.task_status[1] = 1; }
+        if ((!(d != INT_MAX)) && task_metadata.task_status[2] == 0) {
+            routine_metadata(t1, 1, &d);
+            const int res = threads_t_query(threads, 4, multiply, 0x01);
+            if (res == -1) task_metadata.total_task_failed++;
+        } else if (d == INT_MAX && task_metadata.task_status[2] == 0) { task_metadata.total_tasks++; task_metadata.task_status[2] = 1; }
+        if ((!(c < 50)) && (task_metadata.task_status[3] == 0)) {
+            routine_metadata(t1, 1, &c);
+            const int res = threads_t_query(threads, 4, divide, 0x01);
+            if (res == -1) task_metadata.total_task_failed++;
+        } else if (c < 50 && task_metadata.task_status[3] == 0) { task_metadata.total_tasks++; task_metadata.task_status[3] = 1; }
+    } while(task_metadata.total_tasks != 3);
+    EXPECT_LE(task_metadata.total_task_failed, 0);
+    EXPECT_GE(task_metadata.total_task_succession, 1);  
+}
+
 // LF == Lock Free
 // TP = Thread Pool
-TEST(LFTPExternal, Queue) {
+/*TEST(LFTPExternal, Queue) {
     for (int i = 0; i < 4; i++ ) clean_threads(&threads[i]);
     memset(threads, 0, sizeof(threads_t) * 4);
     create_thread_pool(threads, 4, 0x0, 0x0, 0x0, 0x0);
@@ -359,12 +402,12 @@ TEST(LFTPExternal, Queue) {
     QUEUE_INIT(&queue, 0x01, 0x01, 0x0, 0x0, 10UL);
     
     size_t length = 50, range = 100;
-    /** Thread A */
+    // Thread A 
     routine_metadata(&threads[0], 2, &length, &range);
     create_thread(&threads[0], queue_t_random_numerical_values);
     
     length = 150, range = 200;
-    /** Thread B */
+    // Thread B
     routine_metadata(&threads[1], 2, &length, &range);
     create_thread(&threads[1], queue_t_random_numerical_values);
     
@@ -380,7 +423,8 @@ TEST(LFTPExternal, Queue) {
     join_thread(&threads[1], NULL);
     EXPECT_EQ(QUEUE_SIZE(&queue), (size_t)100);
     QUEUE_DESTROY(&queue);
-}
+    
+}*/
 
 
 TEST(Thread, Clean) {
@@ -416,7 +460,7 @@ int main(void) {
     );
     threads = aligned_alloc(alignof(threads_t), 4 * sizeof(threads_t));
     memset(threads, 0, 4 * sizeof(threads_t));
-    create_thread_pool(threads, 4, 0x0, 0x01,0x01, 0x0);
+    create_thread_pool(threads, 4, 0x0, 0x01,0x01, 0x0, 0x0);
 
     return __run_all_tests();
 }

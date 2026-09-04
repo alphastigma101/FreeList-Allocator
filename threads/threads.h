@@ -1,11 +1,11 @@
 #ifndef _THREADS_H
 #define _THREADS_H
-#include <stddef.h>
 #define _GNU_SOURCE 1
 #define __USE_UNIX98 1 
 #define __USE_XOPEN2K 1
 #include <pthread.h>
-#include <sys/sem.h>
+#include <malloc.h>
+#include <semaphore.h>
 #include <stdatomic.h>
 #include <unistd.h> 
 #include <stdint.h>
@@ -41,14 +41,24 @@
     #define USTP -1
 #endif
 
-#ifndef ENABLE_SHARED_MEMORY 
-    #define ENABLE_SHARED_MEMORY 1
-#endif
 
 /* BENCHMARK_ENV — 0 for off 1 for on. Default is 0 since we assume there is no benchmarking environment */
 #ifndef BENCHMARK_ENV
     #define BENCHMARK_ENV 0
 #endif
+
+/** Maximum number of worker threads managed by the allocator. */
+#ifndef ALLOC_THREAD_POOL_SIZE
+    #define ALLOC_THREAD_POOL_SIZE  10U
+#endif
+
+/* Maximum amount of semaphores to be used in threads.c */
+#ifndef SEMAPHORES_T_SIZE
+   #define SEMAPHORES_T_SIZE 1U
+#endif
+
+_Static_assert(ALLOC_THREAD_POOL_SIZE != 0 && ALLOC_THREAD_POOL_SIZE > 0, "ALLOC_THREAD_POOL_SIZE: It must be greater than 0 and not equal to it");
+_Static_assert(!(SEMAPHORES_T_SIZE <= 0), "SEMAPHORES_T_SIZE must be greater than 1!\n");
 
 /* ============================================================
  * FLA_ARCH_WIDE_CACHELINE: detects whether the target architecture
@@ -167,7 +177,6 @@
                    "DEFAULT_ALIGNMENT must be a power of two");
 #endif
 
-#define FORCE_COMPILER_ALIGNED(n) __attribute__((aligned(n)))
 #define FORCE_PACK __attribute__((packed))
 #define FORCE_INLINE __attribute__((always_inline)) static inline
 
@@ -176,7 +185,6 @@
 #else
     #define GCC_OPTIMIZE_O0
 #endif
-
 
 #define TAG_ADDRESS(p) \
     ((__typeof__(p))((uintptr_t)(p) | (uintptr_t)0x1))
@@ -187,119 +195,180 @@
 #define IS_ADDRESS_TAGGED(p) \
     (((uintptr_t)(p) & (uintptr_t)0x1) != 0)
 
-
 typedef struct attr_t {
     pthread_attr_t                 thread_attr;
-    void**                         stackaddr; 
+    #ifdef THREADS_T_ENABLE_STACK
+        #if (THREADS_T_ENABLE_STACK == 0X01)
+            void**                         stackaddr;
+        #endif 
+    #endif
     pthread_mutexattr_t            mutex_attr;
+    int_least16_t                  state;
+    int_least16_t                  status;
 } attr_t;
 
 typedef struct lock_t {
     pthread_mutex_t                mutex;
-    unsigned char                  type;
+    int                            state;
+    int                            status;
 } lock_t;
+
+typedef struct lock_free_t {
+    /// @brief: A Variable when the state is zero, it means the threads have been sync. 
+    /// Anything greater are treated as warnings and anything less than zero are errors  
+    atomic_int     status;
+    /// @brief: A Variable used to be assign with the pool index.
+    atomic_int     index;     
+} lock_free_t;
 
 typedef struct cond_t {
     pthread_cond_t                 cond_v;
-    void*                          cond;
+    atomic_int_least16_t           status;
+    atomic_int_least16_t           index;
+    pthread_condattr_t             attr;
 } cond_t;
 
-typedef struct threads_t {
-    attr_t*                        attr; 
-    lock_t*                        lock;
-    cond_t*                        cond;
-    pthread_t                      thread_id;
-    _Atomic(struct function_t*)    routine;                                
-} threads_t;
+#ifndef THREADS_T_MODE
+    #if (THREAD_T_MODE != 0) || (THREADS_T_MODE != 1)
+        #define THREADS_T_MODE 1
+    #else 
+        #define THREADS_T_MODE 1
+    #endif
+#endif
 
-typedef struct semaphores_t {
-    struct sembuf** semaphores;
-    struct sembuf*  next;
-    int (*semget)(key_t __key, int __nsems, int __semflg);  /* Create a standard or get a standard semaphore*/
-    int  (*semop)(int __semid, struct sembuf *__sops, size_t __nsops); /* Define and create a semaphore with special flags */
-    size_t bucket_count;
-} semaphores_t;
+#ifndef THREADS_T_ENABLE_ATTRIBUTE
+    #define THREADS_T_ENABLE_ATTRIBUTE 0
+#endif 
+
+#ifndef THREADS_T_ENABLE_STACK
+    #define THREADS_T_ENABLE_STACK 0
+#endif 
+
+#ifndef THREADS_T_ENABLE_LOCK
+    #define THREADS_T_ENABLE_LOCK 0
+#endif 
+
+#ifndef THREADS_T_ENABLE_CONDITION
+    #define THREADS_T_ENABLE_CONDITION 0
+#endif 
+typedef struct threads_t {
+    #if (THREADS_T_ENABLE_ATTRIBUTE == 1)
+        attr_t                     attr;
+    #endif
+    #if (THREADS_T_ENABLE_CONDITION == 1)
+        cond_t                     cond;
+    #endif
+    #if (THREADS_T_ENABLE_LOCK == 1) 
+        lock_t                     lock;
+    #endif
+    lock_free_t                    lock_free;
+    pthread_t                      thread_id;
+    _Atomic(struct function_t*)    routine;
+} threads_t;
 
 
 /**
  * @brief Initializes a fresh threads_t instance with default values.
+ * @note allocator.c calls this by default, since it allocates on the stack. 
 */
-extern threads_t init_threads_t(const unsigned char mode, const unsigned char attr, const unsigned char locked, const unsigned char stack);
+extern threads_t init_threads_t(void);
 
 /**
  * @brief Allocates and configures a contiguous block of threads forming a pool.
+ * @param tp a thread pool type of 'threads_t'
 */
-extern void create_thread_pool(threads_t* tp, const size_t size, const unsigned char mode, const unsigned char attr, const unsigned char locked, const unsigned char stack);
+extern void create_thread_pool(threads_t* tp, const size_t size);
 
 /**
-    * @brief: Function to allocate a pool of threads at a given spot. If pool is Null, it will be allocated with whatever end is  
+ * @brief: Function to allocate a pool of threads at a given spot. If pool is Null, it will be allocated with whatever end is
+ * @param tp a thread pool of type 'threads_t'  
 */
-extern void create_thread_pool_range(threads_t* tp, const unsigned char mode, const unsigned char attr, const unsigned char locked, const unsigned char stack, const size_t start, const size_t end);
-
-/**
-    * @brief: Finds the index of where t is located in tp. Otherwise it will return SIZE_MAX 
-*/
-extern size_t thread_pool_index(threads_t* tp, threads_t* t);
-
-/**
- * @brief Dynamically resizes or reconfigures an existing thread pool.
-*/
-extern void update_thread_pool(threads_t *tp, const size_t size);
-
-
-extern void* threads_t_query(void* param); /* used with conditional variables to sleep the threads */
-
-/**
- * @brief Spawns a single managed thread executing the target function. Requires tp->metadata to be initialized
-*/
-extern void create_thread(threads_t* tp, void* func);
-
-/**
- * @brief Blocks the caller until the specified thread terminates, capturing its return value.
-*/
-extern void join_thread(threads_t* tp, void** rtn);
+extern void* create_thread_pool_range(threads_t* tp, size_t start, const size_t end);
 
 /** 
-    * @brief: Function that can make the thread state detachable or not detachable
+ * @brief Function that checks to see if thread is joinable or not.
+ *         If thread is not detachable, it is in a joinable state
+ * @param t a pointer to type threads_t 
 */
-extern void thread_t_detachable(threads_t* t, const unsigned char mode);
+extern unsigned char threads_t_is_detachable(const threads_t* t);
+
+/**
+ * @brief Function that sets a pointer type of threads_t's state to detach
+ * @param t a pointer to type threads_t
+*/
+extern void threads_t_detach(threads_t* t); // TODO: Needs to be implemented
+
+/**
+ * @brief Finds the index of where t is located in tp. Otherwise it will return SIZE_MAX
+ * @param tp a thread pool or a collection of type 'threads_t' decayed to a pointer
+ * @param t a pointer of type threads_t, that is apart of 'tp'
+*/
+extern size_t thread_t_pool_index(threads_t* tp, threads_t* t);
 
 /**
  * @brief Looks up a specific thread instance within a collection.
+ * @param tp a thread pool type of 'threads_t'
+ * @param size the size of the thread pool 
 */
 extern threads_t* find_thread_t(threads_t* tp, const size_t size);
 
 /**
- * @brief Registers or mutates internal runtime configuration and metadata for a thread context.
+ * @brief A stand alone function that spawns a single managed thread executing the target function. Requires tp->metadata to be initialized
+ * @param t a pointer to type threads_t that will create the process
+ * @param func raw memory address of a function that will be used with the process  
+*/
+extern void create_thread(threads_t* t, void* func);
+
+/**
+ * @brief A stand alone function that manages the thread pool by getting externally tagged/untagged by some other functions
+ * @param tp a thread pool that will be managed.
+ * @param size the size of the thread pool
+ * @param func The raw memory address of a function to be threaded
+ * @param state 0x01 is to stop/join if possible 'tp[0]', otherwise 0x01 is to be used    
+*/
+extern int threads_t_query(threads_t* tp, const size_t size, void* func, const unsigned char state);
+
+/**
+ * @brief A stand alone function that updates the pointer to 'threads_t' state
+ * @param t a pointer to 'threads_t' 
+ * @param state Usually a numerical value where the 'value's representation' can be unsigned or signed
+ * @note if 'state' >= 0 't' is in a stable state and can be used.
+ *       if 'state' <= -1 't' is not in a stable state and will not be used   
+*/
+extern void threads_t_set_status(threads_t* t, const int state, const int index);
+
+/**
+ * @brief A standalone function that blocks the caller until the specified thread terminates, capturing its return value.
+ * @param t a pointer type of 'threads_t'
+ * @param rtn the expected object to be returned from the function that was used in `create_thread` 
+*/
+extern void join_thread(threads_t* t, void** rtn);
+
+/**
+ * @brief A stand alone function that initializes or reuses a memory address that points to data field member 'function_t' in 'threads_t'
+ *        by feeding it 'metadata' 
+ * @param t a pointer type to 'threads_t'
+ * @param length a numerical value the represents the total parameters of a function  
 */
 extern void routine_metadata(threads_t* t, const size_t length, ...);
 
 /**
- * @brief Extracts the raw argument vector packed within a function configuration structure.
+ * @brief A stand alone function that extracts the arguments for the targeted function
+ * @param meta a pointer to 'function_t' that contains metadata to describe a function.
 */
 extern void** routine_metadata_arguments(struct function_t* meta);
 
 /**
-    * @brief: Tags threads_t field data member routine
+ * @brief A stand alone function that prints out debugging information to console
+ * @param tp a thread pool of type 'threads_t'
 */
-extern void thread_t_routine_tag(_Atomic(struct function_t*)* meta);
+extern void debug_threads(const threads_t* tp);
 
 /**
-    * @brief: Tags threads_t field data member routine
-*/
-extern void thread_t_routine_untag(_Atomic(struct function_t*)* meta);
-
-/**
- * @brief Prints state diagnostics and metrics for the specified thread context.
-*/
-extern void debug_threads(const threads_t tp);
-
-
-/**
- * @brief Releases heap memory and system resources bound to a thread context.
+ * @brief A stand alone function that cleans up the allocated memory.
+ * @param t a pointer to 'threads_t' 
 */
 extern void clean_threads(threads_t* t);
-
 
 // mmap helpers
 extern void* shared_address(void *addr, size_t len, int prot, int flags, int fildes, unsigned char off);

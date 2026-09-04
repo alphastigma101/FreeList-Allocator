@@ -1,4 +1,5 @@
 #include "arena.h"
+#include <limits.h>
 #include <stdalign.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -51,8 +52,8 @@ inline arena_t* init_arena_t() {
     memset(arena, 0, sizeof(arena_t));
 
 
-    if (ENABLE_SHARED_MEMORY) arena->chunk = shared_address(NULL, ARENA_SIZE + 1, PROT_WRITE | PROT_READ, MAP_SHARED | MAP_ANONYMOUS , -1, 0);
-    else arena->chunk = private_address(NULL, ARENA_SIZE + 1, PROT_WRITE | PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS , -1, 0); 
+    arena->chunk = shared_address(NULL, ARENA_SIZE + 1, PROT_WRITE | PROT_READ, INT_MAX, -1, 0);
+
     
     if (arena->chunk == MAP_FAILED) {
         munmap_address(arena, sizeof(arena_t), __FILE__,  __LINE__);
@@ -123,8 +124,7 @@ inline arena_t* init_ptr_arena_t(arena_t* arena) {
         }
         memset(arena, 0, sizeof(arena_t));
     }
-    if (ENABLE_SHARED_MEMORY) arena->chunk = shared_address(NULL, ARENA_SIZE + 1, PROT_WRITE | PROT_READ, MAP_SHARED | MAP_ANONYMOUS , -1, 0);
-    else arena->chunk = private_address(NULL, ARENA_SIZE + 1, PROT_WRITE | PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS , -1, 0); 
+    arena->chunk = shared_address(NULL, ARENA_SIZE + 1, PROT_WRITE | PROT_READ, MAP_SHARED | MAP_ANONYMOUS , -1, 0);
     
     if (arena->chunk == MAP_FAILED) {
         munmap_address(arena, sizeof(arena_t), __FILE__,  __LINE__);

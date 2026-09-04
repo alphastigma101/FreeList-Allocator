@@ -362,14 +362,23 @@ void init_logger_t() {
                 DBG(ANSI_RED "Failed to allocate memory to logger's arr!\n" ANSI_RESET, NULL);
                 return;
             }
-            if (madvise(arr, ITEM_SIZE * sizeof(code_fragment_t**), MADV_SEQUENTIAL | MADV_MERGEABLE) == -1) return;
+            res = madvise(arr, ITEM_SIZE * sizeof(code_fragment_t**), MADV_SEQUENTIAL);
+            if (res == -1) return;
+            res = madvise(arr, ITEM_SIZE * sizeof(code_fragment_t**), MADV_MERGEABLE);
+            if (res == -1) return;
+
         }
         table = mmap(NULL, ITEM_SIZE * sizeof(code_fragment_t**), PROT_WRITE | PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
         if (table == MAP_FAILED) {
             DBG(ANSI_YELLOW "Failed to allocate memory for table!\n" ANSI_RESET, NULL);
             return;
         }
-        else res = madvise(table, ITEM_SIZE * sizeof(code_fragment_t**), MADV_SEQUENTIAL | MADV_MERGEABLE);
+        else {
+            res = madvise(table, ITEM_SIZE * sizeof(code_fragment_t**), MADV_SEQUENTIAL);
+            if (res == -1) return;
+            res = madvise(arr, ITEM_SIZE * sizeof(code_fragment_t**), MADV_MERGEABLE);
+            if (res == -1) return;
+        }
 
         if (res == -1) {
             DBG(ANSI_YELLOW "Failed to modify memory region space for logger's table!\n" ANSI_RESET, NULL);

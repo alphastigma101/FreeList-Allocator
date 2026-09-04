@@ -90,7 +90,13 @@ inline void init_bitmap_t(bitmap_t* bitmap, const size_t size) {
     }
 
     if (size > threshold) {
-        int res = madvise(bitmap->bits, size, MADV_SEQUENTIAL | MADV_MERGEABLE);
+        int res = madvise(bitmap->bits, size, MADV_SEQUENTIAL);
+        if (res == -1) {
+            munmap(bitmap->bits, size);
+            bitmap->bits = NULL;
+            return;
+        }
+        res = madvise(bitmap->bits, size,MADV_MERGEABLE);
         if (res == -1) {
             munmap(bitmap->bits, size);
             bitmap->bits = NULL;

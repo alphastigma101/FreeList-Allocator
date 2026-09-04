@@ -70,6 +70,8 @@ _Static_assert(((BUCKET_LARGE_CAP  & (BUCKET_LARGE_CAP  - 1)) == 0), "BUCKET_LAR
 
 _Static_assert(((MAX_HUGE_SLOTS    & (MAX_HUGE_SLOTS    - 1)) == 0), "MAX_HUGE_SLOTS: It must be a power of 2");
 _Static_assert(MAX_HUGE_SLOTS > BUCKET_LARGE_CAP,                    "MAX_HUGE_SLOTS: It must be greater than BUCKET_LARGE_CAP");
+_Static_assert(HUGE_PAGE_SIZE == (2UL * 1024 * 1024) || HUGE_PAGE_SIZE == (1024UL * 1024 * 1024),
+    "HUGE_PAGE_SIZE must be a real x86-64 huge page size: 2MB or 1GB");
 _Static_assert(((HUGE_PAGE_SIZE    & (HUGE_PAGE_SIZE    - 1)) == 0), "HUGE_PAGE_SIZE: It must be a power of 2");
 
 /**
@@ -100,6 +102,7 @@ typedef struct allocator_t {
     #endif
     arena_t*            arena;
     threads_t*          pool;
+    int                 depth; /* Representation of the distance between [arena, arena->next] */
 } allocator_t;
 
 extern allocator_t allocator;
@@ -141,11 +144,5 @@ extern allocator_t allocator;
 extern void init_allocator_t();
 
 
-/** Maximum number of worker threads managed by the allocator. */
-#ifndef ALLOC_THREAD_POOL_SIZE
-    #define ALLOC_THREAD_POOL_SIZE  10U
-#endif
-
-_Static_assert(ALLOC_THREAD_POOL_SIZE != 0 && ALLOC_THREAD_POOL_SIZE > 0, "ALLOC_THREAD_POOL_SIZE: It must be greater than 0 and not equal to it");
 
 #endif

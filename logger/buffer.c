@@ -95,7 +95,12 @@ FORCE_INLINE int_fast8_t create_buffer_t_dir(const size_t size) {
             dir.flag = 0x01;
             dir.str = mmap(NULL, size, PROT_WRITE | PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
             if (dir.str == MAP_FAILED) { return -2; }
-            res = madvise(msg.str, new_size, MADV_SEQUENTIAL | MADV_MERGEABLE);
+            res = madvise(msg.str, new_size, MADV_SEQUENTIAL);
+            if (res == -1) {
+                res = munmap(msg.str, size);
+                return -3;
+            }
+            res = madvise(msg.str, new_size, MADV_MERGEABLE);
             if (res == -1) {
                 res = munmap(msg.str, size);
                 return -3;
@@ -122,7 +127,12 @@ FORCE_INLINE int_fast8_t create_buffer_t_msg(const size_t size) {
             msg.str = mmap(NULL, size, PROT_WRITE | PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
             if (msg.str == MAP_FAILED) return -2;
 
-            res = madvise(msg.str, new_size, MADV_SEQUENTIAL | MADV_MERGEABLE);
+            res = madvise(msg.str, new_size, MADV_SEQUENTIAL);
+            if (res == -1) {
+                res = munmap(msg.str, size);
+                return -2;
+            }
+            res = madvise(msg.str, new_size, MADV_MERGEABLE);
             if (res == -1) {
                 res = munmap(msg.str, size);
                 return -2;
@@ -212,7 +222,12 @@ FORCE_INLINE int_fast8_t buffer_t_resize(const size_t size, uint8_t mode) {
                 }
                 const size_t target_size = mode == 0x01 ? msg.size : dir.size;
                 if (target_size < ALLOC_THRESHOLD) {
-                    res = madvise(mode == 0x01 ? msg.str : dir.str, size, MADV_SEQUENTIAL | MADV_MERGEABLE);
+                    res = madvise(mode == 0x01 ? msg.str : dir.str, size, MADV_SEQUENTIAL);
+                    if (res == -1) {
+                        res = munmap(mode == 0x01 ? msg.str : dir.str, size);
+                        return mode == 0x01 ? 0x02 : 0x04;
+                    }
+                    res = madvise(mode == 0x01 ? msg.str : dir.str, size, MADV_MERGEABLE);
                     if (res == -1) {
                         res = munmap(mode == 0x01 ? msg.str : dir.str, size);
                         return mode == 0x01 ? 0x02 : 0x04;

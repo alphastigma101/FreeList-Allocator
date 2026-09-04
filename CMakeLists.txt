@@ -1,7 +1,8 @@
 cmake_minimum_required(VERSION 3.28)
 
-set(CMAKE_CXX_STANDARD 23)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_C_STANDARD 23)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 option(MUTEX_ATTR 2)
 option(THREAD_STATE 0)
 option(USTP 2)
@@ -591,8 +592,8 @@ if (CMAKE_BUILD_TYPE STREQUAL "Production")
     target_sources(test_arena
         PRIVATE
             arena/arena.c
-            threads/pool.c
-            tests/test_arena.c
+            threads/threads.c
+            tests/arena_test.c
 
         PUBLIC
             FILE_SET arenaHeaders
@@ -614,10 +615,10 @@ if (CMAKE_BUILD_TYPE STREQUAL "Production")
             PRIVATE
                 allocator/allocator.c
                 arena/arena.c
-                thread/pool.c
+                threads/threads.c
                 logger/logger.c
                 logger/buffer.c
-                tests/test_allocator.c
+                tests/allocator_test.c
 
             PUBLIC
                 FILE_SET allocatorHeaders
@@ -634,7 +635,7 @@ if (CMAKE_BUILD_TYPE STREQUAL "Production")
                     logger/logger.h
                     logger/buffer.h
                     arena/arena.h
-                    threads/pool.h
+                    threads/threads.h
         )
 
         add_executable(test_logger)
@@ -660,8 +661,8 @@ if (CMAKE_BUILD_TYPE STREQUAL "Production")
             PRIVATE
                 allocator/allocator.c
                 arena/arena.c
-                thread/pool.c
-                tests/test_allocator.c
+                threads/threads.c
+                tests/allocator_test.c
 
             PUBLIC
                 FILE_SET allocatorHeaders
@@ -671,7 +672,7 @@ if (CMAKE_BUILD_TYPE STREQUAL "Production")
                     tests
                 FILES
                     arena/arena.h
-                    threads/pool.h
+                    threads/threads.h
         )
 
     endif()
@@ -679,14 +680,14 @@ if (CMAKE_BUILD_TYPE STREQUAL "Production")
     add_executable(test_threads)
     target_sources(test_threads
         PRIVATE
-            threads/pool.c
+            threads/threads.c
         PUBLIC
             FILE_SET poolHeaders
             TYPE HEADERS
             BASE_DIRS
                 threads
             FILES
-                threads/pool.h
+                threads/threads.h
     )
 
 endif()

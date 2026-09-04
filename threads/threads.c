@@ -15,9 +15,14 @@
  * https://busybox.net
 */
 #include "threads.h"
-#include "../logger/buffer.h"
+#include <limits.h>
+#include <pthread.h>
+#include <semaphore.h>
 #include <stdalign.h>
 #include <stdarg.h>
+#include <stdatomic.h>
+#include <stddef.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -27,7 +32,6 @@
 
 /*
 #include "threads.h"
-#include "../logger/buffer.h"
 #include <stdalign.h>
 #include <stdarg.h>
 #include <stdlib.h>
@@ -37,22 +41,98 @@
 #include <sys/mman.h>
 */
 
-typedef struct function_t {
-    void** args;
-    size_t size;
-} function_t;
+
+//////////////////////////
+// SEMAPHORES_T SECTION /
+////////////////////////
+
+
+enum SEMAPHORES_T_STATUS {
+    SEMAPHORES_T_INIT,
+    SEMAPHORES_T_INUSE,
+    SEMAPHORES_T_ERROR
+};
+
+typedef struct semaphores_t {
+    sem_t                    semaphore;
+    enum SEMAPHORES_T_STATUS status;
+    int                      state;
+} semaphores_t;
+static semaphores_t  array_of_sems[SEMAPHORES_T_SIZE] = {0};
+
+// TODO: Should also look into vtable highjacking
+[[gnu::constructor(0)]]
+FORCE_INLINE void init_semaphores_t(void) {
+    #pragma GCC unroll SEMAPHORES_T_SIZE
+    for (size_t i = 0; i < SEMAPHORES_T_SIZE; i++) {
+        semaphores_t* snode = &array_of_sems[i];
+        if (snode->status != SEMAPHORES_T_INIT) {
+            int res = sem_init(&snode->semaphore, PTHREAD_PROCESS_SHARED, 0);
+            if (res == -1) {
+                snode->state = -1;
+                snode->status = SEMAPHORES_T_ERROR;
+            }
+            else {
+                snode->status = SEMAPHORES_T_INIT;
+                snode->state = 1;
+            }
+        }
+    }
+}
+
+FORCE_INLINE void semaphores_t_state_set(semaphores_t* sem, const enum SEMAPHORES_T_STATUS status) {
+    #pragma GCC unroll SEMAPHORES_T_SIZE
+    for (size_t i = 0; i < SEMAPHORES_T_SIZE; i++) {
+        semaphores_t* snode = &array_of_sems[i];
+        if (snode == sem) {
+            snode->status = status;
+            return;
+        }
+    }
+    return;
+}
+
+FORCE_INLINE semaphores_t* semaphores_t_get_available_node(void) {
+    #pragma GCC unroll SEMAPHORES_T_SIZE
+    for (size_t i = 0; i < SEMAPHORES_T_SIZE; i++) {
+        if (array_of_sems[i].status != SEMAPHORES_T_INUSE && array_of_sems[i].status != SEMAPHORES_T_ERROR) {
+            semaphores_t_state_set(&array_of_sems[i], SEMAPHORES_T_INUSE);
+            return &array_of_sems[i];
+        }
+    }
+    return nullptr;
+}
+
+[[gnu::destructor]]
+FORCE_INLINE void dctor_semaphores_t(void) {
+    #pragma GCC unroll SEMAPHORES_T_SIZE
+    for (size_t i = 0; i < SEMAPHORES_T_SIZE; i++) {
+        const enum SEMAPHORES_T_STATUS status = array_of_sems[i].status;
+        if (status != SEMAPHORES_T_ERROR) sem_destroy(&array_of_sems[i].semaphore);
+    }
+    memset(&array_of_sems, 0, sizeof(semaphores_t) * SEMAPHORES_T_SIZE);
+}
 
 
 /////////////////////////
 // FUNCTION_T SECTION //
 ///////////////////////
 
+
+typedef struct function_t {
+    void*  func;
+    void** args;
+    size_t size;
+} function_t;
+
+
+
 [[gnu::aligned(DEFAULT_ALIGNMENT)]] /* Align it to a byte-boundry, so it can fit into the cache without an issue */
 inline void** routine_metadata_arguments(struct function_t* meta) { return meta->args; }
 
 [[gnu::hot]]
 [[gnu::aligned(DEFAULT_ALIGNMENT)]] /* Align it to a byte-boundry, so it can fit into the cache without an issue */
-inline void routine_metadata(threads_t* t, const size_t length, ...) {
+void routine_metadata(threads_t* t, const size_t length, ...) {
     function_t* routine = atomic_load_explicit(&t->routine, memory_order_relaxed);
     if (!routine) {
         routine = aligned_alloc(alignof(function_t), sizeof(function_t));
@@ -61,31 +141,36 @@ inline void routine_metadata(threads_t* t, const size_t length, ...) {
     }
 
     if (routine->size != length) {
+        const size_t threshold = M_MMAP_THRESHOLD;
         if (routine->args) {
-            if (routine->size < ALLOC_THRESHOLD && length > ALLOC_THRESHOLD) {
-                memset(routine->args, 0, length * sizeof(void*));
+            if (routine->size < threshold && length > threshold) {
                 free(routine->args);
                 routine->args = NULL;
                 routine->args = private_address(NULL, length * sizeof(void*), PROT_READ | PROT_WRITE, MAP_NORESERVE, -1, 0);
                 if (routine->args == MAP_FAILED) return;
                 else {
-                    int res = madvise(routine->args, length * sizeof(void*), MADV_SEQUENTIAL | MADV_MERGEABLE);
+                    int res = madvise(routine->args, length * sizeof(void*), MADV_SEQUENTIAL);
                     if (res == -1) {
-                        memset(routine->args, 0, length * sizeof(void*));
+                        if (routine->args) munmap_address(routine->args, length * sizeof(void*), __FILE__,  __LINE__);
+                        routine->args = NULL;
+                        return;
+                    }
+                    res = madvise(routine->args, length * sizeof(void*), MADV_MERGEABLE);
+                    if (res == -1) {
                         if (routine->args) munmap_address(routine->args, length * sizeof(void*), __FILE__,  __LINE__);
                         routine->args = NULL;
                         return;
                     }
                 }
             }
-            else if (routine->size > ALLOC_THRESHOLD && length < ALLOC_THRESHOLD) {
+            else if (routine->size > threshold && length < threshold) {
                 munmap_address(routine->args, length * sizeof(void*), __FILE__,  __LINE__);
                 routine->args = NULL;
                 routine->args = malloc(length * sizeof(void*));
             }
-            else routine->args = length < ALLOC_THRESHOLD ? realloc(routine->args, length * sizeof(void*)) : remap_address(routine->args, routine->size, length);
+            else routine->args = length < threshold ? realloc(routine->args, length * sizeof(void*)) : remap_address(routine->args, routine->size, length);
         }
-        else routine->args = length < ALLOC_THRESHOLD ? malloc(length * sizeof(void*)) : private_address(NULL, length * sizeof(void*), PROT_READ | PROT_WRITE, MAP_NORESERVE, -1, 0);
+        else routine->args = length < threshold ? malloc(length * sizeof(void*)) : private_address(NULL, length * sizeof(void*), PROT_READ | PROT_WRITE, MAP_NORESERVE, -1, 0);
         if (!routine->args) return;
         routine->size = length;
     }
@@ -99,7 +184,6 @@ inline void routine_metadata(threads_t* t, const size_t length, ...) {
     atomic_store_explicit(&t->routine, routine, memory_order_relaxed);
 }
 
-[[gnu::hot]]
 [[gnu::aligned(DEFAULT_ALIGNMENT)]] /* Align it to a byte-boundry, so it can fit into the cache without an issue */
 FORCE_INLINE unsigned char thread_t_routine_tagged(_Atomic(struct function_t*)* meta) {
     function_t* cur = atomic_load_explicit(meta, memory_order_relaxed);
@@ -107,9 +191,8 @@ FORCE_INLINE unsigned char thread_t_routine_tagged(_Atomic(struct function_t*)* 
     return 0x0;
 }
 
-[[gnu::hot]]
 [[gnu::aligned(DEFAULT_ALIGNMENT)]] /* Align it to a byte-boundry, so it can fit into the cache without an issue */
-inline void thread_t_routine_untag(_Atomic(struct function_t*)* meta) {
+FORCE_INLINE void thread_t_routine_untag(_Atomic(struct function_t*)* meta) {
     if (thread_t_routine_tagged(meta)) {
         function_t* cur = atomic_load_explicit(meta, memory_order_relaxed);
         cur = UNTAG_ADDRESS(cur);
@@ -117,9 +200,8 @@ inline void thread_t_routine_untag(_Atomic(struct function_t*)* meta) {
     }
 }
 
-[[gnu::hot]]
 [[gnu::aligned(DEFAULT_ALIGNMENT)]] /* Align it to a byte-boundry, so it can fit into the cache without an issue */
-inline void thread_t_routine_tag(_Atomic(struct function_t*)* meta) {
+FORCE_INLINE void thread_t_routine_tag(_Atomic(struct function_t*)* meta) {
     if (!thread_t_routine_tagged(meta)) {
         function_t* untagged = atomic_load_explicit(meta, memory_order_relaxed);
         function_t* tagged = TAG_ADDRESS(untagged);
@@ -213,10 +295,11 @@ inline void munmap_address(void* addr, size_t len, const char* file, const int l
 
 FORCE_INLINE void init_threads_t_stack(threads_t* tp, const size_t idx);
 FORCE_INLINE threads_t init_locks_t(threads_t* t, const size_t idx, const unsigned char mode);
-FORCE_INLINE threads_t init_attr_t(threads_t* t, const size_t idx, const unsigned char attr);
-FORCE_INLINE threads_t threads_t_state(threads_t* t, const size_t idx, const unsigned char state);
-size_t __ss = {0}; /* Abbreviated as stack size and is used in create_attrs and clean_threads */
-
+FORCE_INLINE threads_t init_attr_t(threads_t* t, const size_t idx);
+FORCE_INLINE threads_t init_cond_t(threads_t* t, const size_t idx);
+FORCE_INLINE threads_t* find_thread_t_and_meta(threads_t* tp, const size_t size, void* func);
+static size_t __ss = {0}; /* Abbreviated as stack size and is used in create_attrs and clean_threads */
+static int amount_of_joined_threads = 0;
 
 ////////////////////////
 // THREADING SECTION //
@@ -232,188 +315,208 @@ size_t __ss = {0}; /* Abbreviated as stack size and is used in create_attrs and 
 */
 [[gnu::hot]]
 [[gnu::aligned(DEFAULT_ALIGNMENT)]] /* Align it to a byte-boundry, so it can fit into the cache without an issue */
-threads_t init_threads_t(const unsigned char mode, const unsigned char attr, const unsigned char locked, const unsigned char stack) {
+threads_t init_threads_t(void) {
     threads_t t = {0};
-    if (mode == 0x0 && attr == 0x01) {
-        t = init_attr_t(&t, SIZE_MAX, attr);
-        if (locked == 0x01) t = init_locks_t(&t, SIZE_MAX, mode);
-        if (stack == 0x01) init_threads_t_stack(&t, SIZE_MAX);
-    }
-    if ((mode == 0x01) && (attr == 0x01)) {
-        t = init_attr_t(&t, SIZE_MAX, attr);
-        if (locked == 0x01) t = init_locks_t(&t, SIZE_MAX, mode);
-        if (stack == 0x01) init_threads_t_stack(&t, SIZE_MAX);
-    }
-    if ((mode == 0x02) && (attr == 0x01)) {
-        if (locked == 0x01) {
-            t = init_attr_t(&t, SIZE_MAX, attr);
-            t = init_locks_t(&t, SIZE_MAX, mode);
-        } 
-        if (stack == 0x01) {
-            if (!t.attr) t = init_attr_t(&t, SIZE_MAX, attr);
-            init_threads_t_stack(&t, SIZE_MAX);
-        }
-    }
+    #if (THREADS_T_MODE == 0x0) && (THREADS_T_ENABLE_ATTRIBUTE == 0X01)
+        tp[i] = init_attr_t(tp, i);
+        #if (THREADS_T_ENABLE_LOCK == 0X01)
+            init_locks_t(tp, i, mode);
+        #endif
+        #if (THREADS_T_ENABLE_STACK == 0X01)
+            init_threads_t_stack(tp, i);
+        #endif
+    #elif (THREADS_T_MODE == 0X01) && (THREADS_T_ENABLE_ATTRIBUTE == 0X01)
+        tp[i] = init_attr_t(tp, i);
+        #if (THREADS_T_ENABLE_LOCK == 0X01)
+            tp[i] = init_locks_t(tp, i, mode);
+            #if (THREADS_T_ENABLE_CONDITION == 0X01)
+                tp[i] = init_cond_t(tp, i);
+                threads_t_set_status(&tp[i], 0, i);
+            #else 
+                threads_t_set_status(&tp[i], 0, i); // TODO: if cond_t is not enabled, then we set the states for the locks
+            #endif
+        #else 
+            threads_t_set_status(&tp[i], 0, i); // TODO: if lock_t is not enabled, then we set the states for attr_t
+        #endif
+        #if (THREADS_T_ENABLE_STACK == 0X01) 
+            init_threads_t_stack(tp, i);
+        #endif
+    #elif (THREADS_T_MODE == 0X02) && (THREADS_T_ENABLE_ATTRIBUTE == 0X01)
+        tp[i] = init_attr_t(tp, i);
+        #if (THREADS_T_ENABLE_LOCK == 0X01)
+            tp[i] = init_locks_t(tp, i);
+            #if (THREADS_T_ENABLE_CONDITION == 0X01)
+                tp[i] = init_cond_t(tp, i);
+                threads_t_set_status(&tp[i], 0, i);
+            #else 
+                threads_t_set_status(&tp[i], 0, i);
+            #endif
+        #else 
+            threads_t_set_status(&tp[i], 0, i);
+        #endif
+        #if (THREADS_T_ENABLE_STACK == 0X01)
+            init_threads_t_stack(tp, i);
+        #endif
+    #else
+        if (threads_t_is_detachable(&t)) threads_t_set_status(&t, 0, SIZE_MAX);
+        else fprintf(stderr, "Error: THREAD_STATE [ %d ] is not set to detach mode!\n", THREAD_STATE);
+    #endif
     return t;
 }
 
 [[gnu::aligned(DEFAULT_ALIGNMENT)]] /* Align it to a byte-boundry, so it can fit into the cache without an issue */
 FORCE_INLINE threads_t init_locks_t(threads_t* t, const size_t idx, const unsigned char mode) {
-    int rc;
-
-    if (idx != SIZE_MAX && !t[idx].lock) {
-        t[idx].lock = aligned_alloc(alignof(lock_t), sizeof(lock_t));
-        if (!t[idx].lock) return t[idx];
-        memset(t[idx].lock, 0, sizeof(lock_t));
+    threads_t* thread = idx == SIZE_MAX ? t : &t[idx];
+    if (!thread->lock) {
+        thread->lock = aligned_alloc(alignof(lock_t), sizeof(lock_t));
+        if (!thread->lock) return *thread;
+        memset(thread->lock, 0, sizeof(lock_t));
     }
-    else if (idx == SIZE_MAX && !t->lock) {
-        t->lock = aligned_alloc(alignof(lock_t), sizeof(lock_t));
-        if (!t->lock) return *t;
-        memset(t->lock, 0, sizeof(lock_t));
-    }
-
-    const void* ptr = idx != SIZE_MAX ? t[idx].attr : t->attr;
-    if (ptr) {
+    int rc = 0;
+    __builtin_prefetch(thread->attr, 0, 1);
+    if (thread->attr) {
         if (mode == 0x01) {
-            rc = pthread_mutexattr_init(idx != SIZE_MAX ? &t[idx].attr->mutex_attr : &t->attr->mutex_attr);
+            rc = pthread_mutexattr_init(&thread->attr->mutex_attr);
             if (rc) {
-                printf("pthread_mutexattr_init failed: %s (errno: %d)\n", strerror(rc), rc);  
+                fprintf(stderr, "pthread_mutexattr_init failed: %s (errno: %d)\n", strerror(rc), rc);  
             }
-            rc = pthread_mutexattr_setpshared(idx != SIZE_MAX ? &t[idx].attr->mutex_attr : &t->attr->mutex_attr, PTHREAD_PROCESS_SHARED); 
+            rc = pthread_mutexattr_setpshared(&thread->attr->mutex_attr, PTHREAD_PROCESS_SHARED); 
             if (rc) {
-                printf("pthread_mutexattr_setpshared failed: %s (errno: %d)\n\t swapping to mutex default settings\n", strerror(rc), rc);
-                pthread_mutexattr_destroy(idx != SIZE_MAX ? &t[idx].attr->mutex_attr : &t->attr->mutex_attr);
+                fprintf(stderr, "pthread_mutexattr_setpshared failed: %s (errno: %d)\n\t swapping to mutex default settings\n", strerror(rc), rc);
+                pthread_mutexattr_destroy(&thread->attr->mutex_attr);
             }
             int kind = MUTEX_ATTR == 0 ? PTHREAD_MUTEX_DEFAULT : MUTEX_ATTR == 1 ? PTHREAD_MUTEX_ERRORCHECK : MUTEX_ATTR == 2 ? PTHREAD_MUTEX_RECURSIVE : -1;
-            rc = pthread_mutexattr_settype(idx != SIZE_MAX ? &t[idx].attr->mutex_attr : &t->attr->mutex_attr, kind);
+            rc = pthread_mutexattr_settype(&thread->attr->mutex_attr, kind);
             if (rc) {
-                printf("pthread_mutexattr_settype failed: %s (errno: %d)\n\t swapping to mutex default settings\n", strerror(rc), rc);
-                printf("kind value is: [ %d ]\n\t MUTEX_ATTR macro numerical values are: (0, 1, 2)\n", kind);
-                printf("\n\t Where 0 == PTHREAD_MUTEX_DEFAULT, 1 == PTHREAD_MUTEX_ERRORCHECK, and 2 == PTHREAD_MUTEX_RECURSIVE\n");
-                pthread_mutexattr_destroy(idx != SIZE_MAX ? &t[idx].attr->mutex_attr : &t->attr->mutex_attr); 
+                fprintf(stderr, "pthread_mutexattr_settype failed: %s (errno: %d)\n\t swapping to mutex default settings\n", strerror(rc), rc);
+                fprintf(stderr, "kind value is: [ %d ]\n\t MUTEX_ATTR macro numerical values are: (0, 1, 2)\n", kind);
+                fprintf(stderr, "\n\t Where 0 == PTHREAD_MUTEX_DEFAULT, 1 == PTHREAD_MUTEX_ERRORCHECK, and 2 == PTHREAD_MUTEX_RECURSIVE\n");
+                pthread_mutexattr_destroy(&thread->attr->mutex_attr); 
             }
         }
     }
-
-    rc = pthread_mutex_init(idx != SIZE_MAX ? &t[idx].lock->mutex : &t->lock->mutex, idx != SIZE_MAX ? &t[idx].attr->mutex_attr : &t->attr->mutex_attr);
+    rc = pthread_mutex_init(&thread->lock->mutex, &thread->attr->mutex_attr);
     if (rc) {
-        printf("pthread_mutex_init failed: %s (errno: %d)\n\t swapping to mutex default settings\n", strerror(rc), rc);
-        rc = pthread_mutex_init(idx != SIZE_MAX ? &t[idx].lock->mutex : &t->lock->mutex, NULL);
+        fprintf(stderr, "pthread_mutex_init failed: %s (errno: %d)\n\t swapping to mutex default settings\n", strerror(rc), rc);
+        rc = pthread_mutex_init(&thread->lock->mutex, NULL);
         if (rc) {
-            printf("pthread_mutex_init failed again: %s (errno: %d)\n\t trying other locks...\n", strerror(rc), rc);
+            fprintf(stderr, "pthread_mutex_init failed again: %s (errno: %d)\n\t trying other locks...\n", strerror(rc), rc);
         }
     } 
-    return idx != SIZE_MAX ? t[idx] : *t;
+    return *thread;
 }
 
 [[gnu::aligned(DEFAULT_ALIGNMENT)]] /* Align it to a byte-boundry, so it can fit into the cache without an issue */
-FORCE_INLINE threads_t init_attr_t(threads_t* t, const size_t idx, const unsigned char attr) {
+FORCE_INLINE threads_t init_attr_t(threads_t* t, const size_t idx) {
+    threads_t* thread = idx == SIZE_MAX ? t : &t[idx];
     struct sched_param schedparam;
     int rc;
 
-    if (idx != SIZE_MAX && !t[idx].attr && attr) {
-        t[idx].attr = aligned_alloc(alignof(attr_t), sizeof(attr_t));
-        if (!t[idx].attr) return t[idx];
-        memset(t[idx].attr, 0, sizeof(attr_t));
+    if (!thread->attr) {
+        thread->attr = aligned_alloc(alignof(attr_t), sizeof(attr_t));
+        if (!thread->attr) return *thread;
+        memset(thread->attr, 0, sizeof(attr_t));
     }
-    else if (idx == SIZE_MAX && !t->attr && attr) {
-        t->attr = aligned_alloc(alignof(attr_t), sizeof(attr_t));
-        if (!t->attr) return *t;
-        memset(t->attr, 0, sizeof(attr_t));
-    }
-
-    rc = pthread_attr_init(idx != SIZE_MAX ? &t[idx].attr->thread_attr : &t->attr->thread_attr);
+    __builtin_prefetch(thread->attr, 0, 1);
+    rc = pthread_attr_init(&thread->attr->thread_attr);
     if (rc) {
-        printf("pthread_attr_init failed: %s (errno: %d)\n\t will pass NULL into pthread_create later on\n", strerror(rc), rc);
+        fprintf(stderr, "pthread_attr_init failed: %s (errno: %d)\n\t will pass NULL into pthread_create later on\n", strerror(rc), rc);
     }
 
     int inherit = INHERITSCHED == 1 ? PTHREAD_EXPLICIT_SCHED : INHERITSCHED == 0 ? PTHREAD_INHERIT_SCHED : -1;
-    rc = pthread_attr_setinheritsched(idx != SIZE_MAX ? &t[idx].attr->thread_attr : &t->attr->thread_attr, inherit);
+    rc = pthread_attr_setinheritsched(&thread->attr->thread_attr, inherit);
     if (rc) {
-        printf("pthread_attr_setinheritsched failed: %s (errno: %d)\n", strerror(rc), rc);
-        printf("inherit value is: [ %d ]\n\t INHERITSCHED macro numerical values are: (0, 1)\n", inherit);
-        printf("\n\t Where 0 == PTHREAD_INHERIT_SCHED, 1 == PTHREAD_EXPLICIT_SCHED\n");
+        fprintf(stderr,"pthread_attr_setinheritsched failed: %s (errno: %d)\n", strerror(rc), rc);
+        fprintf(stderr, "inherit value is: [ %d ]\n\t INHERITSCHED macro numerical values are: (0, 1)\n", inherit);
+        fprintf(stderr, "\n\t Where 0 == PTHREAD_INHERIT_SCHED, 1 == PTHREAD_EXPLICIT_SCHED\n");
     }
 
     int policy = USTP == 0 ? SCHED_FIFO : USTP == 1 ? SCHED_RR : USTP == 2 ? SCHED_OTHER : -1;
-    rc = pthread_attr_setschedpolicy(idx != SIZE_MAX ? &t[idx].attr->thread_attr : &t->attr->thread_attr, policy);
+    rc = pthread_attr_setschedpolicy(&thread->attr->thread_attr, policy);
     if (rc) {
-        printf("pthread_attr_setschedpolicy failed: %s (errno: %d)\n", strerror(rc), rc);
-        printf("policy value is: [ %d ]\n\t User space thread pool policy i.e USTP macro numerical values are: (0, 1, 2)\n", policy);
-        printf("\n\t Where 0 == SCHED_FIFO, 1 == SCHED_RR, and 2 == SCHED_OTHER\n");
+        fprintf(stderr, "pthread_attr_setschedpolicy failed: %s (errno: %d)\n", strerror(rc), rc);
+        fprintf(stderr, "policy value is: [ %d ]\n\t User space thread pool policy i.e USTP macro numerical values are: (0, 1, 2)\n", policy);
+        fprintf(stderr, "\n\t Where 0 == SCHED_FIFO, 1 == SCHED_RR, and 2 == SCHED_OTHER\n");
     }
 
     schedparam.sched_priority = USTP == 0 ? 1 : USTP == 1 ? 1 : USTP == 2 ? 0 : -1;
-    rc = pthread_attr_setschedparam(idx != SIZE_MAX ? &t[idx].attr->thread_attr : &t->attr->thread_attr, &schedparam);
+    rc = pthread_attr_setschedparam(&thread->attr->thread_attr, &schedparam);
     if (rc) {
-        printf("pthread_attr_setschedparam failed: %s (errno: %d)\n", strerror(rc), rc);
+        fprintf(stderr, "pthread_attr_setschedparam failed: %s (errno: %d)\n", strerror(rc), rc);
     }
 
     int detachstate = THREAD_STATE == 1 ? PTHREAD_CREATE_JOINABLE : THREAD_STATE == 0 ? PTHREAD_CREATE_DETACHED : -1;
-    rc = pthread_attr_setdetachstate(idx != SIZE_MAX ? &t[idx].attr->thread_attr : &t->attr->thread_attr, detachstate);
+    rc = pthread_attr_setdetachstate(&thread->attr->thread_attr, detachstate);
     if (rc) {
-        printf("pthread_attr_setdetachstate failed: %s (errno: %d)\n", strerror(rc), rc);
-        printf("detachstate value is: [ %d ]\n\t THREAD_STATE Macro numerical values are: (0, 1)", detachstate);
-        printf("\n\t Where 0 == PTHREAD_CREATE_DETACHED, and 1 == PTHREAD_CREATE_JOINABLE\n");
+        fprintf(stderr, "pthread_attr_setdetachstate failed: %s (errno: %d)\n", strerror(rc), rc);
+        fprintf(stderr, "detachstate value is: [ %d ]\n\t THREAD_STATE Macro numerical values are: (0, 1)", detachstate);
+        fprintf(stderr, "\n\t Where 0 == PTHREAD_CREATE_DETACHED, and 1 == PTHREAD_CREATE_JOINABLE\n");
     }
-    
-    return idx != SIZE_MAX ? t[idx] : *t;
+    return *thread;
 }
 
 [[gnu::aligned(DEFAULT_ALIGNMENT)]] /* Align it to a byte-boundry, so it can fit into the cache without an issue */
 FORCE_INLINE void init_threads_t_stack(threads_t* tp, const size_t idx) {
-    int rc;
+    int rc = 0;
+    const size_t threshold = M_MMAP_THRESHOLD;
     size_t page_size = (size_t)sysconf(_SC_PAGESIZE);
     size_t base_size = (size_t)PTHREAD_STACK_MIN * ASAN_STACK_MULTIPLIER;
     __ss             = (base_size + page_size - 1) & ~(page_size - 1);
-
-    size_t total_with_guard = (size_t)__ss + page_size;
-    if (idx == SIZE_MAX) tp->attr->stackaddr = __ss > ALLOC_THRESHOLD ? private_address(NULL, total_with_guard, PROT_READ | PROT_WRITE, MAP_NORESERVE, -1, 0) : aligned_alloc(page_size, total_with_guard);
-    else tp[idx].attr->stackaddr = __ss > ALLOC_THRESHOLD ? private_address(NULL, total_with_guard, PROT_READ | PROT_WRITE, MAP_NORESERVE, -1, 0) : aligned_alloc(page_size, total_with_guard);
     
-    void* res = idx == SIZE_MAX ? tp->attr->stackaddr : tp[idx].attr->stackaddr;
-    if (!res) {
-        if (idx == SIZE_MAX) tp->attr->stackaddr = NULL;
-        else tp[idx].attr->stackaddr = NULL;
-        return;
-    }
+    threads_t* thread = idx == SIZE_MAX ? tp : &tp[idx];
+    size_t total_with_guard = (size_t)__ss + page_size;
+    if (!thread->attr->stackaddr) thread->attr->stackaddr = __ss > threshold ? private_address(NULL, total_with_guard, PROT_READ | PROT_WRITE, MAP_NORESERVE, -1, 0) : aligned_alloc(page_size, total_with_guard);
 
     // TODO: use MAP_GROWSDOWN for architectures that are modern
-    void* stack_ptr = idx == SIZE_MAX ? tp->attr->stackaddr : tp[idx].attr->stackaddr;
-    if (stack_ptr) {
-        /* stacks grow DOWNWARD on x86_64/most architectures, so the
-            * guard page goes at the LOW end; the usable stack starts
-            * right after it */
-        void* usable_stack = idx == SIZE_MAX ? (char*)tp->attr->stackaddr + page_size : (char*)tp[idx].attr->stackaddr + page_size;
-        rc = pthread_attr_setstack(idx == SIZE_MAX ? &tp->attr->thread_attr : &tp[idx].attr->thread_attr, usable_stack, __ss);
+    void* stack = thread->attr->stackaddr;
+    if (stack) {
+        __builtin_prefetch(thread->attr, 0, 1);
+        void* usable = (char*)thread->attr->stackaddr + page_size;
+        rc = pthread_attr_setstack(&thread->attr->thread_attr, usable, __ss);
         if (rc) {
-            printf("pthread_attr_setstack failed: %s (errno: %d)\n\t swapping to pthread attribute default settings\n", strerror(rc), rc);
-            pthread_attr_destroy(idx == SIZE_MAX ? &tp->attr->thread_attr : &tp[idx].attr->thread_attr);
+            fprintf(stderr, "pthread_attr_setstack failed: %s (errno: %d)\n\t swapping to pthread attribute default settings\n", strerror(rc), rc);
+            pthread_attr_destroy(&thread->attr->thread_attr);
         }
         else {
-            rc = mprotect(idx == SIZE_MAX ? tp->attr->stackaddr : tp[idx].attr->stackaddr, page_size, PROT_NONE);
+            rc = mprotect(thread->attr->stackaddr, page_size, PROT_NONE);
             if (rc == -1) {
-                printf("mprotect failed: %s (errno: %d)\n\t failed to guard the stack\n", strerror(errno), errno);
+                fprintf(stderr, "mprotect failed: %s (errno: %d)\n\t failed to guard the stack\n", strerror(errno), errno);
             }
         }
     }
 }
 
-[[gnu::aligned(DEFAULT_ALIGNMENT)]] /* Align it to a byte-boundry, so it can fit into the cache without an issue */
-FORCE_INLINE threads_t threads_t_state(threads_t* t, const size_t idx, const unsigned char state) {
-    if (state) {
-        printf("Still under development\n");
-        
+FORCE_INLINE threads_t init_cond_t(threads_t* t, const size_t idx) {
+    void* old;
+    threads_t* thread = idx == SIZE_MAX ? t : &t[idx];
+    if (!thread->lock) return *thread;
+    else if (!thread->cond) thread->cond = aligned_alloc(alignof(cond_t), sizeof(cond_t));
+    memset(thread->cond, 0, sizeof(cond_t));
+    int rc = pthread_condattr_init(&thread->cond->attr);
+    if (rc == -1) {
+        old = thread->cond;
+        fprintf(stderr, "Failed to init cond_v! Error code: %s", strerror(rc));
+        memset(thread->cond, 0, sizeof(cond_t));
+        free(old);
+        return *thread;
     }
-    int detachstate = THREAD_STATE == 1 ? PTHREAD_CREATE_JOINABLE : THREAD_STATE == 0 ? PTHREAD_CREATE_DETACHED : -1;
-    int rc = pthread_attr_setdetachstate(idx != SIZE_MAX ? &t[idx].attr->thread_attr : &t->attr->thread_attr, detachstate);
-    if (rc) {
-        printf("pthread_attr_setdetachstate failed: %s (errno: %d)\n", strerror(rc), rc);
-        printf("detachstate value is: [ %d ]\n\t THREAD_STATE Macro numerical values are: (0, 1)", detachstate);
-        printf("\n\t Where 0 == PTHREAD_CREATE_DETACHED, and 1 == PTHREAD_CREATE_JOINABLE\n");
+    rc = pthread_cond_init(&thread->cond->cond_v, &thread->cond->attr);
+    if (rc == -1) {
+        old = thread->cond;
+        fprintf(stderr, "Failed to init cond_v! Error code: %s", strerror(rc));
+        pthread_cond_destroy(&thread->cond->cond_v);
+        memset(thread->cond, 0, sizeof(cond_t));
+        free(old);
+        return *thread;
     }
-
-    return idx != SIZE_MAX ? t[idx] : *t;
+    int pshared = PTHREAD_PROCESS_SHARED;
+    rc = pthread_mutexattr_getpshared(&thread->attr->mutex_attr, &pshared);
+    if (rc == -1) return *thread;
+    else {
+        rc = pthread_condattr_setpshared(&thread->cond->attr, pshared);
+        if (rc == -1) return *thread;
+    }
+    return *thread;
 }
 
 /**
@@ -426,124 +529,157 @@ FORCE_INLINE threads_t threads_t_state(threads_t* t, const size_t idx, const uns
 */
 [[gnu::hot]]
 [[gnu::aligned(DEFAULT_ALIGNMENT)]] /* Align it to a byte-boundry, so it can fit into the cache without an issue */
-void create_thread_pool(threads_t* tp, const size_t size, const unsigned char mode, const unsigned char attr, const unsigned char locked, const unsigned char stack) {
-    
-    if (!tp && mode == 0x0) {
-        tp = aligned_alloc(alignof(threads_t), size * sizeof(threads_t));
-        if (!tp) return;
-        memset(tp, 0, size * sizeof(threads_t));
-    }
-
+void create_thread_pool(threads_t* tp, const size_t size) {
+    #if THREADS_T_MODE == 0X0
+        if (!tp) {
+            tp = aligned_alloc(alignof(threads_t), end * sizeof(threads_t));
+            if (!tp) return tp;
+        }
+        memset(tp, 0, end * sizeof(threads_t));
+    #elif (THREADS_T_MODE == 0X01) 
+        tp = shared_address(nullptr, size * sizeof(threads_t), PROT_WRITE | PROT_READ, MAP_NORESERVE, -1, 0);
+        if (tp == MAP_FAILED) return;
+        else {
+            int res = madvise(tp, size * sizeof(threads_t), MADV_SEQUENTIAL);
+            if (res == -1) {
+                if (tp) munmap_address(tp, size * sizeof(threads_t), __FILE__,  __LINE__);
+                tp = nullptr;
+                return;
+            }
+            res = madvise(tp, size * sizeof(threads_t), MADV_MERGEABLE);
+            if (res == -1) {
+                if (tp) munmap_address(tp, size * sizeof(threads_t), __FILE__,  __LINE__);
+                tp = nullptr;
+                return;
+            }
+            memset(tp, 0, size * sizeof(threads_t));
+        }
+    #endif
     for (size_t i = 0; i < size; i++) {
-        if (mode == 0x0 && attr == 0x01) {
-            tp[i] = init_attr_t(tp, i, attr);
-            if (locked == 0x01) tp[i] = init_locks_t(tp, i, mode);
-            if (stack == 0x01) init_threads_t_stack(tp, i);
-        }
-        if ((mode == 0x01) && (attr == 0x01)) {
-            if (!tp) {
-                tp = shared_address(NULL, size * sizeof(threads_t), PROT_WRITE | PROT_READ, MAP_NORESERVE, -1, 0);
-                if (tp == MAP_FAILED) return;
-                else {
-                    int res = madvise(tp,size * sizeof(threads_t), MADV_SEQUENTIAL | MADV_MERGEABLE);
-                    if (res == -1) {
-                        if (tp) munmap_address(tp, size * sizeof(threads_t), __FILE__,  __LINE__);
-                        tp = NULL;
-                        return;
-                    }
-                    memset(tp, 0, size * sizeof(threads_t));
-                }
-            }
-            tp[i] = init_attr_t(tp, i, attr);
-            if (locked == 0x01) tp[i] = init_locks_t(tp, i, mode);
-            if (stack == 0x01) init_threads_t_stack(tp, i);
-        }
-        if ((mode == 0x02) && (attr == 0x01)) {
-            if (!tp) {
-                tp = private_address(NULL, size * sizeof(threads_t), PROT_WRITE | PROT_READ, MAP_NORESERVE, -1, 0);
-                if (tp == MAP_FAILED) return;
-                else {
-                    int res = madvise(tp,size * sizeof(threads_t), MADV_SEQUENTIAL | MADV_MERGEABLE);
-                    if (res == -1) {
-                        if (tp) munmap_address(tp, size * sizeof(threads_t), __FILE__,  __LINE__);
-                        tp = NULL;
-                        return;
-                    }
-                    memset(tp, 0, size * sizeof(threads_t));
-                }
-            }
-            if (locked == 0x01) {
-                tp[i] = init_attr_t(tp, i, attr);
-                tp[i] = init_locks_t(tp, i, mode);
-            } 
-            if (stack == 0x01) {
-                if (!tp[i].attr) tp[i] = init_attr_t(tp, i, attr);
+        #if (THREADS_T_MODE == 0x0) && (THREADS_T_ENABLE_ATTRIBUTE == 0X01)
+            tp[i] = init_attr_t(tp, i);
+            #if (THREADS_T_ENABLE_LOCK == 0X01)
+                init_locks_t(tp, i, mode);
+            #endif
+            #if (THREADS_T_ENABLE_STACK == 0X01)
                 init_threads_t_stack(tp, i);
-            }
-        }
+            #endif
+        #elif (THREADS_T_MODE == 0X01) && (THREADS_T_ENABLE_ATTRIBUTE == 0X01)
+            tp[i] = init_attr_t(tp, i);
+            #if (THREADS_T_ENABLE_LOCK == 0X01)
+                tp[i] = init_locks_t(tp, i, mode);
+                #if (THREADS_T_ENABLE_CONDITION == 0X01)
+                    tp[i] = init_cond_t(tp, i);
+                    threads_t_set_status(&tp[i], 0, i);
+                #else 
+                    threads_t_set_status(&tp[i], 0, i); // TODO: if cond_t is not enabled, then we set the states for the locks
+                #endif
+            #else 
+                threads_t_set_status(&tp[i], 0, i); // TODO: if lock_t is not enabled, then we set the states for attr_t
+            #endif
+            #if (THREADS_T_ENABLE_STACK == 0X01) 
+                init_threads_t_stack(tp, i);
+            #endif
+        #elif (THREADS_T_MODE == 0X02) && (THREADS_T_ENABLE_ATTRIBUTE == 0X01)
+            tp[i] = init_attr_t(tp, i);
+            #if (THREADS_T_ENABLE_LOCK == 0X01)
+                tp[i] = init_locks_t(tp, i);
+                #if (THREADS_T_ENABLE_CONDITION == 0X01)
+                  tp[i] = init_cond_t(tp, i);
+                  threads_t_set_status(&tp[i], 0, i);
+                #else 
+                    threads_t_set_status(&tp[i], 0, i);
+                #endif
+            #else 
+                threads_t_set_status(&tp[i], 0, i);
+            #endif
+            #if (THREADS_T_ENABLE_STACK == 0X01)
+                init_threads_t_stack(tp, i);
+            #endif
+        #else
+            if (threads_t_is_detachable(&tp[i])) threads_t_set_status(&tp[i], 0, i);
+            else fprintf(stderr, "Error: THREAD_STATE [ %d ] is not set to detach mode!\n", THREAD_STATE);
+        #endif
+        
     }
     return;
 }
 
 [[gnu::hot]]
 [[gnu::aligned(DEFAULT_ALIGNMENT)]] /* Align it to a byte-boundry, so it can fit into the cache without an issue */
-void create_thread_pool_range(threads_t* tp, const unsigned char mode, const unsigned char attr, const unsigned char locked, const unsigned char stack, const size_t start, const size_t end) {
-    
-    if (!tp && mode == 0x0) {
-        tp = aligned_alloc(alignof(threads_t), end * sizeof(threads_t));
-        if (!tp) return;
+void* create_thread_pool_range(threads_t* tp, const size_t start, const size_t end) {
+    #if THREADS_T_MODE == 0X0
+        if (!tp) {
+            tp = aligned_alloc(alignof(threads_t), end * sizeof(threads_t));
+            if (!tp) return tp;
+        }
         memset(tp, 0, end * sizeof(threads_t));
-    }
-
+    #elif (THREADS_T_MODE == 0X01) 
+        tp = shared_address(nullptr, end * sizeof(threads_t), PROT_WRITE | PROT_READ, MAP_NORESERVE, -1, 0);
+        if (tp == MAP_FAILED) return tp;
+        else {
+            int res = madvise(tp, end * sizeof(threads_t), MADV_SEQUENTIAL);
+            if (res == -1) {
+                if (tp) munmap_address(tp, end * sizeof(threads_t), __FILE__,  __LINE__);
+                tp = nullptr;
+                return tp;
+            }
+            res = madvise(tp, end * sizeof(threads_t), MADV_MERGEABLE);
+            if (res == -1) {
+                if (tp) munmap_address(tp, end * sizeof(threads_t), __FILE__,  __LINE__);
+                tp = nullptr;
+                return nullptr;
+            }
+            memset(tp, 0, end * sizeof(threads_t));
+        }
+    #endif
     for (size_t i = start; i < end; i++) {
-        if (mode == 0x0 && attr == 0x01) {
-            tp[i] = init_attr_t(tp, i, attr);
-            if (locked == 0x01) tp[i] = init_locks_t(tp, i, mode);
-            if (stack == 0x01) init_threads_t_stack(tp, i);
-        }
-        if ((mode == 0x01) && (attr == 0x01)) {
-            if (!tp) {
-                tp = shared_address(NULL, end * sizeof(threads_t), PROT_WRITE | PROT_READ, MAP_NORESERVE, -1, 0);
-                if (tp == MAP_FAILED) return;
-                else {
-                    int res = madvise(tp, end * sizeof(threads_t), MADV_SEQUENTIAL | MADV_MERGEABLE);
-                    if (res == -1) {
-                        if (tp) munmap_address(tp, end * sizeof(threads_t), __FILE__,  __LINE__);
-                        tp = NULL;
-                        return;
-                    }
-                    memset(tp, 0, end * sizeof(threads_t));
-                }
-            }
-            tp[i] = init_attr_t(tp, i, attr);
-            if (locked == 0x01) tp[i] = init_locks_t(tp, i, mode);
-            if (stack == 0x01) init_threads_t_stack(tp, i);
-        }
-        if ((mode == 0x02) && (attr == 0x01)) {
-            if (!tp) {
-                tp = private_address(NULL, end * sizeof(threads_t), PROT_WRITE | PROT_READ, MAP_NORESERVE, -1, 0);
-                if (tp == MAP_FAILED) return;
-                else {
-                    int res = madvise(tp, end * sizeof(threads_t), MADV_SEQUENTIAL | MADV_MERGEABLE);
-                    if (res == -1) {
-                        if (tp) munmap_address(tp, end * sizeof(threads_t), __FILE__,  __LINE__);
-                        tp = NULL;
-                        return;
-                    }
-                    memset(tp, 0, end * sizeof(threads_t));
-                }
-            }
-            if (locked == 0x01) {
-                tp[i] = init_attr_t(tp, i, attr);
-                tp[i] = init_locks_t(tp, i, mode);
-            } 
-            if (stack == 0x01) {
-                if (!tp[i].attr) tp[i] = init_attr_t(tp, i, attr);
+        #if (THREADS_T_MODE == 0x0) && (THREADS_T_ENABLE_ATTRIBUTE == 0X01)
+            tp[i] = init_attr_t(tp, i);
+            #if (THREADS_T_ENABLE_LOCK == 0X01)
+                init_locks_t(tp, i, mode);
+            #endif
+            #if (THREADS_T_ENABLE_STACK == 0X01)
                 init_threads_t_stack(tp, i);
-            }
-        }
+            #endif
+        #elif (THREADS_T_MODE == 0X01) && (THREADS_T_ENABLE_ATTRIBUTE == 0X01)
+            tp[i] = init_attr_t(tp, i);
+            #if (THREADS_T_ENABLE_LOCK == 0X01)
+                tp[i] = init_locks_t(tp, i, mode);
+                #if (THREADS_T_ENABLE_CONDITION == 0X01)
+                    tp[i] = init_cond_t(tp, i);
+                    threads_t_set_status(&tp[i], 0, i);
+                #else 
+                    threads_t_set_status(&tp[i], 0, i); // TODO: if cond_t is not enabled, then we set the states for the locks
+                #endif
+            #else 
+                threads_t_set_status(&tp[i], 0, i); // TODO: if lock_t is not enabled, then we set the states for attr_t
+            #endif
+            #if (THREADS_T_ENABLE_STACK == 0X01) 
+                init_threads_t_stack(tp, i);
+            #endif
+        #elif (THREADS_T_MODE == 0X02) && (THREADS_T_ENABLE_ATTRIBUTE == 0X01)
+            tp[i] = init_attr_t(tp, i);
+            #if (THREADS_T_ENABLE_LOCK == 0X01)
+                tp[i] = init_locks_t(tp, i);
+                #if (THREADS_T_ENABLE_CONDITION == 0X01)
+                  tp[i] = init_cond_t(tp, i);
+                  threads_t_set_status(&tp[i], 0, i);
+                #else 
+                    threads_t_set_status(&tp[i], 0, i);
+                #endif
+            #else 
+                threads_t_set_status(&tp[i], 0, i);
+            #endif
+            #if (THREADS_T_ENABLE_STACK == 0X01)
+                init_threads_t_stack(tp, i);
+            #endif
+        #else
+            if (threads_t_is_detachable(&tp[i])) threads_t_set_status(&tp[i], 0, i);
+            else fprintf(stderr, "Error: THREAD_STATE [ %d ] is not set to detach mode!\n", THREAD_STATE);
+        #endif
     }
-    return;
+    return tp;
 }
 
 [[gnu::aligned(DEFAULT_ALIGNMENT)]] /* Align it to a byte-boundry, so it can fit into the cache without an issue */
@@ -555,11 +691,6 @@ inline void update_thread_pool(threads_t *tp, const size_t size) {
             join_thread(&tp[i], NULL);
         }
     }
-}
-
-[[gnu::aligned(DEFAULT_ALIGNMENT)]] /* Align it to a byte-boundry, so it can fit into the cache without an issue */
-inline void* threads_t_query(void* param) {
-    return param;
 }
 
 /** 
@@ -576,30 +707,171 @@ inline void create_thread(threads_t* tp, void* func) {
     if (!pthread_equal(tp->thread_id, self)) {
         int rc = pthread_create(&tp->thread_id, tp->attr ? &tp->attr->thread_attr : NULL, func, atomic_load_explicit(&tp->routine, memory_order_relaxed));
         if (rc) {
-            printf("pthread_create failed: %s (errno: %d)\n", strerror(rc), rc);
+            fprintf(stderr, "pthread_create failed: %s (errno: %d)\n", strerror(rc), rc);
             return;
         }
         thread_t_routine_tag(&tp->routine);
     }
 }
 
+[[gnu::nonnull(1)]]
+void threads_t_set_status(threads_t* t, const int state, const int index) {
+    #if (THREADS_T_ENABLE_CONDITION == 0X01) && (THREADS_T_ENABLE_LOCK == 0x01) 
+        atomic_exchange_explicit(&t.cond.status, state, memory_order_relaxed);
+        atomic_exchange_explicit(&t.cond.index, index, memory_order_relaxed);
+    #else 
+        atomic_exchange_explicit(&t->lock_free.status, state, memory_order_relaxed);
+        atomic_exchange_explicit(&t->lock_free.index, index, memory_order_relaxed);
+    #endif
+}
+
+[[gnu::nonnull(1)]]
+/**
+ * @brief Free function that returns the thread's state
+ * @param t threads_t pointer type
+ * @return true if t is in a valid state, otherwise false.
+*/
+FORCE_INLINE bool threads_t_check_status(threads_t* t) {
+    int state = INT_MAX;
+    #if (THREADS_T_ENABLE_CONDITION == 0X01) && (THREADS_T_ENABLE_LOCK == 0x01)
+        state = atomic_load_explicit(&t.cond.status, memory_order_relaxed);
+    #else 
+        state = atomic_load_explicit(&t->lock_free.status, memory_order_relaxed);
+    #endif
+    
+    switch (state) {
+        case 0: // TODO: in the init functions, once allocated on the heap, the status needs to be set to 0.
+        case 1:
+        case 2:
+            return true;
+        case -1:
+        case -2:
+            return false;
+        default:
+            return false;
+    }
+    return false;
+}
+
+/**
+ * @description: Free function that returns the thread's current status
+ * @param t: threads_t pointer type
+ * @note: Status are:
+ *              -1 == failed to wait
+ *              -2 == failed to lock mutex
+ *
+ *              0 == initialized
+ *              1 == awake
+ *              2 == sleep
+ */
+FORCE_INLINE int threads_t_current_status(threads_t* t) {
+    int status = INT_MAX;
+    #if (THREADS_T_ENABLE_CONDITION == 0X01) && (THREADS_T_ENABLE_LOCK == 0x01)
+        status = atomic_load_explicit(&t.cond.status, memory_order_relaxed);
+    #else
+        status = atomic_load_explicit(&t->lock_free.status, memory_order_relaxed);
+    #endif
+    return status != INT_MAX ? status : -1;
+} 
+
+[[gnu::aligned(DEFAULT_ALIGNMENT)]] /* Align it to a byte-boundry, so it can fit into the cache without an issue */
+int threads_t_query(threads_t* tp, const size_t size, void* func, const unsigned char state) {
+    if (size == 0 || size == SIZE_MAX) return -1;
+    
+    _Atomic(semaphores_t*) atomic_sem;
+    atomic_store_explicit(&atomic_sem, &array_of_sems[0], memory_order_relaxed);
+    semaphores_t* sem = atomic_load_explicit(&atomic_sem, memory_order_relaxed);
+    if (sem->status != SEMAPHORES_T_INUSE) {
+        semaphores_t_state_set(sem, SEMAPHORES_T_INUSE);
+        atomic_exchange_explicit(&atomic_sem, sem, memory_order_relaxed);
+    }
+    
+    pthread_t self = pthread_self();
+    if (!pthread_equal(self, tp[0].thread_id)) {
+        threads_t* t1 = find_thread_t_and_meta(tp, size, func);
+        if (!t1) return -1;
+        else {
+            const int status = threads_t_current_status(t1);
+            const bool state = threads_t_check_status(t1);
+            if ((state == true) && (status == 0)) create_thread(t1, func);
+            else if (status == 1) thread_t_routine_tag(&t1->routine);
+            if ((state == true) && (status == 2 || status == 0)) {
+                threads_t_set_status(t1, 1, (int)thread_t_pool_index(tp, t1));
+                #if (THREADS_T_ENABLE_CONDITION == 0X01) && (THREADS_T_ENABLE_LOCK == 0x01)
+                    const size_t index = thread_t_pool_index(tp, t1);
+                    int rc = pthread_mutex_lock(&t1->lock->mutex);
+                    if (rc == -1) { atomic_store_explicit(&t1.cond.status, -1, memory_order_relaxed); atomic_store_explicit(&t1.cond.index, index, memory_order_relaxed);  }
+                    else { atomic_store_explicit(&t1.cond.status, 0, memory_order_relaxed); atomic_store_explicit(&t1->cond->index, index, memory_order_relaxed); }
+                    rc = pthread_cond_wait(&t1.cond.cond_v, &t1.lock.mutex); // TODO: Each threaded function needs to call: pthread_cond_signal(pthread_cond_t *cond); 
+                    if (rc == -1) { atomic_store_explicit(&t1.cond->status, -2, memory_order_relaxed); atomic_store_explicit(&t1->cond->index, index, memory_order_relaxed); return -1; }
+                    return 1;
+                #else 
+                    const size_t index = thread_t_pool_index(tp, t1);
+                    int rc = sem_post(&sem->semaphore);
+                    if (rc == -1) { atomic_store_explicit(&t1->lock_free.status, -1, memory_order_relaxed); atomic_store_explicit(&t1->lock_free.index, index, memory_order_relaxed); }
+                    else { atomic_store_explicit(&t1->lock_free.status, 0, memory_order_relaxed); atomic_store_explicit(&t1->lock_free.index, index, memory_order_relaxed); return -1; }
+                #endif
+                return 1;
+            }
+            return -1;
+        } 
+        if (state == 0x0) {
+            if (!threads_t_is_detachable(&tp[0])) join_thread(&tp[0], NULL);
+        }
+        return -1;
+    }
+    else {
+        while (state != 0x0) {
+            for (size_t i = 1; i < size; i++) {
+                const int status = threads_t_current_status(&tp[i]);
+                const bool state = threads_t_check_status(&tp[i]);
+                if ((state == true) && (status == 1)) {
+                    thread_t_routine_untag(&tp[i].routine);
+                    threads_t_set_status(&tp[i], 2, (int)i);
+                    #if (THREADS_T_ENABLE_CONDITION == 0X01) && (THREADS_T_ENABLE_LOCK == 0x01)
+                        int rc = pthread_cond_wait(&tp[i].cond.cond_v, &tp[i].lock.mutex); // TODO: Each threaded function needs to call: pthread_cond_signal(pthread_cond_t *cond); 
+                        if (rc == -1) { atomic_store_explicit(&tp[i].cond.status, -2, memory_order_relaxed); atomic_store_explicit(&tp[i].cond.index, i, memory_order_relaxed); }
+                        else {
+                            rc = pthread_mutex_unlock(&tp[i].lock->mutex);
+                            if (rc == -1) { atomic_store_explicit(&tp[i].cond.status, -1, memory_order_relaxed); atomic_store_explicit(&tp[i].cond.index, i, memory_order_relaxed);  }
+                            else { atomic_store_explicit(&tp[i].cond.status, 0, memory_order_relaxed); atomic_store_explicit(&tp[i].cond.index, i, memory_order_relaxed); }
+                        }
+                    #else 
+                        int rc = sem_wait(&sem->semaphore);
+                        if (rc == -1) { atomic_store_explicit(&tp[i].lock_free.status, -1, memory_order_relaxed); atomic_store_explicit(&tp[i].lock_free.index, i, memory_order_relaxed); }
+                        else { atomic_store_explicit(&tp[i].lock_free.status, 0, memory_order_relaxed); atomic_store_explicit(&tp[i].lock_free.index, i, memory_order_relaxed); }
+                    #endif
+                }           
+            }
+            int rc = sem_wait(&sem->semaphore);
+            #if (THREADS_T_ENABLE_CONDITION == 0X01) && (THREADS_T_ENABLE_LOCK == 0x01)
+                rc = pthread_cond_wait(&tp[i].cond.cond_v, &tp[i].lock.mutex); // TODO: Each threaded function needs to call: pthread_cond_signal(pthread_cond_t *cond); 
+                if (rc == -1) { atomic_store_explicit(&tp[i].cond.status, -2, memory_order_relaxed); atomic_store_explicit(&tp[i].cond.index, i, memory_order_relaxed); }
+                else {
+                    rc = pthread_mutex_unlock(&tp[i].lock.mutex);
+                    if (rc == -1) { atomic_store_explicit(&tp[i].cond.status, -1, memory_order_relaxed); atomic_store_explicit(&tp[i].cond.index, i, memory_order_relaxed);  }
+                    else { atomic_store_explicit(&tp[i].cond.status, 0, memory_order_relaxed); atomic_store_explicit(&tp[i].cond.index, i, memory_order_relaxed); }
+                }
+            #else 
+                if (rc == -1) { atomic_store_explicit(&tp[0].lock_free.index, 0, memory_order_relaxed); atomic_store_explicit(&tp[0].lock_free.status, -1, memory_order_relaxed); }
+                else { atomic_store_explicit(&tp[0].lock_free.index, 0, memory_order_relaxed); atomic_store_explicit(&tp[0].lock_free.status, 0, memory_order_relaxed); }
+            #endif
+        }
+    }
+    return 0;
+}
 
 [[gnu::aligned(DEFAULT_ALIGNMENT)]] /* Align it to a byte-boundry, so it can fit into the cache without an issue */
 inline void join_thread(threads_t* t, void** rtn) {
     pthread_t self = pthread_self();
     if (!pthread_equal(t->thread_id, self)) {
-        int state;
-        if (t->attr) { 
-            pthread_attr_getdetachstate(&t->attr->thread_attr, &state);
-            if (state != PTHREAD_CREATE_DETACHED) pthread_join(t->thread_id, rtn);
-        } else pthread_join(t->thread_id, rtn);
-
+        if (t->attr) { if (!threads_t_is_detachable(t)) pthread_join(t->thread_id, rtn); }
+        else pthread_join(t->thread_id, rtn);
         function_t* routine = NULL;
         if (thread_t_routine_tagged(&t->routine)) {
             thread_t_routine_untag(&t->routine);
             routine = atomic_load_explicit(&t->routine, memory_order_relaxed);
         } else routine = atomic_load_explicit(&t->routine, memory_order_relaxed);
-
         if (routine && routine->args) for (size_t i = 0; i < routine->size; i++) routine->args[i] = NULL;
         atomic_store_explicit(&t->routine, routine, memory_order_relaxed);
     }
@@ -607,26 +879,62 @@ inline void join_thread(threads_t* t, void** rtn) {
 
 [[gnu::aligned(DEFAULT_ALIGNMENT)]] /* Align it to a byte-boundry, so it can fit into the cache without an issue */
 inline threads_t* find_thread_t(threads_t* tp, const size_t size) {
-    for (size_t i = 0; i < size; i++) {
-        if (!thread_t_routine_tagged(&tp[i].routine)) return &tp[i];
+    for (size_t i = 0; i < size; i++) { if (!thread_t_routine_tagged(&tp[i].routine)) return &tp[i]; }
+    return NULL;
+}
+
+
+[[gnu::nonnull(1, 3)]]
+[[gnu::aligned(DEFAULT_ALIGNMENT)]] /* Align it to a byte-boundry, so it can fit into the cache without an issue */
+FORCE_INLINE threads_t* find_thread_t_and_meta(threads_t* tp, const size_t size, void* func) {
+    for (size_t i = 0; i < size; i++) { 
+        if (!thread_t_routine_tagged(&tp[i].routine)) {
+            function_t* meta = atomic_load_explicit(&tp->routine, memory_order_relaxed);
+            if (meta->func == NULL) {
+                meta->func = func;
+                atomic_store_explicit(&tp[i].routine, meta, memory_order_relaxed);
+                return &tp[i];
+            }
+            else {
+                const int status = threads_t_current_status(&tp[i]);
+                if ((status == 2) && (func == meta->func)) return &tp[i];
+                else continue; 
+            }
+        } 
     }
     return NULL;
 }
 
 [[gnu::aligned(DEFAULT_ALIGNMENT)]] /* Align it to a byte-boundry, so it can fit into the cache without an issue */
-inline size_t thread_pool_index(threads_t* tp, threads_t* t) {
+inline size_t thread_t_pool_index(threads_t* tp, threads_t* t) {
     if (!tp || !t) return SIZE_MAX;
     return (size_t)(t - tp);
 }
 
+unsigned char threads_t_is_detachable(const threads_t* t) {
+    if (!t->attr) return 0x0;
+    int detached = PTHREAD_CREATE_DETACHED;
+    int rc = pthread_attr_getdetachstate(&t->attr->thread_attr, &detached);
+    if (rc == -1) return 0x0; 
+    return 0x01; // return 1 bit iif thread is detachable 
+}
+
+void threads_t_detach(threads_t *t) {
+    return;
+}
+
 [[gnu::aligned(DEFAULT_ALIGNMENT)]] /* Align it to a byte-boundry, so it can fit into the cache without an issue */
 void clean_threads(threads_t* t) {
+    const size_t threshold = M_MMAP_THRESHOLD;
+    void* old = NULL;
     if (thread_t_routine_tagged(&t->routine)) {
-        printf("Warning: Address of thread_t: [ %p ] has not been joined!\n ", (void*)t);
-        thread_t_routine_untag(&t->routine);
-        join_thread(t, NULL);
+        if (amount_of_joined_threads > 1) {
+            printf("Warning: Address of thread_t: [ %p ] has not been untagged!\n ", (void*)t);
+            thread_t_routine_untag(&t->routine);
+            if (!threads_t_is_detachable(t)) join_thread(t, NULL);
+        } else threads_t_query(t, 1, NULL, 0x0);
+        amount_of_joined_threads++;
     }
-
 
     if (t->attr) {
         if (t->attr->stackaddr) {
@@ -634,35 +942,43 @@ void clean_threads(threads_t* t) {
             size_t total_with_guard = (size_t)__ss + page_size;
             if (__ss > 0) {
                 mprotect(t->attr->stackaddr, total_with_guard, PROT_READ | PROT_WRITE);
+                old = t->attr->stackaddr;
                 memset(t->attr->stackaddr, 0, total_with_guard);
             }
-            __ss > ALLOC_THRESHOLD ? munmap_address(t->attr->stackaddr, total_with_guard, __FILE__,  __LINE__) : free(t->attr->stackaddr);
-            t->attr->stackaddr = NULL;
+            __ss > threshold ? munmap_address(old, total_with_guard, __FILE__,  __LINE__) : free(old);
         }
+        old = t->attr;
         pthread_attr_destroy(&t->attr->thread_attr);
         pthread_mutexattr_destroy(&t->attr->mutex_attr);
         memset(t->attr, 0, sizeof(attr_t));
-        free(t->attr);
-        t->attr = NULL;
+        free(old);
     }
 
     if (t->lock) {
+        old = t->lock;
         pthread_mutex_destroy(&t->lock->mutex);
         memset(t->lock, 0, sizeof(lock_t));
-        free(t->lock);
-        t->lock = NULL;
+        free(old);
+    }
+
+    if (t->cond) {
+        old = t->cond;
+        pthread_cond_destroy(&t->cond->cond_v);
+        pthread_condattr_destroy(&t->cond->attr);
+        memset(t->cond, 0, sizeof(cond_t));
+        free(old);
     }
 
     function_t* routine = atomic_load_explicit(&t->routine, memory_order_relaxed);
     if (routine) {
-        if (routine->args) { 
+        if (routine->args) {
+            old = routine->args; 
             memset(routine->args, 0, routine->size * sizeof(void*));
-            routine->size > ALLOC_THRESHOLD ? munmap_address(routine->args, routine->size * sizeof(void*), __FILE__,  __LINE__) : free(routine->args); 
-            routine->args = NULL; 
+            routine->size > threshold ? munmap_address(old, routine->size * sizeof(void*), __FILE__,  __LINE__) : free(old);  
         }
-        memset(routine, 0, sizeof(function_t));
-        free(routine);
-        atomic_store_explicit(&t->routine, NULL, memory_order_release);
+        old = routine;
+        memset(routine, 0, sizeof(_Atomic(function_t)));
+        free(old);
     }
 }
 
