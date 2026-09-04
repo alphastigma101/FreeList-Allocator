@@ -293,12 +293,6 @@ extern void* create_thread_pool_range(threads_t* tp, size_t start, const size_t 
 extern unsigned char threads_t_is_detachable(const threads_t* t);
 
 /**
- * @brief Function that sets a pointer type of threads_t's state to detach
- * @param t a pointer to type threads_t
-*/
-extern void threads_t_detach(threads_t* t); // TODO: Needs to be implemented
-
-/**
  * @brief Finds the index of where t is located in tp. Otherwise it will return SIZE_MAX
  * @param tp a thread pool or a collection of type 'threads_t' decayed to a pointer
  * @param t a pointer of type threads_t, that is apart of 'tp'
