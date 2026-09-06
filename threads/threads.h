@@ -21,25 +21,23 @@
     #endif
 #endif
 
-/* INHERITSCHED — Thread scheduling inheritance 0 PTHREAD_INHERIT_SCHED 1 PTHREAD_EXPLICIT_SCHED */
-#ifndef INHERITSCHED
-    #define INHERITSCHED -1
+#define FORCE_PACK __attribute__((packed))
+#define FORCE_INLINE __attribute__((always_inline)) static inline
+
+#if defined(__GNUC__) && !defined(__clang__)
+    #define GCC_OPTIMIZE_O0 __attribute__((optimize("O0")))
+#else
+    #define GCC_OPTIMIZE_O0
 #endif
 
-/* MUTEX_ATTR — Mutex type attribute */
-#ifndef MUTEX_ATTR
-    #define MUTEX_ATTR -1
-#endif
+#define TAG_ADDRESS(p) \
+    ((__typeof__(p))((uintptr_t)(p) | (uintptr_t)0x1))
 
-/* THREAD_STATE — Choose either to join or detach */
-#ifndef THREAD_STATE
-    #define THREAD_STATE -1
-#endif
+#define UNTAG_ADDRESS(p) \
+    ((__typeof__(p))((uintptr_t)(p) & ~((uintptr_t)0x1)))
 
-/* USTP — User Space Thread Policy */
-#ifndef USTP
-    #define USTP -1
-#endif
+#define IS_ADDRESS_TAGGED(p) \
+    (((uintptr_t)(p) & (uintptr_t)0x1) != 0)
 
 
 /* BENCHMARK_ENV — 0 for off 1 for on. Default is 0 since we assume there is no benchmarking environment */
@@ -48,8 +46,8 @@
 #endif
 
 /** Maximum number of worker threads managed by the allocator. */
-#ifndef ALLOC_THREAD_POOL_SIZE
-    #define ALLOC_THREAD_POOL_SIZE  10U
+#ifndef THREADS_T_POOL_SIZE
+    #define THREADS_T_POOL_SIZE 10U
 #endif
 
 /* Maximum amount of semaphores to be used in threads.c */
@@ -57,7 +55,7 @@
    #define SEMAPHORES_T_SIZE 1U
 #endif
 
-_Static_assert(ALLOC_THREAD_POOL_SIZE != 0 && ALLOC_THREAD_POOL_SIZE > 0, "ALLOC_THREAD_POOL_SIZE: It must be greater than 0 and not equal to it");
+_Static_assert(THREADS_T_POOL_SIZE != 0 && THREADS_T_POOL_SIZE > 0, "ALLOC_THREAD_POOL_SIZE: It must be greater than 0 and not equal to it");
 _Static_assert(!(SEMAPHORES_T_SIZE <= 0), "SEMAPHORES_T_SIZE must be greater than 1!\n");
 
 /* ============================================================
@@ -177,80 +175,146 @@ _Static_assert(!(SEMAPHORES_T_SIZE <= 0), "SEMAPHORES_T_SIZE must be greater tha
                    "DEFAULT_ALIGNMENT must be a power of two");
 #endif
 
-#define FORCE_PACK __attribute__((packed))
-#define FORCE_INLINE __attribute__((always_inline)) static inline
-
-#if defined(__GNUC__) && !defined(__clang__)
-    #define GCC_OPTIMIZE_O0 __attribute__((optimize("O0")))
-#else
-    #define GCC_OPTIMIZE_O0
-#endif
-
-#define TAG_ADDRESS(p) \
-    ((__typeof__(p))((uintptr_t)(p) | (uintptr_t)0x1))
-
-#define UNTAG_ADDRESS(p) \
-    ((__typeof__(p))((uintptr_t)(p) & ~((uintptr_t)0x1)))
-
-#define IS_ADDRESS_TAGGED(p) \
-    (((uintptr_t)(p) & (uintptr_t)0x1) != 0)
-
 typedef struct attr_t {
     pthread_attr_t                 thread_attr;
     #ifdef THREADS_T_ENABLE_STACK
-        #if (THREADS_T_ENABLE_STACK == 0X01)
+        #if THREADS_T_ENABLE_STACK == 1
             void**                         stackaddr;
         #endif 
     #endif
-    pthread_mutexattr_t            mutex_attr;
-    int_least16_t                  state;
-    int_least16_t                  status;
+    #ifdef THREADS_T_ENABLE_MUTEX_ATTR
+        #if THREADS_T_ENABLE_MUTEX_ATTR == 1
+            pthread_mutexattr_t            mutex_attr;
+        #endif
+    #endif 
+    #ifdef THREADS_T_ENABLE_CONDITION_ATTR
+        #if THREADS_T_ENABLE_CONDITION_ATTR == 1
+            pthread_condattr_t             cond_attr;
+        #endif
+    #endif
+    atomic_int                         index;
+    atomic_int                         status;
 } attr_t;
 
 typedef struct lock_t {
     pthread_mutex_t                mutex;
-    int                            state;
-    int                            status;
+    atomic_int                     index;
+    atomic_int                     status;
 } lock_t;
 
 typedef struct lock_free_t {
-    /// @brief: A Variable when the state is zero, it means the threads have been sync. 
-    /// Anything greater are treated as warnings and anything less than zero are errors  
+    //sem_t          semaphore; // TODO: We could include the semaphore here for a more fine control or composite it   
     atomic_int     status;
-    /// @brief: A Variable used to be assign with the pool index.
     atomic_int     index;     
 } lock_free_t;
 
 typedef struct cond_t {
     pthread_cond_t                 cond_v;
-    atomic_int_least16_t           status;
-    atomic_int_least16_t           index;
-    pthread_condattr_t             attr;
+    atomic_int                     status;
+    atomic_int                     index;
 } cond_t;
 
+// TODO: We need to use other pragma's to output messages of flags being enabled and testing the actual combination
+// This will force to check all of the code that has been affected by the macros 
+// And then we can debug and test 
+
+/// @brief 0 == private implementation while 1 equals shared implementation
 #ifndef THREADS_T_MODE
-    #if (THREAD_T_MODE != 0) || (THREADS_T_MODE != 1)
-        #define THREADS_T_MODE 1
+    #define THREADS_T_MODE 1
+#endif
+_Static_assert((THREADS_T_MODE == 0 || THREADS_T_MODE == 1), "ERROR: THREADS_T_MODE must be a value of 0 or 1, and nothing else!\n");
+
+/// @brief Enable/Disable 'attr_t' in 'threads_t'
+/// @note By default type 'pthread_attr' data field member 'attr' is enabled by default  
+#ifndef THREADS_T_ENABLE_ATTRIBUTE
+    #define THREADS_T_ENABLE_ATTRIBUTE 1
+#endif
+_Static_assert(THREADS_T_ENABLE_ATTRIBUTE == 1, "ERROR: THREADS_T_ATTRIBUTE must be a value of 1, and nothing else!\n");
+
+/// @brief Enable/Disable 'stack' data field member in 'attr_t'
+#ifndef THREADS_T_ENABLE_STACK
+    #define THREADS_T_ENABLE_STACK 0
+#endif
+_Static_assert((THREADS_T_ENABLE_STACK == 0 || THREADS_T_ENABLE_STACK == 1), "ERROR: THREADS_T_ENABLE_STACK must be a value of 0 or 1, and nothing else!\n");
+
+/// @brief Choose the type of schedular inheritance. 
+#ifndef CHOOSE_THREADS_T_INHERITSCHED
+    #if CHOOSE_THREADS_T_INHERITSCHED == 0
+        #define CHOOSE_THREADS_T_INHERITSCHED PTHREAD_INHERIT_SCHED
     #else 
-        #define THREADS_T_MODE 1
+        #define CHOOSE_THREADS_T_INHERITSCHED PTHREAD_EXPLICIT_SCHED
     #endif
 #endif
 
-#ifndef THREADS_T_ENABLE_ATTRIBUTE
-    #define THREADS_T_ENABLE_ATTRIBUTE 0
-#endif 
+/// @brief Chooses the state for 'threads_t' by default, the state for each 'threads_t' is joinable
+/// @note This effects every variable/object of type 'threads_t'. 
+// If you want different settings set for a .c file, you must compile 'threads.c' for the targeted .c file.
+#ifndef CHOOSE_THREADS_T_STATE
+    #if CHOOSE_THREADS_T_STATE == 0
+        #define CHOOSE_THREADS_T_STATE PTHREAD_CREATE_DETACHED
+    #else 
+        #define CHOOSE_THREADS_T_STATE PTHREAD_CREATE_JOINABLE
+    #endif
+#endif
 
-#ifndef THREADS_T_ENABLE_STACK
-    #define THREADS_T_ENABLE_STACK 0
-#endif 
+/// @brief Choose the policy for threads_t in userspace 
+/// @note it effects all variables/objects of type 'threads_t'
+#ifndef CHOOSE_THREADS_T_POLICY
+    #if CHOOSE_THREADS_T_POLICY == 0
+        #define CHOOSE_THREADS_T_POLICY SCHED_FIFO
+    #elif CHOOSE_THREADS_T_POLICY == 1 
+        #define CHOOSE_THREADS_T_POLICY SCHED_RR
+    #else 
+        #define CHOOSE_THREADS_T_POLICY SCHED_OTHER
+    #endif
+#endif
 
+/// @brief Enable/Disable 'lock_t' in 'threads_t'
+/// @note 'mutex' is enabled by default. 
 #ifndef THREADS_T_ENABLE_LOCK
     #define THREADS_T_ENABLE_LOCK 0
-#endif 
+#endif
+_Static_assert((THREADS_T_ENABLE_LOCK == 0 || THREADS_T_ENABLE_LOCK == 1), "ERROR: THREADS_T_ENABLE_LOCK must be a value of 0 or 1, and nothing else!\n");
 
+/// @brief Enable/Disable mutex attribute in 'attr_t'
+#ifndef THREADS_T_ENABLE_MUTEX_ATTR
+    #define THREADS_T_ENABLE_MUTEX_ATTR 0
+#endif
+_Static_assert((THREADS_T_ENABLE_MUTEX_ATTR == 0 || THREADS_T_ENABLE_MUTEX_ATTR == 1), "ERROR: THREADS_T_ENABLE_MUTEX_ATTR must be a value of 0 or 1, and nothing else!\n");
+
+/// @brief Choose the type of lock. Default is the recrusive type lock 
+#ifndef CHOOSE_THREADS_T_MUTEX_LOCK_TYPE
+    #if CHOOSE_THREADS_T_MUTEX_LOCK_TYPE == 0
+        #define CHOOSE_THREADS_T_MUTEX_LOCK_TYPE PTHREAD_MUTEX_DEFAULT
+    #elif CHOOSE_THREADS_T_MUTEX_LOCK_TYPE == 1
+        #define CHOOSE_THREADS_T_MUTEX_LOCK_TYPE PTHREAD_MUTEX_ERRORCHECK
+    #else 
+        #define CHOOSECHOOSE_THREADS_T_MUTEX_LOCK_TYPE PTHREAD_MUTEX_RECRUSIVE
+    #endif
+#endif
+
+/// @brief Enable/Disable 'cond_t' in 'threads_t' 
 #ifndef THREADS_T_ENABLE_CONDITION
-    #define THREADS_T_ENABLE_CONDITION 0
-#endif 
+    #if (THREADS_T_ENABLE_LOCK == 1) && (THREADS_T_ENABLE_CONDITION == 1)
+        #define THREADS_T_ENABLE_CONDITION 1
+    #else 
+        #define THREADS_T_ENABLE_CONDITION 0
+    #endif
+#endif
+_Static_assert((THREADS_T_ENABLE_CONDITION == 0 || THREADS_T_ENABLE_CONDITION == 1), "ERROR: THREADS_T_ENABLE_CONDITION must be a value of 0 or 1, and nothing else!\n");
+
+/// @brief Enable/Disable 'cond_attr' in 'threads_t'
+#ifndef THREADS_T_ENABLE_CONDITION_ATTR
+    #define THREADS_T_ENABLE_CONDITION_ATTR 0
+#endif
+_Static_assert((THREADS_T_ENABLE_CONDITION_ATTR == 0 || THREADS_T_ENABLE_CONDITION_ATTR == 1), "ERROR: THREADS_T_ENABLE_CONDITION_ATTR must be a value of 0 or 1, and nothing else!\n");
+
+enum THREADS_T_ENABLED_STATES {
+    THREADS_T_ENABLE_ATTR_T,
+    THREADS_T_ENABLE_LOCK_T,
+    THREADS_T_ENABLE_COND_T,
+    THREADS_T_ENABLE_NONE
+};
 typedef struct threads_t {
     #if (THREADS_T_ENABLE_ATTRIBUTE == 1)
         attr_t                     attr;
@@ -329,7 +393,7 @@ extern int threads_t_query(threads_t* tp, const size_t size, void* func, const u
  * @note if 'state' >= 0 't' is in a stable state and can be used.
  *       if 'state' <= -1 't' is not in a stable state and will not be used   
 */
-extern void threads_t_set_status(threads_t* t, const int state, const int index);
+extern void threads_t_set_status(threads_t* t, const int state, const int index, const enum THREADS_T_ENABLED_STATES enabled_state);
 
 /**
  * @brief A standalone function that blocks the caller until the specified thread terminates, capturing its return value.
