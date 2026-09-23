@@ -1,6 +1,7 @@
 #ifndef _ALLOCATOR_H_
 #define _ALLOCATOR_H_
 #include "../arena/arena.h"
+#include "../bitmap/bitmap.h"
 
 #ifndef BUCKET_SMALL_CAP 
     #define BUCKET_SMALL_CAP 64U
@@ -48,7 +49,7 @@ _Static_assert(((BUCKET_LARGE_CAP  & (BUCKET_LARGE_CAP  - 1)) == 0), "BUCKET_LAR
     #endif
 #endif
 
-#ifndef BITMAP_SIZE
+#ifndef ALLOCATOR_T_BITMAP_SIZE
     #if RAM_TIER_ULTRA_CONSTRAINED
         #define BITMAP_SIZE BUCKET_SMALL_CAP
     #elif RAM_TIER_EMBEDDED
@@ -74,35 +75,29 @@ _Static_assert(HUGE_PAGE_SIZE == (2UL * 1024 * 1024) || HUGE_PAGE_SIZE == (1024U
     "HUGE_PAGE_SIZE must be a real x86-64 huge page size: 2MB or 1GB");
 _Static_assert(((HUGE_PAGE_SIZE    & (HUGE_PAGE_SIZE    - 1)) == 0), "HUGE_PAGE_SIZE: It must be a power of 2");
 
-/**
-   * @description: Free List allocator highly optimized.
-   * @note: Buckets will store bytes based on size  
-*/
-typedef struct allocator_t {
-    bitmap_t            bitmap;
-    struct bucket {
-        #if RAM_TIER_ULTRA_CONSTRAINED
-            struct bucket_t*       small;
-        #else
-            struct bucket_t*       small;
-            #if RAM_TIER_EMBEDDED
-                struct bucket_t*       medium;
-            #else 
-                struct bucket_t*       medium;
-                #if !RAM_TIER_ULTRA_CONSTRAINED && !RAM_TIER_EMBEDDED
-                    struct bucket_t*       large;
-                #endif
-            #endif
-        #endif
-    } bucket;
+typedef struct bins_t {
+    struct offset_entries_t*** offset_entries;
+    struct byte_entries_t*** byte_entries;
+} bins_t;
+
+typedef struct blocks_t {
+    struct blocks_t** chain;    /* TODO: We can tag/untag chain[i] instead of using inuse. */
+    _Atomic(struct blocks_t*)   next;
+    _Atomic(void*)              ptr;
+    _Atomic(size_t)             bytes;
+    _Atomic(size_t)             offset;
+    _Atomic(size_t)             size;
+    _Atomic(unsigned char)      inuse;
+} blocks_t;
+
+typedef struct __attribute__((aligned(64))) allocator_t {
+    colosseum_t         colosseum;
+    blocks_t            blocks;    
+    bins_t              bins;
     void*               (*allocate)(size_t);
     void                (*deallocate)(void*);
-    #if !RAM_TIER_ULTRA_CONSTRAINED && !RAM_TIER_EMBEDDED
-        struct huge_block_allocator_t* huge;
-    #endif
-    arena_t*            arena;
-    threads_t*          pool;
-    int                 depth; /* Representation of the distance between [arena, arena->next] */
+    struct threads_t*   pool;
+    unsigned char       _pad[80];
 } allocator_t;
 
 extern allocator_t allocator;

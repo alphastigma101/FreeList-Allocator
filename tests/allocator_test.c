@@ -166,89 +166,6 @@ static inline void clean_allocator_entries() {
 /// HELPER FUNCTIONS ///
 ///////////////////////
 
-
-static inline int populate_small_buckets(const int idx, const int start_idx) {
-    int new_idx = start_idx;
-    for (;;) {
-        size_t bytes = (size_t)(rand() % 62) + 1; // TODO: Change this out. 
-        s_stack[new_idx].ptr = allocator.allocate(bytes);
-        s_stack[new_idx].bytes = bytes;
-        if (allocator.bucket.small[idx].flag == 0x01) break;
-        new_idx++;
-    }
-    return new_idx;
-}
-
-static inline int populate_medium_buckets(const int idx, const int start_idx) {
-    int new_idx = start_idx;
-    for (;;) {
-        size_t bytes = (size_t)(rand() % 63) + 65;
-        if (bytes > 64) {
-            s_stack[new_idx].ptr = allocator.allocate(bytes);
-            s_stack[new_idx].bytes = bytes;
-            if (allocator.bucket.medium[idx].flag == 0x01) break;
-            new_idx++;
-        }
-    }
-    return new_idx;
-}
-
-static inline int populate_large_buckets(const int idx, const int start_idx) {
-    int new_idx = start_idx;
-    for (;;) {
-        size_t bytes = (size_t)(rand() % 127) + 129;
-        if (bytes > 128 && bytes != 256) {
-            s_stack[new_idx].ptr = allocator.allocate(bytes);
-            if (allocator.bucket.large[idx].flag == 0x01) break;
-            s_stack[new_idx].bytes = bytes;
-            new_idx++;
-        }
-    }
-    return new_idx;
-}
-
-static inline void clean_small_buckets(const int start_idx, const int idx_end) {
-    for (int i = start_idx; i < idx_end; i++) {
-        allocator.deallocate(s_stack[i].ptr);
-    }
-    return;
-}
-
-static inline void clean_medium_buckets(const int start_idx, const int idx_end) {
-    for (int i = start_idx; i < idx_end; i++) {
-        allocator.deallocate(s_stack[i].ptr);
-    }
-    return;
-}
-
-static inline void clean_large_buckets(const int start_idx, const int idx_end) {
-    for (int i = start_idx; i < idx_end; i++) {
-        allocator.deallocate(s_stack[i].ptr);
-    }
-    return;
-}
-
-TEST(BitmapSuite, Small) {
-    allocator.bitmap = allocator.bitmap.bitmap_set(allocator.bitmap, 0, 0, BUCKET_SMALL_CAP);
-    allocator.bitmap = allocator.bitmap.bitmap_set(allocator.bitmap, 1, 0, BUCKET_SMALL_CAP);
-    allocator.bitmap = allocator.bitmap.bitmap_set(allocator.bitmap, 2, 0, BUCKET_SMALL_CAP);
-    allocator.bitmap = allocator.bitmap.bitmap_set(allocator.bitmap, 3, 0, BUCKET_SMALL_CAP);
-    const size_t index = allocator.bitmap.bitmap_test(allocator.bitmap, 0, BUCKET_SMALL_CAP);
-    EXPECT_EQ(index, 4);
-    allocator.bitmap = allocator.bitmap.bitmap_clear(allocator.bitmap, 0, 0, BUCKET_SMALL_CAP);
-    const size_t zero = allocator.bitmap.bitmap_test(allocator.bitmap, 0, BUCKET_SMALL_CAP);
-    EXPECT_EQ(zero, 0);
-    allocator.bitmap = allocator.bitmap.bitmap_set(allocator.bitmap, 0, 0, BUCKET_SMALL_CAP);
-    allocator.bitmap = allocator.bitmap.bitmap_clear(allocator.bitmap, 2, 0, BUCKET_SMALL_CAP);
-    const size_t two = allocator.bitmap.bitmap_test(allocator.bitmap, 0, BUCKET_SMALL_CAP);
-    EXPECT_EQ(two, 2);
-    allocator.bitmap = allocator.bitmap.bitmap_set(allocator.bitmap, 2, 0, BUCKET_SMALL_CAP);
-    allocator.bitmap = allocator.bitmap.bitmap_clear(allocator.bitmap, 3, 0, BUCKET_SMALL_CAP);
-    const size_t three = allocator.bitmap.bitmap_test(allocator.bitmap, 0, BUCKET_SMALL_CAP);
-    EXPECT_EQ(three, 3);
-    for (unsigned int i = 0; i < BUCKET_SMALL_CAP; i++) allocator.bitmap = allocator.bitmap.bitmap_clear(allocator.bitmap, i, 0, BUCKET_SMALL_CAP);
-}
-
 TEST(PopulateSuite, Small) {
     for (int i = 0; i < 3; i++) {
         s_stack[i].ptr   = allocator.allocate(sizeof(int));
@@ -691,8 +608,7 @@ TEST(Allocator, FREELIST) {
 
 
 
-int main(void) {
-    srand(time(NULL));
+int main(void) { 
     init_allocator_t();
     printf("\n"
         "  ╔══════════════════════════════════════════════════╗\n"

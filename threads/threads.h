@@ -10,7 +10,7 @@
 #include <unistd.h> 
 #include <stdint.h>
 #include <limits.h>
-#include "../logger/logger.h"
+
 
 /* increase the space for ubsan/asan instrumentations */
 #ifndef ASAN_STACK_MULTIPLIER
@@ -181,23 +181,18 @@ typedef struct attr_t {
         #if THREADS_T_ENABLE_STACK == 1
             void**                         stackaddr;
         #endif 
-    #endif
-    #ifdef THREADS_T_ENABLE_MUTEX_ATTR
-        #if THREADS_T_ENABLE_MUTEX_ATTR == 1
-            pthread_mutexattr_t            mutex_attr;
-        #endif
-    #endif 
-    #ifdef THREADS_T_ENABLE_CONDITION_ATTR
-        #if THREADS_T_ENABLE_CONDITION_ATTR == 1
-            pthread_condattr_t             cond_attr;
-        #endif
-    #endif
+    #endif    
     atomic_int                         index;
     atomic_int                         status;
 } attr_t;
 
 typedef struct lock_t {
     pthread_mutex_t                mutex;
+    #ifdef THREADS_T_ENABLE_MUTEX_ATTR
+        #if THREADS_T_ENABLE_MUTEX_ATTR == 1
+            pthread_mutexattr_t            mutex_attr;
+        #endif
+    #endif 
     atomic_int                     index;
     atomic_int                     status;
 } lock_t;
@@ -210,6 +205,11 @@ typedef struct lock_free_t {
 
 typedef struct cond_t {
     pthread_cond_t                 cond_v;
+    #ifdef THREADS_T_ENABLE_CONDITION_ATTR
+        #if THREADS_T_ENABLE_CONDITION_ATTR == 1
+            pthread_condattr_t             cond_attr;
+        #endif
+    #endif
     atomic_int                     status;
     atomic_int                     index;
 } cond_t;
@@ -219,29 +219,36 @@ typedef struct cond_t {
 // And then we can debug and test 
 
 /// @brief 0 == private implementation while 1 equals shared implementation
-#ifndef THREADS_T_MODE
-    #define THREADS_T_MODE 1
+#ifdef THREADS_T_MODE
+    #if (THREADS_T_MODE != 0) || (THREADS_T_MODE != 1)
+        #undef THREADS_T_MODE
+        #define THREADS_T_MODE 1
+    #endif
 #endif
-_Static_assert((THREADS_T_MODE == 0 || THREADS_T_MODE == 1), "ERROR: THREADS_T_MODE must be a value of 0 or 1, and nothing else!\n");
 
 /// @brief Enable/Disable 'attr_t' in 'threads_t'
 /// @note By default type 'pthread_attr' data field member 'attr' is enabled by default  
-#ifndef THREADS_T_ENABLE_ATTRIBUTE
-    #define THREADS_T_ENABLE_ATTRIBUTE 1
+#ifdef THREADS_T_ENABLE_ATTRIBUTE
+    #if THREADS_T_ENABLE_ATTRIBUTE != 1
+        #undef THREADS_T_ENABLE_ATTRIBUTE 
+        #define THREADS_T_ENABLE_ATTRIBUTE 1
+    #endif
 #endif
-_Static_assert(THREADS_T_ENABLE_ATTRIBUTE == 1, "ERROR: THREADS_T_ATTRIBUTE must be a value of 1, and nothing else!\n");
 
 /// @brief Enable/Disable 'stack' data field member in 'attr_t'
-#ifndef THREADS_T_ENABLE_STACK
-    #define THREADS_T_ENABLE_STACK 0
+#ifdef THREADS_T_ENABLE_STACK
+    #if (THREADS_T_ENABLE_STACK != 0) || (THREADS_T_ENABLE_STACK != 1)
+        #undef THREADS_T_ENABLE_STACK
+        #define THREADS_T_ENABLE_STACK 0
+    #endif
 #endif
-_Static_assert((THREADS_T_ENABLE_STACK == 0 || THREADS_T_ENABLE_STACK == 1), "ERROR: THREADS_T_ENABLE_STACK must be a value of 0 or 1, and nothing else!\n");
 
 /// @brief Choose the type of schedular inheritance. 
-#ifndef CHOOSE_THREADS_T_INHERITSCHED
+#ifdef CHOOSE_THREADS_T_INHERITSCHED
     #if CHOOSE_THREADS_T_INHERITSCHED == 0
         #define CHOOSE_THREADS_T_INHERITSCHED PTHREAD_INHERIT_SCHED
-    #else 
+    #else
+        #undef CHOOSE_THREADS_T_INHERITSCHED 
         #define CHOOSE_THREADS_T_INHERITSCHED PTHREAD_EXPLICIT_SCHED
     #endif
 #endif
@@ -249,65 +256,95 @@ _Static_assert((THREADS_T_ENABLE_STACK == 0 || THREADS_T_ENABLE_STACK == 1), "ER
 /// @brief Chooses the state for 'threads_t' by default, the state for each 'threads_t' is joinable
 /// @note This effects every variable/object of type 'threads_t'. 
 // If you want different settings set for a .c file, you must compile 'threads.c' for the targeted .c file.
-#ifndef CHOOSE_THREADS_T_STATE
+#ifdef CHOOSE_THREADS_T_STATE
     #if CHOOSE_THREADS_T_STATE == 0
+        #undef CHOOSE_THREADS_T_STATE
         #define CHOOSE_THREADS_T_STATE PTHREAD_CREATE_DETACHED
-    #else 
+    #else
+        #undef CHOOSE_THREADS_T_STATE 
         #define CHOOSE_THREADS_T_STATE PTHREAD_CREATE_JOINABLE
     #endif
 #endif
 
 /// @brief Choose the policy for threads_t in userspace 
 /// @note it effects all variables/objects of type 'threads_t'
-#ifndef CHOOSE_THREADS_T_POLICY
+#ifdef CHOOSE_THREADS_T_POLICY
     #if CHOOSE_THREADS_T_POLICY == 0
+        #undef CHOOSE_THREADS_T_POLICY 
         #define CHOOSE_THREADS_T_POLICY SCHED_FIFO
     #elif CHOOSE_THREADS_T_POLICY == 1 
+        #undef CHOOSE_THREADS_T_POLICY 
         #define CHOOSE_THREADS_T_POLICY SCHED_RR
-    #else 
+    #else
+        #undef CHOOSE_THREADS_T_POLICY  
         #define CHOOSE_THREADS_T_POLICY SCHED_OTHER
     #endif
 #endif
 
 /// @brief Enable/Disable 'lock_t' in 'threads_t'
 /// @note 'mutex' is enabled by default. 
-#ifndef THREADS_T_ENABLE_LOCK
-    #define THREADS_T_ENABLE_LOCK 0
+#ifdef THREADS_T_ENABLE_LOCK
+    #ifdef THREADS_T_ENABLE_CONDITION 
+        #if (THREADS_T_ENABLE_CONDITION == 1) && (THREADS_T_ENABLE_LOCK == 0)
+            #undef THREADS_T_ENABLE_LOCK 
+            #define THREADS_T_ENABLE_LOCK 1
+        #elif (THREADS_T_ENABLE_CONDITION == 0) && (THREADS_T_ENABLE_LOCK == 1)
+            #undef THREADS_T_ENABLE_CONDITION 
+            #define THREADS_T_ENABLE_CONDITION 1
+        #endif
+    #endif
+    #if (THREADS_T_ENABLE_LOCK != 0) || (THREADS_T_ENABLE_LOCK != 1) 
+        #undef THREADS_T_ENABLE_LOCK 
+        #define THREADS_T_ENABLE_LOCK 0
+    #endif
 #endif
-_Static_assert((THREADS_T_ENABLE_LOCK == 0 || THREADS_T_ENABLE_LOCK == 1), "ERROR: THREADS_T_ENABLE_LOCK must be a value of 0 or 1, and nothing else!\n");
 
 /// @brief Enable/Disable mutex attribute in 'attr_t'
-#ifndef THREADS_T_ENABLE_MUTEX_ATTR
-    #define THREADS_T_ENABLE_MUTEX_ATTR 0
+#ifdef THREADS_T_ENABLE_MUTEX_ATTR
+    #if (THREADS_T_ENABLE_MUTEX_ATTR != 0) || (THREADS_T_ENABLE_MUTEX_ATTR != 1)
+        #undef THREADS_T_ENABLE_MUTEX_ATTR
+        #define THREADS_T_ENABLE_MUTEX_ATTR 0
+    #endif
 #endif
-_Static_assert((THREADS_T_ENABLE_MUTEX_ATTR == 0 || THREADS_T_ENABLE_MUTEX_ATTR == 1), "ERROR: THREADS_T_ENABLE_MUTEX_ATTR must be a value of 0 or 1, and nothing else!\n");
 
 /// @brief Choose the type of lock. Default is the recrusive type lock 
-#ifndef CHOOSE_THREADS_T_MUTEX_LOCK_TYPE
+#ifdef CHOOSE_THREADS_T_MUTEX_LOCK_TYPE
     #if CHOOSE_THREADS_T_MUTEX_LOCK_TYPE == 0
+        #undef CHOOSE_THREADS_T_MUTEX_LOCK_TYPE
         #define CHOOSE_THREADS_T_MUTEX_LOCK_TYPE PTHREAD_MUTEX_DEFAULT
     #elif CHOOSE_THREADS_T_MUTEX_LOCK_TYPE == 1
+        #undef CHOOSE_THREADS_T_MUTEX_LOCK_TYPE
         #define CHOOSE_THREADS_T_MUTEX_LOCK_TYPE PTHREAD_MUTEX_ERRORCHECK
-    #else 
+    #else
+        #undef CHOOSE_THREADS_T_MUTEX_LOCK_TYPE 
         #define CHOOSECHOOSE_THREADS_T_MUTEX_LOCK_TYPE PTHREAD_MUTEX_RECRUSIVE
     #endif
 #endif
 
 /// @brief Enable/Disable 'cond_t' in 'threads_t' 
-#ifndef THREADS_T_ENABLE_CONDITION
-    #if (THREADS_T_ENABLE_LOCK == 1) && (THREADS_T_ENABLE_CONDITION == 1)
-        #define THREADS_T_ENABLE_CONDITION 1
-    #else 
+#ifdef THREADS_T_ENABLE_CONDITION
+    #ifdef THREADS_T_ENABLE_LOCK
+        #if (THREADS_T_ENABLE_LOCK == 0) && (THREADS_T_ENABLE_CONDITION == 1)
+            #undef THREADS_T_ENABLE_LOCK
+            #define THREADS_T_ENABLE_LOCK 1
+        #elif (THREADS_T_ENABLE_LOCK == 1) && (THREADS_T_ENABLE_CONDITION == 0)
+            #undef THREADS_T_ENABLE_CONDITION 
+            #define THREADS_T_ENABLED_CONDITION 1
+        #endif
+    #endif
+    #if (THREADS_T_ENABLE_CONDITION != 0) || (THREADS_T_ENABLE_CONDITION != 1)
+        #undef THREADS_T_ENABLE_CONDITION
         #define THREADS_T_ENABLE_CONDITION 0
     #endif
 #endif
-_Static_assert((THREADS_T_ENABLE_CONDITION == 0 || THREADS_T_ENABLE_CONDITION == 1), "ERROR: THREADS_T_ENABLE_CONDITION must be a value of 0 or 1, and nothing else!\n");
 
 /// @brief Enable/Disable 'cond_attr' in 'threads_t'
-#ifndef THREADS_T_ENABLE_CONDITION_ATTR
-    #define THREADS_T_ENABLE_CONDITION_ATTR 0
+#ifdef THREADS_T_ENABLE_CONDITION_ATTR
+    #if (THREADS_T_ENABLE_CONDITION_ATTR != 0) || (THREADS_T_ENABLE_CONDITION_ATTR != 1)
+        #undef THREADS_T_ENABLE_CONDITION_ATTR   
+        #define THREADS_T_ENABLE_CONDITION_ATTR 0
+    #endif
 #endif
-_Static_assert((THREADS_T_ENABLE_CONDITION_ATTR == 0 || THREADS_T_ENABLE_CONDITION_ATTR == 1), "ERROR: THREADS_T_ENABLE_CONDITION_ATTR must be a value of 0 or 1, and nothing else!\n");
 
 enum THREADS_T_ENABLED_STATES {
     THREADS_T_ENABLE_ATTR_T,
@@ -315,10 +352,9 @@ enum THREADS_T_ENABLED_STATES {
     THREADS_T_ENABLE_COND_T,
     THREADS_T_ENABLE_NONE
 };
-typedef struct threads_t {
-    #if (THREADS_T_ENABLE_ATTRIBUTE == 1)
+typedef struct __attribute__((aligned(64)))  threads_t {
+    //#if (THREADS_T_ENABLE_ATTRIBUTE == 1)
         attr_t                     attr;
-    #endif
     #if (THREADS_T_ENABLE_CONDITION == 1)
         cond_t                     cond;
     #endif
@@ -327,6 +363,7 @@ typedef struct threads_t {
     #endif
     lock_free_t                    lock_free;
     pthread_t                      thread_id;
+    unsigned char                  _pad[40];
     _Atomic(struct function_t*)    routine;
 } threads_t;
 
@@ -420,7 +457,7 @@ extern void** routine_metadata_arguments(struct function_t* meta);
  * @brief A stand alone function that prints out debugging information to console
  * @param tp a thread pool of type 'threads_t'
 */
-extern void debug_threads(const threads_t* tp);
+extern void debug_threads(const threads_t t);
 
 /**
  * @brief A stand alone function that cleans up the allocated memory.

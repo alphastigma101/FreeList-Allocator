@@ -1,11 +1,11 @@
-// Header and translation unit are not tightly integrated. Basically what a logger should do 
-// Have the ability to include it or exclude it to redude the amount of bytes needed 
 #ifndef _LOGGING_H_
 #define _LOGGING_H_
 #include "buffer.h"
 #include <stddef.h>
 #include <stdint.h>
 #include <time.h>
+#include <stdnoreturn.h>
+#include <errno.h>
 
 /* Control the time in months, days, or years to clean up the directory default is 30 minutes */
 #ifndef CLEANER_TIME 
@@ -29,7 +29,7 @@
 #endif
 
 /* Include the logger or printer variable into the translation unit files - 0 is include printer 1 is include logger */
-#ifndef LOGGING 
+#ifndef ENABLE_PRINTER_T_OR_LOGGER_T 
     #define LOGGING -1
 #endif
 
@@ -50,8 +50,8 @@
 typedef struct code_fragment_t {
     char* desc;
     char* file;
-    int priority;
-    int line;
+    int_least16_t priority;
+    int_least16_t line;
     int occurances;
 } code_fragment_t;
 

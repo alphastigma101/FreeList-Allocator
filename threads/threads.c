@@ -15,18 +15,11 @@
  * https://busybox.net
 */
 #include "threads.h"
-#include <limits.h>
-#include <pthread.h>
-#include <semaphore.h>
+#include "../logger/logger.h"
 #include <stdalign.h>
 #include <stdarg.h>
-#include <stdatomic.h>
-#include <stddef.h>
-#include <stdint.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <errno.h>
 #define __USE_GNU 1
 #include <sys/mman.h>
 
@@ -61,9 +54,9 @@ typedef struct semaphores_t {
 static semaphores_t  array_of_sems[SEMAPHORES_T_SIZE] = {0};
 
 // TODO: Should also look into vtable highjacking
-[[gnu::constructor(0)]]
+[[gnu::constructor]]
 FORCE_INLINE void init_semaphores_t(void) {
-    #pragma GCC unroll SEMAPHORES_T_SIZE
+    //#pragma GCC unroll SEMAPHORES_T_SIZE
     for (size_t i = 0; i < SEMAPHORES_T_SIZE; i++) {
         semaphores_t* snode = &array_of_sems[i];
         if (snode->status != SEMAPHORES_T_INIT) {
@@ -81,7 +74,7 @@ FORCE_INLINE void init_semaphores_t(void) {
 }
 
 FORCE_INLINE void semaphores_t_state_set(semaphores_t* sem, const enum SEMAPHORES_T_STATUS status) {
-    #pragma GCC unroll SEMAPHORES_T_SIZE
+    //#pragma GCC unroll SEMAPHORES_T_SIZE
     for (size_t i = 0; i < SEMAPHORES_T_SIZE; i++) {
         semaphores_t* snode = &array_of_sems[i];
         if (snode == sem) {
@@ -93,7 +86,7 @@ FORCE_INLINE void semaphores_t_state_set(semaphores_t* sem, const enum SEMAPHORE
 }
 
 FORCE_INLINE semaphores_t* semaphores_t_get_available_node(void) {
-    #pragma GCC unroll SEMAPHORES_T_SIZE
+    //#pragma GCC unroll SEMAPHORES_T_SIZE
     for (size_t i = 0; i < SEMAPHORES_T_SIZE; i++) {
         if (array_of_sems[i].status != SEMAPHORES_T_INUSE && array_of_sems[i].status != SEMAPHORES_T_ERROR) {
             semaphores_t_state_set(&array_of_sems[i], SEMAPHORES_T_INUSE);
@@ -105,7 +98,7 @@ FORCE_INLINE semaphores_t* semaphores_t_get_available_node(void) {
 
 [[gnu::destructor]]
 FORCE_INLINE void dctor_semaphores_t(void) {
-    #pragma GCC unroll SEMAPHORES_T_SIZE
+    //#pragma GCC unroll SEMAPHORES_T_SIZE
     for (size_t i = 0; i < SEMAPHORES_T_SIZE; i++) {
         const enum SEMAPHORES_T_STATUS status = array_of_sems[i].status;
         if (status != SEMAPHORES_T_ERROR) sem_destroy(&array_of_sems[i].semaphore);
@@ -315,9 +308,9 @@ threads_t init_threads_t(void) {
         t = init_attr_t(&t, SIZE_MAX);
         #if THREADS_T_ENABLE_LOCK == 1
             t = init_locks_t(&t, SIZE_MAX);
-            threads_t_set_status(&t, 0, SIZE_MAX, THREADS_T_ENABLE_LOCK_T);
+            threads_t_set_status(&t, 0, INT_MAX, THREADS_T_ENABLE_LOCK_T);
         #else 
-            threads_t_set_status(&t, 0, SIZE_MAX, THREADS_T_ENABLED_NONE);
+            threads_t_set_status(&t, 0, SIZE_MAX, THREADS_T_ENABLE_NONE);
         #endif
         #if THREADS_T_ENABLE_CONDITION == 1
             t = init_cond_t(&t, SIZE_MAX);
@@ -463,9 +456,9 @@ void create_thread_pool(threads_t* tp, const size_t size) {
     #if THREADS_T_MODE == 0
         if (!tp) {
             tp = aligned_alloc(alignof(threads_t), size * sizeof(threads_t));
-            if (!tp) return tp;
+            if (!tp) return;
         }
-        memset(tp, 0, end * sizeof(threads_t));
+        memset(tp, 0, size * sizeof(threads_t));
     #elif THREADS_T_MODE == 1
         if (!tp) {
             tp = shared_address(nullptr, size * sizeof(threads_t), PROT_WRITE | PROT_READ, MAP_NORESERVE, -1, 0);
@@ -494,7 +487,7 @@ void create_thread_pool(threads_t* tp, const size_t size) {
                 tp[i] = init_locks_t(tp, i);
                 threads_t_set_status(&tp[i], 0, i, THREADS_T_ENABLED_LOCK_T);
             #else 
-                threads_t_set_status(&tp[i], 0, i, THREADS_T_ENABLED_NONE);
+                threads_t_set_status(&tp[i], 0, i, THREADS_T_ENABLE_NONE);
             #endif
             #if THREADS_T_ENABLE_CONDITION == 1
                 tp[i] = init_cond_t(tp, i);
@@ -545,7 +538,7 @@ void* create_thread_pool_range(threads_t* tp, const size_t start, const size_t e
                 tp[i] = init_locks_t(tp, i);
                 threads_t_set_status(&tp[i], 0, i, THREADS_T_ENABLED_LOCK_T);
             #else 
-                threads_t_set_status(&tp[i], 0, i, THREADS_T_ENABLED_NONE);
+                threads_t_set_status(&tp[i], 0, i, THREADS_T_ENABLE_NONE);
             #endif
             #if THREADS_T_ENABLE_CONDITION == 1
                 tp[i] = init_cond_t(tp, i);
@@ -574,7 +567,7 @@ inline void create_thread(threads_t* tp, void* func) {
 
 [[gnu::nonnull(1)]]
 void threads_t_set_status(threads_t* t, const int state, const int index, const enum THREADS_T_ENABLED_STATES enabled_state) {
-    if (enabled_state != THREADS_T_ENABLED_NONE) {
+    if (enabled_state != THREADS_T_ENABLE_NONE) {
         if (enabled_state == THREADS_T_ENABLE_COND_T) {
             #if (THREADS_T_ENABLE_CONDITION == 1) && (THREADS_T_ENABLE_LOCK == 1) 
                 atomic_exchange_explicit(&t.cond.status, state, memory_order_relaxed);
@@ -620,12 +613,16 @@ FORCE_INLINE bool threads_t_check_status(threads_t* t, const enum THREADS_T_ENAB
             if (state >= 0 && state <= 2) return true;
             return false;
         case THREADS_T_ENABLE_LOCK_T:
-            state = atomic_load_explicit(&t->lock.status, memory_order_relaxed);
-            if (state >= 0 && state <= 2) return true;
+            #if THREADS_T_ENABLE_LOCK == 1
+                state = atomic_load_explicit(&t->lock.status, memory_order_relaxed);
+                if (state >= 0 && state <= 2) return true;
+            #endif
             return false;
         case THREADS_T_ENABLE_COND_T:
-            state = atomic_load_explicit(&t->cond.status, memory_order_relaxed);
-            if (state >= 0 && state <= 2) return true;
+            #if THREADS_T_ENABLE_CONDITION == 1
+                state = atomic_load_explicit(&t->cond.status, memory_order_relaxed);
+                if (state >= 0 && state <= 2) return true;
+            #endif
             return false;
         default:
             state = atomic_load_explicit(&t->lock_free.status, memory_order_relaxed);
@@ -666,20 +663,19 @@ int threads_t_query(threads_t* tp, const size_t size, void* func, const unsigned
     if (sem->status != SEMAPHORES_T_INUSE) {
         semaphores_t_state_set(sem, SEMAPHORES_T_INUSE);
         atomic_exchange_explicit(&atomic_sem, sem, memory_order_relaxed);
-    }
-    
+    }    
     pthread_t self = pthread_self();
     if (!pthread_equal(self, tp[0].thread_id)) {
         threads_t* t1 = find_thread_t_and_meta(tp, size, func);
         if (!t1) return -1;
         else {
             const int status = threads_t_current_status(t1);
-            const bool state = threads_t_check_status(t1);
+            const bool state = threads_t_check_status(t1, THREADS_T_ENABLE_NONE);
             if ((state == true) && (status == 0)) create_thread(t1, func);
             else if (status == 1) thread_t_routine_tag(&t1->routine);
             if ((state == true) && (status == 2 || status == 0)) {
-                threads_t_set_status(t1, 1, (int)thread_t_pool_index(tp, t1));
-                #if (THREADS_T_ENABLE_CONDITION == 0X01) && (THREADS_T_ENABLE_LOCK == 0x01)
+                threads_t_set_status(t1, 1, (int)thread_t_pool_index(tp, t1), THREADS_T_ENABLE_NONE);
+                #if (THREADS_T_ENABLE_CONDITION == 1) && (THREADS_T_ENABLE_LOCK == 1)
                     const size_t index = thread_t_pool_index(tp, t1);
                     int rc = pthread_mutex_lock(&t1->lock->mutex);
                     if (rc == -1) { atomic_store_explicit(&t1.cond.status, -1, memory_order_relaxed); atomic_store_explicit(&t1.cond.index, index, memory_order_relaxed);  }
@@ -697,20 +693,20 @@ int threads_t_query(threads_t* tp, const size_t size, void* func, const unsigned
             }
             return -1;
         } 
-        if (state == 0x0) {
-            if (!threads_t_is_detachable(&tp[0])) join_thread(&tp[0], NULL);
+        if (state == 0) {
+            if (!threads_t_is_detachable(&tp[0])) join_thread(&tp[0], nullptr);
         }
         return -1;
     }
     else {
-        while (state != 0x0) {
+        while (state != 0) {
             for (size_t i = 1; i < size; i++) {
                 const int status = threads_t_current_status(&tp[i]);
-                const bool state = threads_t_check_status(&tp[i]);
+                const bool state = threads_t_check_status(&tp[i], THREADS_T_ENABLE_NONE);
                 if ((state == true) && (status == 1)) {
                     thread_t_routine_untag(&tp[i].routine);
-                    threads_t_set_status(&tp[i], 2, (int)i);
-                    #if (THREADS_T_ENABLE_CONDITION == 0X01) && (THREADS_T_ENABLE_LOCK == 0x01)
+                    threads_t_set_status(&tp[i], 2, (int)i, THREADS_T_ENABLE_NONE);
+                    #if (THREADS_T_ENABLE_CONDITION == 1) && (THREADS_T_ENABLE_LOCK == 1)
                         int rc = pthread_cond_wait(&tp[i].cond.cond_v, &tp[i].lock.mutex); // TODO: Each threaded function needs to call: pthread_cond_signal(pthread_cond_t *cond); 
                         if (rc == -1) { atomic_store_explicit(&tp[i].cond.status, -2, memory_order_relaxed); atomic_store_explicit(&tp[i].cond.index, i, memory_order_relaxed); }
                         else {
@@ -726,7 +722,7 @@ int threads_t_query(threads_t* tp, const size_t size, void* func, const unsigned
                 }           
             }
             int rc = sem_wait(&sem->semaphore);
-            #if (THREADS_T_ENABLE_CONDITION == 0X01) && (THREADS_T_ENABLE_LOCK == 0x01)
+            #if (THREADS_T_ENABLE_CONDITION == 1) && (THREADS_T_ENABLE_LOCK == 1)
                 rc = pthread_cond_wait(&tp[i].cond.cond_v, &tp[i].lock.mutex); // TODO: Each threaded function needs to call: pthread_cond_signal(pthread_cond_t *cond); 
                 if (rc == -1) { atomic_store_explicit(&tp[i].cond.status, -2, memory_order_relaxed); atomic_store_explicit(&tp[i].cond.index, i, memory_order_relaxed); }
                 else {
@@ -811,7 +807,7 @@ void clean_threads(threads_t* t) {
         if (amount_of_joined_threads > 1) {
             printf("Warning: Address of thread_t: [ %p ] has not been untagged!\n ", (void*)t);
             thread_t_routine_untag(&t->routine);
-            if (!threads_t_is_detachable(t)) join_thread(t, NULL);
+            if (!threads_t_is_detachable(t)) join_thread(t, nullptr);
         } else threads_t_query(t, 1, NULL, 0x0);
         amount_of_joined_threads++;
     }
@@ -828,23 +824,17 @@ void clean_threads(threads_t* t) {
                 __ss > threshold ? munmap_address(old, total_with_guard, __FILE__,  __LINE__) : free(old);
             }
         #endif
-        old = &t->attr;
         pthread_attr_destroy(&t->attr.thread_attr);
-        pthread_mutexattr_destroy(&t->attr.mutex_attr);
-        memset(&t->attr, 0, sizeof(attr_t));
-        free(old);
+        #if THREADS_T_ENABLE_MUTEX_ATTR == 1
+            pthread_mutexattr_destroy(&t->attr.mutex_attr);
+        #endif
     #endif
     #if THREADS_T_ENABLE_LOCK == 1
-        old = &t->lock;
         pthread_mutex_destroy(&t->lock.mutex);
-        memset(&t->lock, 0, sizeof(lock_t));
     #endif
     #if THREADS_T_ENABLE_CONDITION == 1
-        old = t->cond;
         pthread_cond_destroy(&t->cond.cond_v);
-        pthread_condattr_destroy(&t->cond.attr);
-        memset(&t->cond, 0, sizeof(cond_t));
-        free(old);
+        pthread_condattr_destroy(&t->attr.cond_attr);
     #endif
     function_t* routine = atomic_load_explicit(&t->routine, memory_order_relaxed);
     if (routine) {

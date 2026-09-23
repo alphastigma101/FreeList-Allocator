@@ -1,13 +1,31 @@
+# ============================================================
+# Standard/Lang and cmake's version
+# ============================================================
 cmake_minimum_required(VERSION 3.28)
-
 set(CMAKE_C_STANDARD 23)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
-option(MUTEX_ATTR 2)
-option(THREAD_STATE 0)
-option(USTP 2)
-option(INHERITSCHED 1)
-option(__SANITIZE_THREAD__ 0)
+
+# ============================================================
+# Libraries' cache variables
+# ============================================================
+set(ARENA_T_CACHE_VARIABLES "ARENA_T_MODE;ARENA_T_SIZE")
+foreach(ARENA_T_CACHE_VAR IN LISTS ARENA_T_CACHE_VARIABLES)
+    option("${ARENA_T_CACHE_VAR}" 0) # still needs work
+endforeach()
+set(THREADS_T_CACHE_VARIABLES "THREADS_T_MODE;THREADS_T_ENABLE_ATTRIBUTE;THREADS_T_ENABLE_STACK;CHOOSE_THREADS_T_INHERITSCHED;CHOOSE_THREADS_T_STATE;CHOOSE_THREADS_T_POLICY;THREADS_T_ENABLE_LOCK;THREADS_T_ENABLE_MUTEX_ATTR;CHOOSE_THREADS_T_MUTEX_LOCK_TYPE;THREADS_T_ENABLE_CONDITION;THREADS_T_ENABLE_CONDITION_ATTR;__SANITIZE_THREAD__")
+foreach(THREADS_T_CACHE_VAR IN LISTS THREADS_T_CACHE_VARIABLES)
+    option("${THREADS_T_CACHE_VAR}" 0)
+endforeach()
+set(ALLOCATOR_T_CACHE_VARIABLES "ARENA_T_MODE;ARENA_T_SIZE")
+foreach(ALLOCATOR_T_CACHE_VAR IN LISTS ALLOCATOR_T_CACHE_VARIABLES)
+    option("${ALLOCATOR_T_CACHE_VAR}" 0) # still needs work
+endforeach()
+set(LOGGER_T_CACHE_VARIABLES "ARENA_T_MODE;ARENA_T_SIZE")
+foreach(LOGGER_T_CACHE_VAR IN LISTS LOGGER_T_CACHE_VARIABLES)
+    option("${LOGGER_T_CACHE_VAR}" 0) # still needs work
+endforeach()
+
 option(ITEM_SIZE 500)
 option(CLEANER_TIME 1800000)
 option(TESTING 0)

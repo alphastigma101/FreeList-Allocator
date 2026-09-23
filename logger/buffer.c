@@ -1,4 +1,5 @@
 #include "buffer.h"
+#include "../threads/threads.h"
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
