@@ -1,83 +1,12 @@
 #ifndef _ALLOCATOR_H_
 #define _ALLOCATOR_H_
-#include "../arena/arena.h"
-#include "../bitmap/bitmap.h"
-
-#ifndef BUCKET_SMALL_CAP 
-    #define BUCKET_SMALL_CAP 64U
-#endif
-
-#ifndef  BUCKET_MEDIUM_CAP
-    #define BUCKET_MEDIUM_CAP 128U
-#endif
-
-#ifndef BUCKET_LARGE_CAP
-    #define BUCKET_LARGE_CAP 256U
-#endif
-
-_Static_assert(((BUCKET_SMALL_CAP  & (BUCKET_SMALL_CAP  - 1)) == 0), "BUCKET_SMALL_CAP: It must be a power of 2");
-_Static_assert(((BUCKET_MEDIUM_CAP & (BUCKET_MEDIUM_CAP - 1)) == 0), "BUCKET_MEDIUM_CAP: It must be a power of 2");
-_Static_assert(((BUCKET_LARGE_CAP  & (BUCKET_LARGE_CAP  - 1)) == 0), "BUCKET_LARGE_CAP: It must be a power of 2");
-
-/* RAM tier heuristic based on arch/vendor macros -- a best-effort
- * classification, NOT a real memory measurement. Three tiers:
- *   ULTRA_CONSTRAINED : classic 8/16-bit microcontrollers, DOS-era 16-bit
- *                       x86 -- typically bytes to a few KB of RAM
- *   EMBEDDED          : 32-bit ARM/x86/RISC-V -- ranges from tens of KB
- *                       (Cortex-M) to hundreds of MB (Cortex-A);
- *                       genuinely ambiguous, treated conservatively
- *   (fallthrough)     : 64-bit x86/ARM/RISC-V -- gaming/desktop or
- *                       capable embedded (e.g. 64-bit Raspberry Pi),
- *                       typically GB-range RAM
-*/
-#ifndef RAM_TIER_ULTRA_CONSTRAINED
-    #if defined(__AVR__) || defined(__MSP430__) || defined(__18CXX) || defined(__XC8) || defined(_M_I86) || defined(__I86__)
-        #define RAM_TIER_ULTRA_CONSTRAINED 1
-    #else
-        #define RAM_TIER_ULTRA_CONSTRAINED 0
-    #endif
-#endif
-
-#ifndef RAM_TIER_EMBEDDED
-    #if !RAM_TIER_ULTRA_CONSTRAINED && \
-        ((defined(__arm__)  && !defined(__aarch64__)) || \
-         (defined(__i386__) && !defined(__x86_64__))  || \
-         (defined(__riscv)  && __riscv_xlen == 32))
-        #define RAM_TIER_EMBEDDED 1
-    #else
-        #define RAM_TIER_EMBEDDED 0
-    #endif
-#endif
-
-#ifndef ALLOCATOR_T_BITMAP_SIZE
-    #if RAM_TIER_ULTRA_CONSTRAINED
-        #define BITMAP_SIZE BUCKET_SMALL_CAP
-    #elif RAM_TIER_EMBEDDED
-        #define BITMAP_SIZE (BUCKET_SMALL_CAP + BUCKET_MEDIUM_CAP)
-    #else
-        #define BITMAP_SIZE (BUCKET_SMALL_CAP + BUCKET_MEDIUM_CAP + BUCKET_LARGE_CAP)
-    #endif
-#endif
-
-/* Set the exact size of the page you need. Will be used in conjunction with MAP_HUGETLB */
-#ifndef HUGE_PAGE_SIZE
-    #define HUGE_PAGE_SIZE (2UL * 1024 * 1024)
-#endif 
-
-/* Set the dynamic array size of huge slots, if allocator.huge is ever to be used */
-#ifndef MAX_HUGE_SLOTS
-    #define MAX_HUGE_SLOTS 4096U
-#endif
-
-_Static_assert(((MAX_HUGE_SLOTS    & (MAX_HUGE_SLOTS    - 1)) == 0), "MAX_HUGE_SLOTS: It must be a power of 2");
-_Static_assert(MAX_HUGE_SLOTS > BUCKET_LARGE_CAP,                    "MAX_HUGE_SLOTS: It must be greater than BUCKET_LARGE_CAP");
-_Static_assert(HUGE_PAGE_SIZE == (2UL * 1024 * 1024) || HUGE_PAGE_SIZE == (1024UL * 1024 * 1024),
-    "HUGE_PAGE_SIZE must be a real x86-64 huge page size: 2MB or 1GB");
-_Static_assert(((HUGE_PAGE_SIZE    & (HUGE_PAGE_SIZE    - 1)) == 0), "HUGE_PAGE_SIZE: It must be a power of 2");
+#include "../colosseum/colosseum.h"
+#include <stddef.h>
 
 typedef struct bins_t {
     struct offset_entries_t*** offset_entries;
     struct byte_entries_t*** byte_entries;
+    size_t                   size;
 } bins_t;
 
 typedef struct blocks_t {
@@ -91,13 +20,14 @@ typedef struct blocks_t {
 } blocks_t;
 
 typedef struct __attribute__((aligned(64))) allocator_t {
-    colosseum_t         colosseum;
     blocks_t            blocks;    
     bins_t              bins;
+    colosseum_t**       colosseum;
+    size_t              size;
     void*               (*allocate)(size_t);
     void                (*deallocate)(void*);
     struct threads_t*   pool;
-    unsigned char       _pad[80];
+    unsigned char       _pad[16];
 } allocator_t;
 
 extern allocator_t allocator;

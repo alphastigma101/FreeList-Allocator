@@ -2,6 +2,7 @@
 #include "../logger/logger.h"
 #include "../threads/threads.h"
 #include <stdalign.h>
+#include <stddef.h>
 #include <sys/sysinfo.h>
 #include <string.h>
 #include <stdlib.h>
@@ -28,21 +29,9 @@ typedef struct offset_entries_t {
     unsigned char inuse;
 } offset_entries_t;
 
-typedef struct entry_table_t {
-    offset_entries_t*** offset_entries;
-    byte_entries_t*** byte_entries;
-    size_t*          inner_count;
-    size_t           bucket_count; /* distance of arena->next is determined by this field member. */
-} entry_table_t;
-
-
 /////////////////////////
-// ENTRY TABLE SECTION //
+// BINS_T SECTION //
 ////////////////////////
-
-FORCE_INLINE void entry_table_inner_init(entry_table_t* table, size_t idx, const unsigned char mode);
-FORCE_INLINE void entry_table_resize_inner(entry_table_t* table, const size_t idx, const unsigned char mode);
-FORCE_INLINE void table_entry_free_pages(entry_table_t* table);
 
 FORCE_INLINE size_t hash_mix(size_t x) {
     x ^= x >> 30;
@@ -54,7 +43,7 @@ FORCE_INLINE size_t hash_mix(size_t x) {
 }
 
 /** 
-    * @description: Free function that sets the size of the outer and inner 
+    * @brief: Free function that sets the size of the outer and inner 
     * @param table: the hash user defined function
     * @param idx: idx can be: [0, BITMAP_SIZE - 1] or [0, (BITMAP_SIZE + MAX_HUGE_SLOTS) - 1]
     * @return: Nothing
@@ -62,241 +51,45 @@ FORCE_INLINE size_t hash_mix(size_t x) {
 [[gnu::hot]]
 [[gnu::flatten]]
 [[gnu::aligned(DEFAULT_ALIGNMENT)]]
-FORCE_INLINE void entry_table_init(entry_table_t* table, const size_t idx) {
-    const unsigned char is_regular = (!RAM_TIER_ULTRA_CONSTRAINED && !RAM_TIER_EMBEDDED) || (idx < BITMAP_SIZE);
-
-    const size_t outer_count   = is_regular ? 128 : 8;
-    const size_t initial_inner = is_regular ? 64 : 8;
-
-    const size_t st_entries = outer_count * sizeof(offset_entries_t**);
-    table->offset_entries = shared_address(nullptr, st_entries, PROT_WRITE | PROT_READ, MAP_NORESERVE, -1, 0);
-    if (table->offset_entries == MAP_FAILED) { table->offset_entries = nullptr; return; }
-    else {
-        int res = madvise(table->offset_entries, st_entries, MADV_SEQUENTIAL);
-        if (res == -1) { munmap_address(table->offset_entries, st_entries, __FILE__,  __LINE__); table->offset_entries = nullptr; return; }
-        res = madvise(table->offset_entries, st_entries, MADV_MERGEABLE);
-        if (res == -1) { munmap_address(table->offset_entries, st_entries, __FILE__,  __LINE__); table->offset_entries = nullptr; return; }
-    }
-
-    table->byte_entries = shared_address(nullptr, outer_count * sizeof(byte_entries_t**), PROT_WRITE | PROT_READ, MAP_NORESERVE, -1, 0);
-    if (table->byte_entries == MAP_FAILED) { table->byte_entries = nullptr; return; }
-    else {
-        int res = madvise(table->byte_entries, outer_count * sizeof(byte_entries_t**), MADV_SEQUENTIAL);
-        if (res == -1) { 
-            munmap_address(table->byte_entries, outer_count * sizeof(byte_entries_t**), __FILE__,  __LINE__);
-            munmap_address(table->offset_entries, st_entries, __FILE__,  __LINE__); 
-            table->offset_entries = nullptr; 
-            table->byte_entries = nullptr; 
-            return; 
-        }
-        res =  madvise(table->byte_entries, outer_count * sizeof(byte_entries_t**), MADV_MERGEABLE);
-        if (res == -1) { 
-            munmap_address(table->byte_entries, outer_count * sizeof(byte_entries_t**), __FILE__,  __LINE__);
-            munmap_address(table->offset_entries, st_entries, __FILE__,  __LINE__); 
-            table->offset_entries = nullptr; 
-            table->byte_entries = nullptr; 
-            return; 
-        }
-    }
-
-    const size_t st_inner_count = outer_count * sizeof(size_t);
-    table->inner_count = shared_address(nullptr, st_inner_count, PROT_READ | PROT_WRITE, MAP_NORESERVE, -1, 0);
-    if (table->inner_count == MAP_FAILED) {
-        munmap_address(table->offset_entries, st_entries, __FILE__,  __LINE__);
-        munmap_address(table->byte_entries, outer_count * sizeof(byte_entries_t**), __FILE__,  __LINE__);
-        table->byte_entries = nullptr; 
-        table->offset_entries = nullptr;
-        return;
-    }
-    else {
-        int res = madvise(table->inner_count, st_inner_count, MADV_SEQUENTIAL | MADV_MERGEABLE);
-        if (res == -1) {
-            munmap_address(table->offset_entries, st_entries, __FILE__,  __LINE__);
-            munmap_address(table->byte_entries, outer_count * sizeof(byte_entries_t**), __FILE__,  __LINE__);
-            munmap_address(table->inner_count, st_inner_count, __FILE__,  __LINE__);
-            table->byte_entries = nullptr; 
-            table->offset_entries = nullptr;
-            table->inner_count = nullptr;
-            return;
-        }
-        res = madvise(table->inner_count, st_inner_count, MADV_MERGEABLE);
-        if (res == -1) {
-            munmap_address(table->offset_entries, st_entries, __FILE__,  __LINE__);
-            munmap_address(table->byte_entries, outer_count * sizeof(byte_entries_t**), __FILE__,  __LINE__);
-            munmap_address(table->inner_count, st_inner_count, __FILE__,  __LINE__);
-            table->byte_entries = nullptr; 
-            table->offset_entries = nullptr;
-            table->inner_count = nullptr;
-            return;
-        }
-    }
-    table->inner_count[idx] = initial_inner;
-    table->bucket_count = outer_count;
-    entry_table_inner_init(table, idx, 0x0);
-    entry_table_inner_init(table, idx, 0x01);
+FORCE_INLINE void init_bins_t(void) {
+    allocator.bins.byte_entries = private_address(nullptr, allocator.size * sizeof(byte_entries_t**), PROT_READ | PROT_WRITE, MAP_NORESERVE, -1, 0);
+    if (allocator.bins.byte_entries == MAP_FAILED) return;
+    allocator.bins.offset_entries = private_address(nullptr, allocator.size * sizeof(offset_entries_t**), PROT_READ | PROT_WRITE, MAP_NORESERVE, -1, 0);
+    if (allocator.bins.offset_entries == MAP_FAILED) return;
+    allocator.bins.size = allocator.size;
 }
 
+
+/**
+ * @brief Resizes the data member field copying over the old data to the new memory block.
+ * @param bins: The bins variable/object for allocator_t's external variable/object. 
+ * @param alignment: the alignment that is higher than the first or previous initialization.
+ * @return: Nothing
+*/
 [[gnu::flatten]]
 [[gnu::aligned(DEFAULT_ALIGNMENT)]]
-FORCE_INLINE void entry_table_inner_init(entry_table_t* table, size_t idx, const unsigned char mode) {
-    if (mode == 0x0 && table->offset_entries[idx]) return;
-    else if (mode == 0x01 && table->byte_entries[idx]) return;
+FORCE_INLINE void bins_t_resize(bins_t* bins, const int alignment) {
+    const size_t size = alignment; 
+    if (bins->size > size) return;
 
-    if (mode == 0x0) {
-        table->offset_entries[idx] = shared_address(nullptr, table->inner_count[idx] * sizeof(byte_entries_t*), PROT_WRITE | PROT_READ, MAP_NORESERVE, -1, 0);
-        if (table->offset_entries[idx] == MAP_FAILED) { table->offset_entries[idx] = nullptr; return; }
-        else {
-            int res = madvise(table->offset_entries[idx], table->inner_count[idx] * sizeof(byte_entries_t*), MADV_SEQUENTIAL);
-            if (res == -1) {
-                munmap_address(table->offset_entries[idx], table->inner_count[idx] * sizeof(byte_entries_t*), __FILE__,  __LINE__);
-                table->offset_entries[idx] = nullptr;
-                return;
-            }
-            res = madvise(table->offset_entries[idx], table->inner_count[idx] * sizeof(byte_entries_t*), MADV_MERGEABLE);
-            if (res == -1) {
-                munmap_address(table->offset_entries[idx], table->inner_count[idx] * sizeof(byte_entries_t*), __FILE__,  __LINE__);
-                table->offset_entries[idx] = nullptr;
-                return;
-            }
-        }
+    const size_t threshold = M_MMAP_THRESHOLD;
+    if (bins->size > threshold) {
+        remap_address(bins->offset_entries, bins->size, size);
+        remap_address(bins->byte_entries, bins->size, size);
+        bins->size = size;
     }
-    else if (mode == 0x01) {
-        table->byte_entries[idx] = shared_address(nullptr, table->inner_count[idx] * sizeof(byte_entries_t*), PROT_WRITE | PROT_READ, MAP_NORESERVE, -1, 0);
-        if (table->byte_entries[idx] == MAP_FAILED) { table->byte_entries[idx] = nullptr; return; }
-        else {
-            int res = madvise(table->byte_entries[idx], table->inner_count[idx] * sizeof(byte_entries_t*), MADV_SEQUENTIAL);
-            if (res == -1) {
-                munmap_address(table->byte_entries[idx], table->inner_count[idx] * sizeof(byte_entries_t*), __FILE__,  __LINE__);
-                table->byte_entries[idx] = nullptr;
-                return;
-            }
-            res = madvise(table->byte_entries[idx], table->inner_count[idx] * sizeof(byte_entries_t*), MADV_MERGEABLE);
-            if (res == -1) {
-                munmap_address(table->byte_entries[idx], table->inner_count[idx] * sizeof(byte_entries_t*), __FILE__,  __LINE__);
-                table->byte_entries[idx] = nullptr;
-                return;
-            }
-        }
+    else {
+        bins->byte_entries = realloc(bins->byte_entries, size);
+        if (!bins->byte_entries) return;
+        bins->offset_entries = realloc(bins->offset_entries, bins->size);
+        if (!bins->offset_entries) return;
+        bins->size = size; 
     }
     return;
 }
 
-/** 
-    * @desription: Free function that resizes `offset_entries` and `byte_entries` for regular allocation and huge allocation
-    * @param table: a user defined field member that is apart of `allocate->bucket` or `allocate.huge`
-    * @param idx: A index that can be apart of `allocator->bucket` or `allocator.huge->slots`
-    * @param idx: The mode to choose to resize the field 
-    * @return: Nothing 
-*/
-[[gnu::flatten]]
 [[gnu::aligned(DEFAULT_ALIGNMENT)]]
-FORCE_INLINE void entry_table_resize_inner(entry_table_t* table, const size_t idx, const unsigned char mode) {
-    size_t new_inner_count = ((table->inner_count[idx] * 2) > idx) ? table->inner_count[idx] * 2 : (table->inner_count[idx] + idx) * 2;
-    if (mode == 0x0) {
-        offset_entries_t** new_rows = shared_address(nullptr, new_inner_count * sizeof(offset_entries_t*), PROT_WRITE | PROT_READ, MAP_NORESERVE, -1, 0);
-        if (new_rows == MAP_FAILED) return;
-        else {
-            int res = madvise(new_rows, new_inner_count * sizeof(offset_entries_t*), MADV_SEQUENTIAL);
-            if (res == -1) {
-                munmap_address(new_rows, new_inner_count * sizeof(offset_entries_t*), __FILE__,  __LINE__);
-                return;
-            }
-            res = madvise(new_rows, new_inner_count * sizeof(offset_entries_t*), MADV_MERGEABLE);
-            if (res == -1) {
-                munmap_address(new_rows, new_inner_count * sizeof(offset_entries_t*), __FILE__,  __LINE__);
-                return;
-            }
-        }
-        memcpy( new_rows, table->offset_entries[idx], table->inner_count[idx]);
-        munmap_address(table->offset_entries[idx], table->inner_count[idx] * sizeof(offset_entries_t*), __FILE__,  __LINE__);
-        table->offset_entries[idx] = nullptr;
-        table->offset_entries[idx] = new_rows;
-        table->inner_count[idx] = new_inner_count;
-    }
-    else if (mode == 0x01) {
-        byte_entries_t** new_rows = shared_address(nullptr, new_inner_count * sizeof(byte_entries_t*), PROT_WRITE | PROT_READ, MAP_NORESERVE, -1, 0);
-        if (new_rows == MAP_FAILED) return;
-        else {
-            int res = madvise(new_rows, new_inner_count * sizeof(byte_entries_t*), MADV_SEQUENTIAL);
-            if (res == -1) {
-                munmap_address(new_rows, new_inner_count * sizeof(byte_entries_t*), __FILE__,  __LINE__);
-                return;
-            }
-            res = madvise(new_rows, new_inner_count * sizeof(byte_entries_t*), MADV_MERGEABLE);
-            if (res == -1) {
-                munmap_address(new_rows, new_inner_count * sizeof(byte_entries_t*), __FILE__,  __LINE__);
-                return;
-            }
-        }
-        memcpy(new_rows, table->byte_entries[idx], table->inner_count[idx]);
-        munmap_address(table->byte_entries[idx], table->inner_count[idx] * sizeof(byte_entries_t*), __FILE__,  __LINE__);
-        table->byte_entries[idx] = nullptr;
-        table->byte_entries[idx] = new_rows;
-        table->inner_count[idx] = new_inner_count;
-    }
-}
-
-[[gnu::flatten]]
-[[gnu::aligned(DEFAULT_ALIGNMENT)]]
-/**
-    * @description: Resizes the data member field copying over the old data to the new memory block.
-    * @param table: A stack allocated addres variable 
-    * @note: It resizes itself by the multiple of a numerical value that's a power of 2 i.e 64
-    * @return: Nothing
-*/
-FORCE_INLINE void entry_table_resize_table(entry_table_t* table, const unsigned char mode) {
-    if (mode == 0x0 && !table->offset_entries) return;
-    else if (mode == 0x01 && !table->byte_entries) return;
-
-    size_t new_bucket_count = table->bucket_count * 2;
-    if (mode == 0x01) {
-        offset_entries_t*** new_entries =  shared_address(nullptr, new_bucket_count * sizeof(offset_entries_t**), PROT_WRITE | PROT_READ, MAP_NORESERVE, -1, 0);
-        if (new_entries == MAP_FAILED) return;
-        else {
-            int res = madvise(new_entries, new_bucket_count * sizeof(offset_entries_t**), MADV_SEQUENTIAL);
-            if (res == -1) {
-                munmap_address(new_entries, sizeof(offset_entries_t**) * new_bucket_count, __FILE__,  __LINE__);
-                return;
-            }
-            res = madvise(new_entries, new_bucket_count * sizeof(offset_entries_t**), MADV_MERGEABLE);
-            if (res == -1) {
-                munmap_address(new_entries, sizeof(offset_entries_t**) * new_bucket_count, __FILE__,  __LINE__);
-                return;
-            }
-        }
-        const size_t size = table->bucket_count * sizeof(offset_entries_t**);
-        memcpy(new_entries, table->offset_entries, size);
-        munmap_address(table->offset_entries, size, __FILE__,  __LINE__);
-        table->offset_entries = nullptr;
-        table->offset_entries = new_entries;
-        table->bucket_count = new_bucket_count;
-    }
-    else if (mode == 0x01) {
-        byte_entries_t*** new_entries =  shared_address(nullptr, new_bucket_count * sizeof(byte_entries_t**), PROT_WRITE | PROT_READ, MAP_NORESERVE, -1, 0);
-        if (new_entries == MAP_FAILED) return;
-        else {
-            int res = madvise(new_entries, new_bucket_count * sizeof(byte_entries_t**), MADV_SEQUENTIAL);
-            if (res == -1) {
-                munmap_address(new_entries, sizeof(byte_entries_t**) * new_bucket_count, __FILE__,  __LINE__);
-                return;
-            }
-            res = madvise(new_entries, new_bucket_count * sizeof(byte_entries_t**), MADV_MERGEABLE);
-            if (res == -1) {
-                munmap_address(new_entries, sizeof(byte_entries_t**) * new_bucket_count, __FILE__,  __LINE__);
-                return;
-            }
-        }
-        const size_t size = table->bucket_count * sizeof(byte_entries_t**);
-        memcpy(new_entries, table->byte_entries, size);
-        munmap_address(table->byte_entries, size, __FILE__,  __LINE__);
-        table->byte_entries = nullptr;
-        table->byte_entries = new_entries;
-        table->bucket_count = new_bucket_count;
-    }
-}
-
-[[gnu::aligned(DEFAULT_ALIGNMENT)]]
-FORCE_INLINE byte_entries_t* create_byte_entry(const size_t bytes, const unsigned char inuse, void* ptr) {
+FORCE_INLINE byte_entries_t* bins_t_create_byte_entry(const size_t bytes, const unsigned char inuse, void* ptr) {
     byte_entries_t* bnode = aligned_alloc(alignof(byte_entries_t), sizeof(byte_entries_t));
     if (bnode) {
         memset(bnode, 0, sizeof(byte_entries_t)); 
@@ -312,7 +105,7 @@ FORCE_INLINE byte_entries_t* create_byte_entry(const size_t bytes, const unsigne
 
 [[gnu::hot]]
 [[gnu::aligned(DEFAULT_ALIGNMENT)]]
-FORCE_INLINE offset_entries_t* create_offset_entry(const size_t offset, const unsigned char inuse) {
+FORCE_INLINE offset_entries_t* bins_t_create_offset_entry(const size_t offset, const unsigned char inuse) {
     offset_entries_t* onode = aligned_alloc(alignof(offset_entries_t), sizeof(offset_entries_t));
     if (onode) {
         memset(onode, 0, sizeof(offset_entries_t)); 
@@ -326,28 +119,30 @@ FORCE_INLINE offset_entries_t* create_offset_entry(const size_t offset, const un
 }
 
 /**
-    * @description: Free function that adds a new bijection pair, and adds the existing entries to the back.
-    * @param table: A stack address variable apart of the bucket_t
-    * @param idx: A variable that has been already pre-computed by the allocator's bitmap functions or a bucket function
-    * @param offset: An offset generated by the arena 
-    * @param bytes: The requested bytes 
-    * @param inuse: Mark the entry as 0x0 not in use or 0x01 as in use 
-    * @return: Return's nothing
+ * @brief: Free function that adds a new bijection pair, and adds the existing entries to the back.
+ * @param abins_t: An atomic variable/object type.
+ * @param idx: A variable that has been been pre-computed by the alignment rule of the byte
+ * @param offset: An offset generated by the arena 
+ * @param bytes: The requested bytes 
+ * @param inuse: Mark the entry as 0x0 not in use or 0x01 as in use 
+ * @return: Return's nothing
 */
 [[gnu::aligned(DEFAULT_ALIGNMENT)]]
-FORCE_INLINE void set(_Atomic(entry_table_t)* atomic_table, const size_t idx, const size_t offset, const size_t bytes, const unsigned char inuse, void* ptr) {
+FORCE_INLINE void bins_t_set_entry(_Atomic(bins_t)* abins_t, const size_t idx, const size_t offset, const size_t bytes, const unsigned char inuse, void* ptr) {
     if (offset == 0 || bytes == 0) return;
     
-    entry_table_t table = atomic_load_explicit(atomic_table, memory_order_relaxed);
-    if (!table.offset_entries || !table.byte_entries) entry_table_init(&table, idx);
-    if (!table.inner_count[idx]) {
-        entry_table_resize_table(&table, 0x0);
-        entry_table_resize_table(&table, 0x01);
-    }
+    bins_t bins = atomic_load_explicit(abins_t, memory_order_relaxed);
+    if (!bins.offset_entries || !bins.byte_entries) init_bins_t();
+    else if (bins.size < idx) bins_t_resize(&bins, (int)idx);
 
-    byte_entries_t* bnode = create_byte_entry(bytes, inuse, ptr);
-    offset_entries_t* onode = create_offset_entry(offset, inuse);
-    if (!bnode || !onode) { free(bnode); free(onode); }
+    byte_entries_t* bnode = bins_t_create_byte_entry(bytes, inuse, ptr);
+    offset_entries_t* onode = bins_t_create_offset_entry(offset, inuse);
+    if (!bnode || !onode) {
+        const size_t threshold = M_MMAP_THRESHOLD;
+        sizeof(byte_entries_t) < threshold ? free(bnode) : munmap_address(bnode, sizeof(byte_entries_t), __FILE__, __LINE__);
+        sizeof(offset_entries_t) < threshold ? free(onode) : munmap_address(onode, sizeof(offset_entries_t), __FILE__, __LINE__);
+        return; 
+    }
 
     bnode->offset = onode;
     onode->bytes = bnode;
@@ -369,14 +164,14 @@ FORCE_INLINE void set(_Atomic(entry_table_t)* atomic_table, const size_t idx, co
 }
 
 /**
-    * @description: Free function that gets the bytes node based on the bytes and the inuse 
+    * @brief: Free function that gets the bytes node based on the bytes and the inuse 
     * @param table: the table that might have the desired byte node
     * @param idx: the numerical value used for indexing into `entries`
     * @param bytes: The requested bytes 
     * @param inuse: The desired flag which can be 0x0 or 0x01 
 */
 [[gnu::aligned(DEFAULT_ALIGNMENT)]]
-FORCE_INLINE const byte_entries_t* get_entry_t_by_bytes(_Atomic(entry_table_t)* atomic_table, const size_t idx, const size_t bytes, const unsigned char inuse) {
+FORCE_INLINE const byte_entries_t* bins_t_get_entry_t_by_bytes(_Atomic(bins_t)* atomic_table, const size_t idx, const size_t bytes, const unsigned char inuse) {
     const entry_table_t table = atomic_load_explicit(atomic_table, memory_order_relaxed);
     if (__builtin_expect(!table.byte_entries, 0)) return nullptr;
     else if (__builtin_expect(idx >= table.bucket_count, 0)) return nullptr;
@@ -1292,21 +1087,6 @@ FORCE_INLINE void* thread_allocator_huge_update_slots(struct function_t* meta) {
 // ALLOCATOR SECTION //
 //////////////////////
 
-
-typedef struct huge_block_allocator_t {
-    bitmap_t        bitmap;
-    char*           region;
-    huge_slot_t*    slots;
-    size_t          slot_cap;
-    size_t          allocator_cap;
-    atomic_size_t   done; /* Used for lock free syncing threads */
-} huge_block_allocator_t;
-
-GCC_OPTIMIZE_O0 void init_huge_allocator(void);
-FORCE_INLINE void allocator_huge_resize_slots(huge_slot_t* slot, const size_t size);
-FORCE_INLINE void* allocator_huge_push_to_slot(huge_slot_t* slot, const size_t index, const size_t end, size_t bytes);
-GCC_OPTIMIZE_O0 size_t allocator_huge_bitmap_ranges(const size_t start, size_t end);
-FORCE_INLINE void allocator_huge_resize_chunk(char* chunk, const size_t old_len, const size_t new_len);
 FORCE_INLINE unsigned char overcommit(size_t bytes);
 
 allocator_t allocator = {0};
@@ -1332,139 +1112,22 @@ GCC_OPTIMIZE_O0 void allocator_init_arena_t(void) {
     }
 }
 
-[[gnu::cold]]
-[[gnu::aligned(DEFAULT_ALIGNMENT)]]
-// TODO: Need to make sure that MADV_MERGEABLE enabled does not consume a lot of processing power; use with care.
-GCC_OPTIMIZE_O0 void allocator_init_buckets_t(void) {
-    int res = 0;
-    if (!allocator.bucket.small) {
-        allocator.bucket.large = shared_address(nullptr, BUCKET_LARGE_CAP * sizeof(bucket_t), PROT_WRITE | PROT_READ, MAP_NORESERVE, -1, 0);
-        #if LOGGING == 1 || LOGGING == 0
-            if (allocator.bucket.large == MAP_FAILED) {
-                const int line = __LINE__;
-                #if LOGGING == 0
-                    printer.add(5, __FILE__, line, ANSI_RED "alloc_init: Failed to allocate memory for data member large bucket!\n.... Returning back to caller\n" ANSI_RESET);
-                    printer.print(__FILE__, line);
-                #else 
-                    logger.add(5, __FILE__, line, ANSI_RED "alloc_init: Failed to allocate memory for data member large bucket!\n.... Returning back to caller\n" ANSI_RESET);
-                #endif
-            }
-        #else 
-            if (allocator.bucket.large == MAP_FAILED) return;
-        #endif 
-        res = madvise(allocator.bucket.large, BUCKET_LARGE_CAP * sizeof(bucket_t), MADV_SEQUENTIAL);
-        #if LOGGING == 1 || LOGGING == 0
-            if (res == -1) {
-                const int line = __LINE__;
-                #if LOGGING == 0
-                    printer.add(5, __FILE__, line, ANSI_RED "alloc_init: Failed to allocate modify memory region for data member large bucket!\n.... Returning back to caller\n" ANSI_RESET);
-                    printer.print(__FILE__, line);
-                #else 
-                    logger.add(5, __FILE__, line, ANSI_RED "alloc_init: Failed to modify memory region for data member large bucket!\n.... Returning back to caller\n" ANSI_RESET);
-                #endif
-            }
-        #else 
-            if (res == -1) return;
-        #endif
-        res = madvise(allocator.bucket.large, BUCKET_LARGE_CAP * sizeof(bucket_t), MADV_MERGEABLE);
-        #if LOGGING == 1 || LOGGING == 0
-            if (res == -1) {
-                const int line = __LINE__;
-                #if LOGGING == 0
-                    printer.add(5, __FILE__, line, ANSI_RED "alloc_init: Failed to allocate modify memory region for data member large bucket!\n.... Returning back to caller\n" ANSI_RESET);
-                    printer.print(__FILE__, line);
-                #else 
-                    logger.add(5, __FILE__, line, ANSI_RED "alloc_init: Failed to modify memory region for data member large bucket!\n.... Returning back to caller\n" ANSI_RESET);
-                #endif
-            }
-        #else 
-            if (res == -1) return;
-        #endif
-        allocator.bucket.small = shared_address(nullptr, BUCKET_SMALL_CAP * sizeof(bucket_t), PROT_WRITE | PROT_READ, MAP_NORESERVE, -1, 0);
-        #if LOGGING == 1 || LOGGING == 0
-            if (allocator.bucket.small == MAP_FAILED) {
-                const int line = __LINE__;
-                #if LOGGING == 0
-                    printer.add(5, __FILE__, line, ANSI_RED "alloc_init: Failed to allocate memory for data member medium bucket!\n.... Returning back to caller\n" ANSI_RESET);
-                    printer.print(__FILE__, line);
-                #else 
-                    logger.add(5, __FILE__, line, ANSI_RED "alloc_init: Failed to allocate memory for data member medium bucket!\n.... Returning back to caller\n" ANSI_RESET);
-                #endif
-            }
-        #else 
-            if (allocator.bucket.small == MAP_FAILED) return;
-        #endif
-        res = madvise(allocator.bucket.small, BUCKET_SMALL_CAP * sizeof(bucket_t), MADV_SEQUENTIAL);
-        #if LOGGING == 1 || LOGGING == 0
-            if (res == -1) {
-                const int line =  __LINE__; 
-                #if LOGGING == 0
-                    printer.add(5, __FILE__, line, ANSI_RED "alloc_init: Failed to modify allocator's small bucket memory region with madvise!\n.... Returning back to caller\n" ANSI_RESET);
-                    printer.print(__FILE__, line);
-                #else 
-                    logger.add(5, __FILE__, line, ANSI_RED "alloc_init: Failed to modify allocator's small bucket memory region with madvise!\n.... Returning back to caller\n" ANSI_RESET);
-                #endif
-            }
-        #else 
-            if (res == -1) return;
-        #endif
-        res = madvise(allocator.bucket.small, BUCKET_SMALL_CAP * sizeof(bucket_t), MADV_MERGEABLE);
-        #if LOGGING == 1 || LOGGING == 0
-            if (res == -1) {
-                const int line =  __LINE__; 
-                #if LOGGING == 0
-                    printer.add(5, __FILE__, line, ANSI_RED "alloc_init: Failed to modify allocator's small bucket memory region with madvise!\n.... Returning back to caller\n" ANSI_RESET);
-                    printer.print(__FILE__, line);
-                #else 
-                    logger.add(5, __FILE__, line, ANSI_RED "alloc_init: Failed to modify allocator's small bucket memory region with madvise!\n.... Returning back to caller\n" ANSI_RESET);
-                #endif
-            }
-        #else 
-            if (res == -1) return;
-        #endif
-        allocator.bucket.medium = shared_address(nullptr, BUCKET_MEDIUM_CAP * sizeof(bucket_t), PROT_WRITE | PROT_READ,  MAP_NORESERVE, -1, 0);
-        #if LOGGING == 1 || LOGGING == 0
-            if (allocator.bucket.medium == MAP_FAILED) {
-                const int line =  __LINE__; 
-                #if LOGGING == 0
-                    printer.add(5, __FILE__, line, ANSI_RED "alloc_init: Failed to allocate memory for data member medium bucket!\n.... Returning back to caller\n" ANSI_RESET);
-                    printer.print(__FILE__, line);
-                #else 
-                    logger.add(5, __FILE__, line, ANSI_RED "alloc_init: Failed to allocate memory for data member medium bucket!\n.... Returning back to caller\n" ANSI_RESET);
-                #endif
-            }
-        #else 
-            if (allocator.bucket.medium == MAP_FAILED) return;
-        #endif
-        res = madvise(allocator.bucket.medium, BUCKET_MEDIUM_CAP * sizeof(bucket_t), MADV_SEQUENTIAL);
-        #if LOGGING == 1 || LOGGING == 0
-            if (res == -1) {
-                const int line = __LINE__; 
-                #if LOGGING == 0
-                    printer.add(5, __FILE__, line, ANSI_RED "alloc_init: Failed to modify allocator's medium bucket memory region with madvise!\n.... Returning back to caller\n" ANSI_RESET);
-                    printer.print(__FILE__, line);
-                #else 
-                    logger.add(5, __FILE__, line, ANSI_RED "alloc_init: Failed to modify allocator's medium bucket memory region with madvise!\n.... Returning back to caller\n" ANSI_RESET);
-                #endif
-            }
-        #else 
-            if (res == -1) return;
-        #endif
-        res = madvise(allocator.bucket.medium, BUCKET_MEDIUM_CAP * sizeof(bucket_t), MADV_MERGEABLE);
-        #if LOGGING == 1 || LOGGING == 0
-            if (res == -1) {
-                const int line = __LINE__; 
-                #if LOGGING == 0
-                    printer.add(5, __FILE__, line, ANSI_RED "alloc_init: Failed to modify allocator's medium bucket memory region with madvise!\n.... Returning back to caller\n" ANSI_RESET);
-                    printer.print(__FILE__, line);
-                #else 
-                    logger.add(5, __FILE__, line, ANSI_RED "alloc_init: Failed to modify allocator's medium bucket memory region with madvise!\n.... Returning back to caller\n" ANSI_RESET);
-                #endif
-            }
-        #else 
-            if (res == -1) return;
-        #endif
+FORCE_INLINE void allocator_t_init_colosseum_t(void) {
+    if (allocator.colosseum) return;
+    allocator.size = 65UL;
+    allocator.colosseum = private_address(nullptr, allocator.size * sizeof(colosseum_t*), PROT_READ | PROT_WRITE, MAP_NORESERVE, -1, 0);
+    if (allocator.colosseum == MAP_FAILED) return;
+    int res = madvise(allocator.colosseum, allocatorllocator.size * sizeof(colosseum_t*), MADV_SEQUENTIAL);
+    if (res == -1) {
+        if (chain) { munmap_address(allocator.colosseum, allocatorllocator.size * sizeof(colosseum_t*), __FILE__,  __LINE__); allocator.colosseum = nullptr; }
+        return;
     }
+    res = madvise(allocator.colosseum, allocatorllocator.size * sizeof(colosseum_t*), MADV_MERGEABLE);
+    if (res == -1) {
+        if (chain) { munmap_address(allocator.colosseum, allocatorllocator.size * sizeof(colosseum_t*), __FILE__,  __LINE__); allocator.colosseum = nullptr; }
+        return;
+    }
+    init_arena_t(&allocator.colosseum[8UL]->arena);
 }
 
 [[gnu::cold]]
@@ -1670,7 +1333,7 @@ GCC_OPTIMIZE_O0 void debug_allocator(const size_t bytes) {
 }
 
 /**
-    * @description: A Free Function that recrusive calls itself if arena is full and moves it forward.
+    * @brief: A Free Function that recrusive calls itself if arena is full and moves it forward.
     * @param bytes: The requested bytes.
     * @return: Return a memory address of desired size or big enough to hold x amount of bytes.
                Otherwise, return null, and that will indicate that everything is full.
@@ -1853,17 +1516,7 @@ GCC_OPTIMIZE_O0 void init_allocator_t() {
     #if BENCHMARK_ENV == 1
         init_benchmark_allocator_t();
     #endif
-    if (!allocator.bitmap.bits)  {
-        init_logger_t();
-        init_bitmap_t(&allocator.bitmap, BITMAP_SIZE);
-        allocator_init_arena_t();
-        allocator_init_buckets_t();
-        allocator.huge = aligned_alloc(alignof(huge_block_allocator_t), sizeof(huge_block_allocator_t));
-        memset(allocator.huge, 0, sizeof(huge_block_allocator_t));
-        allocator_init_threads_t();
-        if (!allocator.huge) return;
-    }
-
+    allocator_t_init_colosseum_t();
     if (!allocator.allocate) {
         allocator.allocate   = allocate;
         allocator.deallocate = deallocate;
@@ -1914,153 +1567,11 @@ FORCE_INLINE unsigned char overcommit(const size_t bytes) {
     return (bytes < available / 2) ? 0x1 : 0x0;
 }
 
-[[gnu::flatten]]
-[[gnu::nonnull(1)]]
-[[gnu::aligned(DEFAULT_ALIGNMENT)]] /* Align it to a byte-boundry, so it can fit into the cache without an issue */
-FORCE_INLINE void allocator_huge_resize_slots(huge_slot_t* slot, const size_t size) {
-
-    size_t old = slot->capacity;
-    huge_slot_t* n_slot = size < ALLOC_THRESHOLD ? aligned_alloc(alignof(huge_slot_t), size * sizeof(huge_slot_t)) : shared_address(nullptr, (size_t)MAX_HUGE_SLOTS * sizeof(huge_slot_t), PROT_WRITE | PROT_READ, MAP_NORESERVE, -1, 0); ;
-    if (!n_slot) return;
-    else {
-        int res = madvise(n_slot,  size * sizeof(huge_slot_t), MADV_SEQUENTIAL);
-        if (res == -1) { 
-            if (n_slot) munmap_address(n_slot, size, __FILE__, __LINE__);
-            n_slot = nullptr;
-            return; 
-        }
-        res = madvise(n_slot,  size * sizeof(huge_slot_t),MADV_MERGEABLE);
-        if (res == -1) { 
-            if (n_slot) munmap_address(n_slot, size, __FILE__, __LINE__);
-            n_slot = nullptr;
-            return; 
-        }
-    }
-
-    memset(n_slot, 1, offsetof(huge_slot_t, space) * size);
-    memset(n_slot, size, offsetof(huge_slot_t, capacity) * size);
-    memcpy(n_slot, slot, old);
-    size < ALLOC_THRESHOLD ? free(slot) : munmap_address(slot, old, __FILE__,  __LINE__);
-    slot = nullptr;
-    allocator.huge->slots = n_slot;
-    allocator.huge->slot_cap = size;
-}
-
-[[gnu::flatten]]
-[[gnu::nonnull(1)]]
-[[gnu::aligned(DEFAULT_ALIGNMENT)]] /* Align it to a byte-boundry, so it can fit into the cache without an issue */
-FORCE_INLINE void allocator_huge_resize_chunk(char* chunk, const size_t old_len, const size_t new_len) { 
-    chunk = remap_address(chunk, old_len, new_len);
-    if (!chunk) return;
-    allocator.huge->allocator_cap = new_len;
-}
-
-
-[[gnu::flatten]]
-[[gnu::nonnull(1)]]
-[[gnu::aligned(DEFAULT_ALIGNMENT)]] /* Align it to a byte-boundry, so it can fit into the cache without an issue */
-/**
- * @description: Free function similar to that of 'arena' 'push', it will push the bytes to the stack, but if full, 
- * it will recrusive call `allocate` afer marking the slot as occupied
- * @param slot a pointer to user defined type
- * @param index An index that came from bitmap
- * @param end slot's capacity 
- * @param bytes the requested bytes 
-*/
-FORCE_INLINE void* allocator_huge_push_to_slot(huge_slot_t* slot, const size_t index, const size_t end, size_t bytes) {
-    char* address = nullptr;
-    uintptr_t raw = (uintptr_t)allocator.huge->region + (uintptr_t)(slot->space == 0 ? 1 : slot->space);
-    uintptr_t offset = alignment(raw, bytes);
-    offset -= (uintptr_t)allocator.huge->region;
-    if (slot->space < slot->capacity) {
-        slot->space = bytes + offset;
-        address = allocator.huge->region + offset;
-        set(&slot->blocks.table, index, slot->space, bytes, 0x01, address);
-        return address;
-    }
-    else {
-        allocator.huge->bitmap = allocator.huge->bitmap.bitmap_set(allocator.huge->bitmap, index, 0, end);
-        return allocate(bytes);
-    }
-}
-
-[[gnu::aligned(DEFAULT_ALIGNMENT)]] /* Align it to a byte-boundry, so it can fit into the cache without an issue */
-FORCE_INLINE void allocator_huge_update_slots(const size_t start, const size_t end) {
-    for (size_t i = start; i < end; i++) { 
-        allocator.huge->slots[i].space = 1;
-        allocator.huge->slots[i].capacity = MAX_HUGE_SLOTS;
-    }
-}
-
-// end should be allocator.huge.slots[allocator.huge.slot_cap - 1].capacity
-// while start is the `capacity` found from find_huge_slot
-[[gnu::hot]]
-[[gnu::aligned(DEFAULT_ALIGNMENT)]] /* Align it to a byte-boundry, so it can fit into the cache without an issue */
-GCC_OPTIMIZE_O0 size_t allocator_huge_bitmap_ranges(const size_t start, size_t end) {
-    const huge_slot_t* slot = &allocator.huge->slots[end];
-    if (end < start || end == SIZE_MAX) return SIZE_MAX;
-    else if (!slot) return SIZE_MAX;
-    else if (allocator.huge->slots[end].capacity != start) return allocator_huge_bitmap_ranges(start, end / 2);
-    return end; 
-}
-
-[[gnu::cold]]
-[[gnu::flatten]]
-[[gnu::aligned(DEFAULT_ALIGNMENT)]] /* Align it to a byte-boundry, so it can fit into the cache without an issue */
-GCC_OPTIMIZE_O0 void init_huge_allocator(void) {
-    init_bitmap_t(&allocator.huge->bitmap, MAX_HUGE_SLOTS);
-    allocator.huge->region = shared_address(nullptr, (size_t)HUGE_PAGE_SIZE, PROT_WRITE | PROT_READ,MAP_NORESERVE, -1, 0);
-    if (allocator.huge->region == MAP_FAILED) { allocator.huge->region = nullptr; return; }
-    else {
-        
-    }
-    
-    while(!atomic_load_explicit(&allocator.huge->done, memory_order_acquire)){}
-    allocator.huge->allocator_cap = (size_t)HUGE_PAGE_SIZE;
-    
-    allocator.huge->slots = shared_address(nullptr, (size_t)MAX_HUGE_SLOTS * sizeof(huge_slot_t), PROT_WRITE | PROT_READ, MAP_NORESERVE, -1, 0); 
-    if (allocator.huge->slots == MAP_FAILED) { 
-        if (allocator.huge->region) munmap_address(allocator.huge->region, (size_t)HUGE_PAGE_SIZE, __FILE__,  __LINE__); 
-        allocator.huge->region = nullptr;
-        allocator.huge->slots = nullptr; 
-        return; 
-    } else {
-        int res = madvise(allocator.huge->slots, (size_t)MAX_HUGE_SLOTS * sizeof(huge_slot_t), MADV_SEQUENTIAL);
-        if (res == -1) {
-            munmap_address(allocator.huge->region, (size_t)HUGE_PAGE_SIZE, __FILE__,  __LINE__);
-            if (allocator.huge->slots) munmap_address(allocator.huge->slots, (size_t)MAX_HUGE_SLOTS * sizeof(huge_slot_t), __FILE__,  __LINE__);
-            allocator.huge->region = nullptr;
-            allocator.huge->slots = nullptr;
-            return;
-        }
-        res = madvise(allocator.huge->slots, (size_t)MAX_HUGE_SLOTS * sizeof(huge_slot_t), MADV_MERGEABLE);
-        if (res == -1) {
-            munmap_address(allocator.huge->region, (size_t)HUGE_PAGE_SIZE, __FILE__,  __LINE__);
-            if (allocator.huge->slots) munmap_address(allocator.huge->slots, (size_t)MAX_HUGE_SLOTS * sizeof(huge_slot_t), __FILE__,  __LINE__);
-            allocator.huge->region = nullptr;
-            allocator.huge->slots = nullptr;
-            return;
-        }
-    }
-
-    atomic_store_explicit(&allocator.huge->done, 0, memory_order_release);
-    threads_t* t1 = find_thread_t(allocator.pool, THREADS_T_POOL_SIZE);
-    if (!t1) allocator_huge_update_slots(0, MAX_HUGE_SLOTS);
-    else {
-        atomic_size_t begin, end;
-        atomic_store_explicit(&begin, 0, memory_order_relaxed);
-        atomic_store_explicit(&end, MAX_HUGE_SLOTS, memory_order_relaxed);
-        routine_metadata(t1, 3, (void*)(atomic_load_explicit(&begin, memory_order_relaxed)), (void*)(atomic_load_explicit(&end, memory_order_relaxed)), &allocator.huge->done);
-        create_thread(t1, thread_allocator_huge_update_slots);
-    }
-    allocator.huge->slot_cap = MAX_HUGE_SLOTS;
-}
 
 [[gnu::cold]]
 [[gnu::destructor]]
 [[gnu::aligned(DEFAULT_ALIGNMENT)]] /* Align it to a byte-boundry, so it can fit into the cache without an issue */
 GCC_OPTIMIZE_O0 void allocator_dctor() {
-    while(!atomic_load_explicit(&allocator.huge->done, memory_order_acquire)){}
     for (size_t i = 0;  i < THREADS_T_POOL_SIZE; i++) clean_threads(&allocator.pool[i]);
     if (allocator.pool) munmap_address(allocator.pool, THREADS_T_POOL_SIZE * sizeof(threads_t), __FILE__,  __LINE__);
     allocator.pool = nullptr;
@@ -2070,24 +1581,5 @@ GCC_OPTIMIZE_O0 void allocator_dctor() {
         munmap_address(allocator.arena, sizeof(arena_t), __FILE__,  __LINE__);
         allocator.arena = nullptr;
     }
-    clean_bitmap(&allocator.bitmap);
-    if (allocator.huge) {
-        clean_bitmap(&allocator.huge->bitmap);
-        if (allocator.huge->region) munmap_address(allocator.huge->region, allocator.huge->allocator_cap, __FILE__,  __LINE__);
-        allocator.huge->region = nullptr;
-        if (allocator.huge->slots) {
-            /*for (size_t i = 0; i < (allocator.huge->slot_cap / sizeof(huge_slot_t*)); i++) {
-                if (allocator.huge->slots[i].blocks.chain) {
-                    block_t_dctor(&allocator.huge->slots[i].blocks);
-                    allocator.huge->slots[i].blocks.chain = nullptr;
-                }
-            }*/
-            munmap_address(allocator.huge->slots, allocator.huge->slot_cap, __FILE__,  __LINE__);
-        }
-
-        void* old = allocator.huge;
-        memset(allocator.huge, 0, sizeof(huge_block_allocator_t));
-        if (allocator.huge) free(old);
-        allocator.huge = nullptr;
-    }   
+      
 }
