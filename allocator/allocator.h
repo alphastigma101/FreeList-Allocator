@@ -10,13 +10,19 @@ typedef struct bins_t {
 } bins_t;
 
 typedef struct blocks_t {
-    struct blocks_t** chain;    /* TODO: We can tag/untag chain[i] instead of using inuse. */
-    _Atomic(struct blocks_t*)   next;
-    _Atomic(void*)              ptr;
-    _Atomic(size_t)             bytes;
-    _Atomic(size_t)             offset;
-    _Atomic(size_t)             size;
-    _Atomic(unsigned char)      inuse;
+    // we use alignment numerical value for indexing from the allocator function during runtime to return a block_t variable/object that contains:
+    // unode: unode is a free list sorted as filo. these nodes are not in use 
+    // size: the size of the chain variable/object
+    // depth: the depth of the free list i.e unode
+    // TODO: In the coalescing function. 
+    // -----------------------------------
+    // TODO: There are function that will coalesce from the unode, we use bins_t_set function to set the coalesced node instead of storing it in here
+    // and de-increment depth, we return the memory address which should fit between a colosseum's or arena's chunk without collission.  
+    struct blocks_t** chain;
+    _Atomic(struct byte_entries_t*) unode; // universal node and nodes that are not in use get stored here, we use filo on it so if unode is not null, we move the node in the back 
+    size_t                          size;
+    size_t                          bytes; // the total amount of bytes calculated by each unode 
+    int                             depth; // the depth of the not inuse nodes i.e unodes
 } blocks_t;
 
 typedef struct __attribute__((aligned(64))) allocator_t {
